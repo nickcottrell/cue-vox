@@ -104,10 +104,32 @@ def send_to_claude(text):
     return stdout.strip()
 
 
-def speak(text):
-    """Speak text using macOS say command"""
-    print("🔊 Speaking...")
-    subprocess.run(['say', text], check=True)
+class Speaker:
+    """Handle text-to-speech with interrupt support"""
+
+    def __init__(self):
+        self.process = None
+        self.is_speaking = False
+
+    def speak(self, text):
+        """Speak text using macOS say command"""
+        print("🔊 Speaking...")
+        self.is_speaking = True
+        self.process = subprocess.Popen(
+            ['say', text],
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE
+        )
+        self.process.wait()
+        self.is_speaking = False
+
+    def interrupt(self):
+        """Stop current speech"""
+        if self.is_speaking and self.process:
+            print("🛑 Interrupted!")
+            self.process.terminate()
+            self.process.wait()
+            self.is_speaking = False
 
 
 def main():
@@ -126,11 +148,16 @@ def main():
     print()
 
     ptt = PushToTalk(hotkey='space')
+    speaker = Speaker()
 
     try:
         while True:
             # Check for key press
             if keyboard.is_pressed('space'):
+                # Step 5: Interrupt if speaking
+                if speaker.is_speaking:
+                    speaker.interrupt()
+
                 if not ptt.is_recording:
                     ptt.start_recording()
                 else:
@@ -147,7 +174,7 @@ def main():
                         print(f"📝 Claude: {response}")
 
                         # Step 4: Speak response
-                        speak(response)
+                        speaker.speak(response)
 
                         # Clean up audio file
                         Path(audio_file).unlink()
