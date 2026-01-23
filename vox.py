@@ -11,6 +11,7 @@ import keyboard
 import tempfile
 from pathlib import Path
 import whisper
+import subprocess
 
 # Audio config
 CHUNK = 1024
@@ -82,6 +83,27 @@ def transcribe_audio(audio_file):
     return text
 
 
+def send_to_claude(text):
+    """Send text to Claude Code via stdin pipe"""
+    print("🤖 Claude is thinking...")
+
+    # Pipe text directly to claude command
+    process = subprocess.Popen(
+        ['claude'],
+        stdin=subprocess.PIPE,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True
+    )
+
+    stdout, stderr = process.communicate(input=text)
+
+    if stderr:
+        print(f"⚠️  Error: {stderr}")
+
+    return stdout.strip()
+
+
 def main():
     """Main push-to-talk loop"""
     print("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━")
@@ -114,7 +136,10 @@ def main():
                         # Step 2: Transcribe with Whisper
                         text = transcribe_audio(audio_file)
 
-                        # TODO: Send to Claude Code (step 3)
+                        # Step 3: Send to Claude Code
+                        response = send_to_claude(text)
+                        print(f"📝 Claude: {response}")
+
                         # TODO: TTS response (step 4)
 
                         # Clean up audio file
