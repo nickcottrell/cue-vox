@@ -103,9 +103,29 @@
         .stop-button.visible {
             display: block;
         }
+
+        .label {
+            position: absolute;
+            top: 10px;
+            left: 50%;
+            transform: translateX(-50%);
+            background: transparent;
+            border: none;
+            color: white;
+            font-size: 18px;
+            font-weight: bold;
+            text-align: center;
+            outline: none;
+            cursor: text;
+        }
+
+        .label:focus {
+            border-bottom: 1px solid #666;
+        }
     </style>
 </head>
 <body>
+    <input type="text" class="label" id="label" value="cue-vox" spellcheck="false">
     <div class="conversation" id="conversation"></div>
     <div class="dot" id="dot"></div>
     <button class="stop-button" id="stopButton">⏹ Stop Audio</button>
