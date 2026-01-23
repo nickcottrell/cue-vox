@@ -1,0 +1,165 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <title>cue-vox</title>
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <script src="https://cdn.socket.io/4.5.4/socket.io.min.js"></script>
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+
+        body {
+            background: #000;
+            display: flex;
+            justify-content: center;
+            align-items: center;
+            height: 100vh;
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+            overflow: hidden;
+        }
+
+        .dot {
+            width: 100px;
+            height: 100px;
+            border-radius: 50%;
+            background: #333;
+            transition: background 0.3s ease;
+            cursor: pointer;
+            user-select: none;
+        }
+
+        .dot.idle { background: #333; }
+        .dot.recording { background: #FF0000; }
+        .dot.transcribing { background: #FFA500; }
+        .dot.thinking { background: #0080FF; }
+        .dot.speaking { background: #00FF00; }
+
+        .info {
+            position: absolute;
+            bottom: 40px;
+            left: 50%;
+            transform: translateX(-50%);
+            color: #666;
+            font-size: 14px;
+            text-align: center;
+        }
+
+        .transcript {
+            position: absolute;
+            top: 40px;
+            left: 50%;
+            transform: translateX(-50%);
+            color: #fff;
+            font-size: 18px;
+            max-width: 80%;
+            text-align: center;
+        }
+
+        .response {
+            position: absolute;
+            top: 100px;
+            left: 50%;
+            transform: translateX(-50%);
+            color: #888;
+            font-size: 16px;
+            max-width: 80%;
+            text-align: center;
+        }
+    </style>
+</head>
+<body>
+    <div class="dot" id="dot"></div>
+    <div class="transcript" id="transcript"></div>
+    <div class="response" id="response"></div>
+    <div class="info">
+        Hold SPACE to talk • Release to process • Press SPACE mid-response to interrupt
+    </div>
+
+    <script>
+        const socket = io();
+        const dot = document.getElementById('dot');
+        const transcript = document.getElementById('transcript');
+        const response = document.getElementById('response');
+
+        let mediaRecorder;
+        let audioChunks = [];
+        let isRecording = false;
+        let currentState = 'idle';
+
+        // Initialize audio
+        async function initAudio() {
+            const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+            mediaRecorder = new MediaRecorder(stream);
+
+            mediaRecorder.ondataavailable = (event) => {
+                audioChunks.push(event.data);
+            };
+
+            mediaRecorder.onstop = async () => {
+                const audioBlob = new Blob(audioChunks, { type: 'audio/wav' });
+                const reader = new FileReader();
+                reader.readAsDataURL(audioBlob);
+                reader.onloadend = () => {
+                    socket.emit('audio_data', { audio: reader.result });
+                };
+                audioChunks = [];
+            };
+        }
+
+        // Keyboard events
+        document.addEventListener('keydown', (e) => {
+            if (e.code === 'Space' && !isRecording) {
+                e.preventDefault();
+
+                // Interrupt if speaking
+                if (currentState === 'speaking') {
+                    socket.emit('interrupt');
+                    return;
+                }
+
+                // Start recording
+                isRecording = true;
+                setState('recording');
+                mediaRecorder.start();
+            }
+        });
+
+        document.addEventListener('keyup', (e) => {
+            if (e.code === 'Space' && isRecording) {
+                e.preventDefault();
+                isRecording = false;
+                mediaRecorder.stop();
+            }
+        });
+
+        // Socket events
+        socket.on('state_change', (data) => {
+            setState(data.state);
+        });
+
+        socket.on('transcription', (data) => {
+            transcript.textContent = `💬 You: ${data.text}`;
+        });
+
+        socket.on('response', (data) => {
+            response.textContent = `🤖 Claude: ${data.text}`;
+        });
+
+        socket.on('error', (data) => {
+            console.error(data.message);
+            setState('idle');
+        });
+
+        function setState(state) {
+            currentState = state;
+            dot.className = `dot ${state}`;
+        }
+
+        // Initialize on load
+        initAudio();
+    </script>
+</body>
+</html>
