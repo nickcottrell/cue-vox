@@ -10,6 +10,7 @@ import wave
 import keyboard
 import tempfile
 from pathlib import Path
+import whisper
 
 # Audio config
 CHUNK = 1024
@@ -71,11 +72,26 @@ class PushToTalk:
         self.audio.terminate()
 
 
+def transcribe_audio(audio_file):
+    """Transcribe audio file using Whisper"""
+    print("🔄 Transcribing...")
+    model = whisper.load_model("base")  # base model for speed
+    result = model.transcribe(audio_file)
+    text = result["text"].strip()
+    print(f"💬 You said: {text}")
+    return text
+
+
 def main():
     """Main push-to-talk loop"""
     print("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━")
     print("🎙️  CUE-VOX - Voice for Claude Code")
     print("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━")
+    print()
+    print("Loading Whisper model...")
+    # Preload model to avoid delay on first use
+    whisper.load_model("base")
+    print("✅ Ready!")
     print()
     print("Hold SPACE to talk, release to process")
     print("Press Ctrl+C to exit")
@@ -95,11 +111,14 @@ def main():
                 if ptt.is_recording:
                     audio_file = ptt.stop_recording()
                     if audio_file:
-                        print(f"📁 Saved: {audio_file}")
-                        # TODO: Send to Whisper (next step)
+                        # Step 2: Transcribe with Whisper
+                        text = transcribe_audio(audio_file)
+
                         # TODO: Send to Claude Code (step 3)
                         # TODO: TTS response (step 4)
-                        Path(audio_file).unlink()  # Clean up for now
+
+                        # Clean up audio file
+                        Path(audio_file).unlink()
 
     except KeyboardInterrupt:
         print("\n\n👋 Goodbye!")
