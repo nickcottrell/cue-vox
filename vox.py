@@ -104,6 +104,12 @@ def send_to_claude(text):
     return stdout.strip()
 
 
+def speak(text):
+    """Speak text using macOS say command"""
+    print("🔊 Speaking...")
+    subprocess.run(['say', text], check=True)
+
+
 def main():
     """Main push-to-talk loop"""
     print("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━")
@@ -140,7 +146,8 @@ def main():
                         response = send_to_claude(text)
                         print(f"📝 Claude: {response}")
 
-                        # TODO: TTS response (step 4)
+                        # Step 4: Speak response
+                        speak(response)
 
                         # Clean up audio file
                         Path(audio_file).unlink()
