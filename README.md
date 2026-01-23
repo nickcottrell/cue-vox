@@ -81,6 +81,12 @@ See [INSTALL.md](INSTALL.md) for detailed setup instructions.
 
 ---
 
+## Related Projects
+
+**[cue-spec](https://github.com/nickcottrell/cue-spec)** - Specification for "cues" as collaborative workflow templates. Defines the ontology of what a cue is: direction with agency intact.
+
+---
+
 ## License
 
 Apache 2.0
