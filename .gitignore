@@ -1,0 +1,36 @@
+# Environment variables (API keys, secrets)
+.env
+*.env
+
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+.venv/
+venv/
+ENV/
+env/
+
+# Audio files (generated during testing)
+*.wav
+*.mp3
+*.m4a
+audio/
+recordings/
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Logs
+*.log
+logs/
