@@ -17,10 +17,16 @@ app = Flask(__name__)
 app.config['SECRET_KEY'] = 'cue-vox-secret'
 socketio = SocketIO(app, cors_allowed_origins="*")
 
-# Load Whisper model once at startup
-print("Loading Whisper model...")
-whisper_model = whisper.load_model("base")
-print("✅ Whisper ready!")
+# Load Whisper model lazily
+whisper_model = None
+
+def get_whisper_model():
+    global whisper_model
+    if whisper_model is None:
+        print("Loading Whisper model...")
+        whisper_model = whisper.load_model("base")
+        print("✅ Whisper ready!")
+    return whisper_model
 
 # TTS process
 tts_process = None
@@ -28,6 +34,7 @@ tts_process = None
 
 @app.route('/')
 def index():
+    print("📄 Serving index.html")
     return render_template('index.html')
 
 
@@ -47,7 +54,8 @@ def handle_audio(data):
         emit('state_change', {'state': 'transcribing'})
 
         # Transcribe with Whisper
-        result = whisper_model.transcribe(temp_file.name)
+        model = get_whisper_model()
+        result = model.transcribe(temp_file.name)
         text = result["text"].strip()
 
         emit('transcription', {'text': text})
@@ -96,6 +104,6 @@ if __name__ == '__main__':
     print("🎙️  CUE-VOX Web Interface")
     print("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━")
     print()
-    print("Open: http://localhost:5000")
+    print("Open: http://localhost:3000")
     print()
-    socketio.run(app, host='127.0.0.1', port=5000, debug=False)
+    socketio.run(app, host='127.0.0.1', port=3000, debug=False, allow_unsafe_werkzeug=True)

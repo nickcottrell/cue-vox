@@ -68,12 +68,36 @@
             max-width: 80%;
             text-align: center;
         }
+
+        .stop-button {
+            position: absolute;
+            bottom: 100px;
+            left: 50%;
+            transform: translateX(-50%);
+            padding: 15px 30px;
+            background: #FF0000;
+            color: white;
+            border: none;
+            border-radius: 8px;
+            font-size: 16px;
+            cursor: pointer;
+            display: none;
+        }
+
+        .stop-button:hover {
+            background: #CC0000;
+        }
+
+        .stop-button.visible {
+            display: block;
+        }
     </style>
 </head>
 <body>
     <div class="dot" id="dot"></div>
     <div class="transcript" id="transcript"></div>
     <div class="response" id="response"></div>
+    <button class="stop-button" id="stopButton">⏹ Stop Audio</button>
     <div class="info">
         Hold SPACE to talk • Release to process • Press SPACE mid-response to interrupt
     </div>
@@ -83,11 +107,18 @@
         const dot = document.getElementById('dot');
         const transcript = document.getElementById('transcript');
         const response = document.getElementById('response');
+        const stopButton = document.getElementById('stopButton');
 
         let mediaRecorder;
         let audioChunks = [];
         let isRecording = false;
         let currentState = 'idle';
+
+        // Stop button click handler
+        stopButton.addEventListener('click', () => {
+            socket.emit('interrupt');
+            stopButton.classList.remove('visible');
+        });
 
         // Initialize audio
         async function initAudio() {
@@ -156,6 +187,13 @@
         function setState(state) {
             currentState = state;
             dot.className = `dot ${state}`;
+
+            // Show stop button when speaking
+            if (state === 'speaking') {
+                stopButton.classList.add('visible');
+            } else {
+                stopButton.classList.remove('visible');
+            }
         }
 
         // Initialize on load
