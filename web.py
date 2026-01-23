@@ -61,13 +61,14 @@ def handle_audio(data):
         emit('transcription', {'text': text})
         emit('state_change', {'state': 'thinking'})
 
-        # Send to Claude Code
+        # Send to Claude Code (run from parent maestro directory)
         process = subprocess.Popen(
             ['claude'],
             stdin=subprocess.PIPE,
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
-            text=True
+            text=True,
+            cwd=Path(__file__).parent.parent
         )
         stdout, stderr = process.communicate(input=text)
         response = stdout.strip()
