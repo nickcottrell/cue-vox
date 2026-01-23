@@ -12,6 +12,8 @@ import tempfile
 from pathlib import Path
 import whisper
 import subprocess
+import threading
+from ui import VoxUI, State
 
 # Audio config
 CHUNK = 1024
@@ -28,7 +30,7 @@ class PushToTalk:
         self.is_recording = False
         self.frames = []
 
-    def start_recording(self):
+    def start_recording(self, ui=None):
         """Start audio capture"""
         self.is_recording = True
         self.frames = []
@@ -39,6 +41,8 @@ class PushToTalk:
             input=True,
             frames_per_buffer=CHUNK
         )
+        if ui:
+            ui.set_state(State.RECORDING)
         print("🎤 Recording... (release to stop)")
 
     def stop_recording(self):
@@ -73,8 +77,10 @@ class PushToTalk:
         self.audio.terminate()
 
 
-def transcribe_audio(audio_file):
+def transcribe_audio(audio_file, ui=None):
     """Transcribe audio file using Whisper"""
+    if ui:
+        ui.set_state(State.TRANSCRIBING)
     print("🔄 Transcribing...")
     model = whisper.load_model("base")  # base model for speed
     result = model.transcribe(audio_file)
@@ -83,8 +89,10 @@ def transcribe_audio(audio_file):
     return text
 
 
-def send_to_claude(text):
+def send_to_claude(text, ui=None):
     """Send text to Claude Code via stdin pipe"""
+    if ui:
+        ui.set_state(State.THINKING)
     print("🤖 Claude is thinking...")
 
     # Pipe text directly to claude command
@@ -111,8 +119,10 @@ class Speaker:
         self.process = None
         self.is_speaking = False
 
-    def speak(self, text):
+    def speak(self, text, ui=None):
         """Speak text using macOS say command"""
+        if ui:
+            ui.set_state(State.SPEAKING)
         print("🔊 Speaking...")
         self.is_speaking = True
         self.process = subprocess.Popen(
@@ -122,6 +132,8 @@ class Speaker:
         )
         self.process.wait()
         self.is_speaking = False
+        if ui:
+            ui.set_state(State.IDLE)
 
     def interrupt(self):
         """Stop current speech"""
@@ -132,57 +144,61 @@ class Speaker:
             self.is_speaking = False
 
 
-def main():
-    """Main push-to-talk loop"""
+def voice_loop(ui):
+    """Main push-to-talk loop (runs in thread)"""
     print("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━")
     print("🎙️  CUE-VOX - Voice for Claude Code")
     print("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━")
     print()
     print("Loading Whisper model...")
-    # Preload model to avoid delay on first use
     whisper.load_model("base")
     print("✅ Ready!")
     print()
     print("Hold SPACE to talk, release to process")
-    print("Press Ctrl+C to exit")
+    print("Press ESC in UI to exit")
     print()
 
     ptt = PushToTalk(hotkey='space')
     speaker = Speaker()
+    ui.set_state(State.IDLE)
 
     try:
         while True:
-            # Check for key press
             if keyboard.is_pressed('space'):
-                # Step 5: Interrupt if speaking
                 if speaker.is_speaking:
                     speaker.interrupt()
+                    ui.set_state(State.IDLE)
 
                 if not ptt.is_recording:
-                    ptt.start_recording()
+                    ptt.start_recording(ui)
                 else:
                     ptt.record_chunk()
             else:
                 if ptt.is_recording:
                     audio_file = ptt.stop_recording()
                     if audio_file:
-                        # Step 2: Transcribe with Whisper
-                        text = transcribe_audio(audio_file)
-
-                        # Step 3: Send to Claude Code
-                        response = send_to_claude(text)
+                        text = transcribe_audio(audio_file, ui)
+                        response = send_to_claude(text, ui)
                         print(f"📝 Claude: {response}")
-
-                        # Step 4: Speak response
-                        speaker.speak(response)
-
-                        # Clean up audio file
+                        speaker.speak(response, ui)
                         Path(audio_file).unlink()
 
     except KeyboardInterrupt:
         print("\n\n👋 Goodbye!")
         ptt.cleanup()
         sys.exit(0)
+
+
+def main():
+    """Launch UI and voice loop"""
+    ui = VoxUI()
+
+    # Run voice loop in background thread
+    voice_thread = threading.Thread(target=voice_loop, args=(ui,), daemon=True)
+    voice_thread.start()
+
+    # Run UI in main thread
+    ui.run()
 
 
 if __name__ == '__main__':
