@@ -12,6 +12,7 @@ import base64
 from pathlib import Path
 import io
 import wave
+import os
 
 app = Flask(__name__)
 app.config['SECRET_KEY'] = 'cue-vox-secret'
@@ -61,14 +62,16 @@ def handle_audio(data):
         emit('transcription', {'text': text})
         emit('state_change', {'state': 'thinking'})
 
-        # Send to Claude Code (run from parent maestro directory)
+        # Send to Claude Code (run from parent maestro directory if exists)
+        cwd = Path(__file__).parent.parent if (Path(__file__).parent.parent / 'cuesheets').exists() else Path(__file__).parent
+        
         process = subprocess.Popen(
             ['claude'],
             stdin=subprocess.PIPE,
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
             text=True,
-            cwd=Path(__file__).parent.parent
+            cwd=cwd
         )
         stdout, stderr = process.communicate(input=text)
         response = stdout.strip()
@@ -101,10 +104,13 @@ def handle_interrupt():
 
 
 if __name__ == '__main__':
+    # Allow port override via environment variable (default 3000)
+    port = int(os.environ.get('CUE_VOX_PORT', 3000))
+    
     print("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━")
     print("🎙️  CUE-VOX Web Interface")
     print("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━")
     print()
-    print("Open: http://localhost:3000")
+    print(f"Open: http://localhost:{port}")
     print()
-    socketio.run(app, host='127.0.0.1', port=3000, debug=False, allow_unsafe_werkzeug=True)
+    socketio.run(app, host='127.0.0.1', port=port, debug=False, allow_unsafe_werkzeug=True)

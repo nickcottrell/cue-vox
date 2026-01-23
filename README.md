@@ -92,3 +92,17 @@ See [INSTALL.md](INSTALL.md) for detailed setup instructions.
 Apache 2.0
 
 **Disclaimer:** This software is provided "AS IS" without warranty of any kind. Users assume all risks associated with its use.
+
+---
+
+## Development Mode
+
+For UI development without affecting your main workflow:
+
+```bash
+# Run dev server on port 3001
+./dev.sh
+```
+
+This runs cue-vox in standalone mode (no maestro directory dependency) for testing UI changes.
+
