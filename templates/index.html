@@ -47,16 +47,145 @@
             text-align: center;
         }
 
-        .conversation {
-            position: absolute;
-            top: 40px;
-            left: 50%;
-            transform: translateX(-50%);
-            width: 80%;
-            max-height: 300px;
-            overflow-y: auto;
+        .drawer {
+            position: fixed;
+            top: 0;
+            left: -70%;
+            width: 70%;
+            height: 100vh;
+            background: rgba(26, 26, 26, 0.70);
+            backdrop-filter: blur(10px);
+            transition: left 0.3s ease;
+            z-index: 1000;
+            overflow: hidden;
             padding: 20px;
+            padding-bottom: 0;
             box-sizing: border-box;
+            display: flex;
+            flex-direction: column;
+        }
+
+        .drawer.open {
+            left: 0;
+        }
+
+        .drawer-toggle {
+            position: fixed;
+            top: 20px;
+            left: 20px;
+            width: 40px;
+            height: 40px;
+            background: #333;
+            border: 1px solid #666;
+            border-radius: 50%;
+            cursor: pointer;
+            z-index: 1001;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            color: #fff;
+            font-size: 20px;
+            box-shadow: 0 2px 8px rgba(0, 0, 0, 0.3);
+            transition: all 0.2s;
+        }
+
+        .drawer-toggle:hover {
+            background: #444;
+            box-shadow: 0 4px 12px rgba(0, 0, 0, 0.4);
+        }
+
+        .gate-indicator {
+            position: fixed;
+            top: 18px;
+            left: 52px;
+            width: 12px;
+            height: 12px;
+            background: #00FF00;
+            border-radius: 50%;
+            z-index: 1002;
+            opacity: 0;
+            transition: opacity 0.3s ease;
+            pointer-events: none;
+        }
+
+        .gate-indicator.active {
+            opacity: 1;
+        }
+
+        .conversation {
+            flex: 1;
+            overflow-y: auto;
+            margin-bottom: 20px;
+            padding-top: 12px;
+            position: relative;
+        }
+
+        .mini-status-indicator {
+            position: absolute;
+            bottom: 80px;
+            left: 36px;
+            display: flex;
+            align-items: center;
+            gap: 8px;
+            z-index: 100;
+            pointer-events: none;
+        }
+
+        .mini-status-dot {
+            width: 16px;
+            height: 16px;
+            border-radius: 50%;
+            background: #888;
+            transition: background 0.3s;
+            flex-shrink: 0;
+        }
+
+        .mini-status-text {
+            color: #666;
+            font-size: 12px;
+        }
+
+        .mini-stop-link {
+            color: #FF4444;
+            font-size: 12px;
+            text-decoration: none;
+            cursor: pointer;
+            pointer-events: auto;
+            transition: color 0.2s;
+            display: none;
+        }
+
+        .mini-stop-link:hover {
+            color: #FF6666;
+            text-decoration: underline;
+        }
+
+        .mini-stop-link.visible {
+            display: inline;
+        }
+
+        .mini-status-dot.idle {
+            background: #888;
+        }
+
+        .mini-status-dot.recording {
+            background: #FF4444;
+            box-shadow: 0 0 8px rgba(255, 68, 68, 0.6);
+        }
+
+        .mini-status-dot.transcribing {
+            background: #FFD700;
+            box-shadow: 0 0 8px rgba(255, 215, 0, 0.6);
+        }
+
+        .mini-status-dot.thinking {
+            background: #4169E1;
+            box-shadow: 0 0 8px rgba(65, 105, 225, 0.6);
+        }
+
+        .mini-status-dot.speaking {
+            background: #00FF00;
+            box-shadow: 0 0 8px rgba(0, 255, 0, 0.6);
         }
 
         .message {
@@ -65,6 +194,54 @@
             border-radius: 8px;
             font-size: 16px;
             max-width: 70%;
+            position: relative;
+        }
+
+        .message p {
+            margin: 0 0 10px 0;
+        }
+
+        .message p:last-child {
+            margin-bottom: 0;
+        }
+
+        .message strong {
+            font-weight: bold;
+            color: #fff;
+        }
+
+        .message em {
+            font-style: italic;
+        }
+
+        .message code {
+            background: rgba(0, 0, 0, 0.3);
+            padding: 2px 6px;
+            border-radius: 3px;
+            font-family: 'Monaco', 'Courier New', monospace;
+            font-size: 14px;
+        }
+
+        .message pre {
+            background: rgba(0, 0, 0, 0.3);
+            padding: 10px;
+            border-radius: 4px;
+            overflow-x: auto;
+            margin: 10px 0;
+        }
+
+        .message pre code {
+            background: none;
+            padding: 0;
+        }
+
+        .message ul, .message ol {
+            margin: 10px 0;
+            padding-left: 20px;
+        }
+
+        .message li {
+            margin: 5px 0;
         }
 
         .message.user {
@@ -77,8 +254,15 @@
         .message.assistant {
             background: #1a1a1a;
             color: #888;
-            text-align: right;
+            text-align: left;
             margin-left: auto;
+        }
+
+        .message-timestamp {
+            font-size: 10px;
+            color: #555;
+            margin-top: 4px;
+            opacity: 0.7;
         }
 
         .stop-button {
@@ -104,6 +288,50 @@
             display: block;
         }
 
+        .button-group {
+            display: flex;
+            gap: 10px;
+            margin-top: 10px;
+        }
+
+        .yes-no-button {
+            padding: 8px 20px;
+            border: none;
+            border-radius: 6px;
+            font-size: 14px;
+            cursor: pointer;
+            transition: all 0.2s;
+        }
+
+        .yes-no-button.primary {
+            background: #00FF00;
+            color: #000;
+        }
+
+        .yes-no-button.primary:hover {
+            background: #00CC00;
+        }
+
+        .yes-no-button.secondary {
+            background: #333;
+            color: #888;
+        }
+
+        .yes-no-button.secondary:hover {
+            background: #444;
+        }
+
+        .yes-no-button:disabled {
+            opacity: 0.5;
+            cursor: not-allowed;
+        }
+
+        .selected-answer {
+            margin-top: 8px;
+            color: #888;
+            font-size: 14px;
+        }
+
         .label {
             position: absolute;
             top: 10px;
@@ -122,13 +350,128 @@
         .label:focus {
             border-bottom: 1px solid #666;
         }
+
+        .drawer-input-container {
+            display: flex;
+            gap: 10px;
+            padding: 20px;
+            padding-top: 0;
+            flex-shrink: 0;
+        }
+
+        .drawer-text-input {
+            flex: 1;
+            padding: 12px 16px;
+            background: rgba(26, 26, 26, 0.95);
+            border: 1px solid #333;
+            border-radius: 8px;
+            color: #fff;
+            font-size: 16px;
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+            outline: none;
+            resize: vertical;
+            min-height: 44px;
+            max-height: 200px;
+            line-height: 1.5;
+            word-wrap: break-word;
+            overflow-wrap: break-word;
+            white-space: pre-wrap;
+        }
+
+        .drawer-text-input:focus {
+            border-color: #666;
+        }
+
+        .drawer-text-input::placeholder {
+            color: #666;
+        }
+
+        .drawer-send-button {
+            padding: 12px 24px;
+            background: #333;
+            border: none;
+            border-radius: 8px;
+            color: #fff;
+            font-size: 16px;
+            cursor: pointer;
+            transition: background 0.2s, opacity 0.2s;
+        }
+
+        .drawer-send-button:hover {
+            background: #444;
+        }
+
+        .drawer-send-button:active {
+            background: #555;
+        }
+
+        .drawer-send-button.disabled {
+            opacity: 0.3;
+            cursor: not-allowed;
+            background: #222;
+        }
+
+        .drawer-send-button.disabled:hover {
+            background: #222;
+        }
+
+        .status-text {
+            position: absolute;
+            top: calc(50% - 80px);
+            left: 50%;
+            transform: translateX(-50%);
+            color: rgba(136, 136, 136, 0.3);
+            font-size: 12px;
+            text-align: center;
+            pointer-events: none;
+            transition: color 0.2s, font-size 0.2s;
+        }
+
+        .status-text.active {
+            color: rgba(255, 255, 255, 0.6);
+            font-size: 14px;
+        }
+
+        .drawer-overlay {
+            position: fixed;
+            top: 0;
+            left: 0;
+            width: 100%;
+            height: 100%;
+            background: transparent;
+            z-index: 999;
+            display: none;
+            cursor: pointer;
+        }
+
+        .drawer.open ~ .drawer-overlay {
+            display: block;
+        }
     </style>
 </head>
 <body>
+    <button class="drawer-toggle" id="drawerToggle">💬</button>
+    <div class="gate-indicator" id="gateIndicator"></div>
+    <div class="drawer" id="drawer">
+        <div class="conversation" id="conversation">
+        </div>
+        <div class="mini-status-indicator">
+            <div class="mini-status-dot idle" id="miniStatusDot"></div>
+            <div class="mini-status-text" id="miniStatusText">idle</div>
+            <a href="#" class="mini-stop-link" id="miniStopLink">stop audio</a>
+        </div>
+        <div class="drawer-input-container">
+            <textarea class="drawer-text-input" id="drawerTextInput" placeholder="Type a message..." rows="1"></textarea>
+            <button class="drawer-send-button" id="drawerSendButton">Send</button>
+        </div>
+    </div>
+    <div class="drawer-overlay" id="drawerOverlay"></div>
+
     <input type="text" class="label" id="label" value="cue-vox" spellcheck="false">
-    <div class="conversation" id="conversation"></div>
+    <div class="status-text" id="statusText"></div>
     <div class="dot" id="dot"></div>
     <button class="stop-button" id="stopButton">⏹ Stop Audio</button>
+
     <div class="info">
         Hold SPACE to talk • Release to process • Press SPACE mid-response to interrupt
     </div>
@@ -138,15 +481,157 @@
         const dot = document.getElementById('dot');
         const conversation = document.getElementById('conversation');
         const stopButton = document.getElementById('stopButton');
+        const drawer = document.getElementById('drawer');
+        const drawerToggle = document.getElementById('drawerToggle');
+        const drawerTextInput = document.getElementById('drawerTextInput');
+        const drawerSendButton = document.getElementById('drawerSendButton');
+        const drawerOverlay = document.getElementById('drawerOverlay');
+        const miniStatusDot = document.getElementById('miniStatusDot');
+        const miniStatusText = document.getElementById('miniStatusText');
+        const miniStopLink = document.getElementById('miniStopLink');
+        const statusText = document.getElementById('statusText');
+        const gateIndicator = document.getElementById('gateIndicator');
 
         let mediaRecorder;
         let audioChunks = [];
         let isRecording = false;
         let currentState = 'idle';
+        let yesNoQuestionPending = false;
+        let sessionStart = Date.now();
+        let recordingTimer = null;
+        let recordingStartTime = 0;
+        let activityTimer = null;
+        let activityStartTime = 0;
+        let estimatedTokens = 0;
+        const MAX_RECORDING_SECONDS = 30;
+
+        // Drawer toggle
+        drawerToggle.addEventListener('click', () => {
+            drawer.classList.toggle('open');
+        });
+
+        // Close drawer when clicking overlay
+        drawerOverlay.addEventListener('click', () => {
+            drawer.classList.remove('open');
+        });
+
+        // Update status text based on state
+        function updateStatusText(state, extraText = '') {
+            const statusMessages = {
+                'recording': 'listening...' + (extraText ? ' ' + extraText : ''),
+                'transcribing': 'transcribing audio...',
+                'thinking': 'thinking...' + (extraText ? ' ' + extraText : ''),
+                'speaking': 'speaking...',
+                'idle': 'idle' + (extraText ? ' ' + extraText : ''),
+                'waiting for button': 'click button to respond'
+            };
+            statusText.textContent = statusMessages[state] || '';
+
+            // Make status text more visible during active states
+            if (state === 'recording' || state === 'transcribing' || state === 'thinking') {
+                statusText.classList.add('active');
+            } else {
+                statusText.classList.remove('active');
+            }
+        }
+
+        // Update send button visual state
+        function updateSendButtonState() {
+            if (yesNoQuestionPending) {
+                drawerSendButton.classList.add('disabled');
+                gateIndicator.classList.add('active');
+            } else {
+                drawerSendButton.classList.remove('disabled');
+                gateIndicator.classList.remove('active');
+            }
+        }
+
+        // Format relative timestamp
+        function getRelativeTime(timestamp) {
+            const seconds = Math.floor((Date.now() - timestamp) / 1000);
+
+            if (seconds < 60) return 'just now';
+
+            const minutes = Math.floor(seconds / 60);
+            if (minutes < 60) return `${minutes}m ago`;
+
+            const hours = Math.floor(minutes / 60);
+            const remainingMinutes = minutes % 60;
+            if (hours < 24) {
+                return remainingMinutes > 0 ? `${hours}h ${remainingMinutes}m ago` : `${hours}h ago`;
+            }
+
+            const days = Math.floor(hours / 24);
+            return `${days}d ago`;
+        }
+
+        // Simple markdown to HTML converter
+        function markdownToHtml(text) {
+            // Escape HTML first
+            let html = text.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+
+            // Code blocks (```code```)
+            html = html.replace(/```([^`]+)```/g, '<pre><code>$1</code></pre>');
+
+            // Inline code (`code`)
+            html = html.replace(/`([^`]+)`/g, '<code>$1</code>');
+
+            // Bold (**text** or __text__)
+            html = html.replace(/\*\*([^*]+)\*\*/g, '<strong>$1</strong>');
+            html = html.replace(/__([^_]+)__/g, '<strong>$1</strong>');
+
+            // Italic (*text* or _text_)
+            html = html.replace(/\*([^*]+)\*/g, '<em>$1</em>');
+            html = html.replace(/_([^_]+)_/g, '<em>$1</em>');
+
+            // Line breaks
+            html = html.replace(/\n/g, '<br>');
+
+            return html;
+        }
+
+        // Drawer text input handlers
+        function sendDrawerTextMessage() {
+            if (yesNoQuestionPending) {
+                updateStatusText('waiting for button');
+                setTimeout(() => updateStatusText(currentState), 1500);
+                return;
+            }
+
+            const text = drawerTextInput.value.trim();
+            if (text) {
+                // Add to conversation immediately
+                addMessage('user', text);
+
+                // Send to server
+                socket.emit('text_message', { text: text });
+
+                // Clear input
+                drawerTextInput.value = '';
+            }
+        }
+
+        drawerSendButton.addEventListener('click', sendDrawerTextMessage);
+
+        drawerTextInput.addEventListener('keypress', (e) => {
+            if (e.key === 'Enter') {
+                e.preventDefault();
+                sendDrawerTextMessage();
+            }
+        });
 
         // Stop button click handler
         stopButton.addEventListener('click', () => {
             socket.emit('interrupt');
+            stopButton.classList.remove('visible');
+            miniStopLink.classList.remove('visible');
+        });
+
+        // Mini stop link click handler
+        miniStopLink.addEventListener('click', (e) => {
+            e.preventDefault();
+            socket.emit('interrupt');
+            miniStopLink.classList.remove('visible');
             stopButton.classList.remove('visible');
         });
 
@@ -172,8 +657,20 @@
 
         // Keyboard events
         document.addEventListener('keydown', (e) => {
+            // Don't trigger recording if user is typing in drawer text input
+            if (e.target === drawerTextInput) {
+                return;
+            }
+
             if (e.code === 'Space' && !isRecording) {
                 e.preventDefault();
+
+                // Block voice input if yes/no question is pending
+                if (yesNoQuestionPending) {
+                    updateStatusText('waiting for button');
+                    setTimeout(() => updateStatusText(currentState), 1500);
+                    return;
+                }
 
                 // Interrupt if speaking
                 if (currentState === 'speaking') {
@@ -183,15 +680,42 @@
 
                 // Start recording
                 isRecording = true;
+                recordingStartTime = Date.now();
                 setState('recording');
-                mediaRecorder.start();
+                // Use timeslice of 1000ms for better browser compatibility
+                mediaRecorder.start(1000);
+
+                // Start timer display
+                recordingTimer = setInterval(() => {
+                    const elapsed = Math.floor((Date.now() - recordingStartTime) / 1000);
+                    const remaining = MAX_RECORDING_SECONDS - elapsed;
+
+                    if (remaining < 1) {
+                        // Auto-stop at max time
+                        clearInterval(recordingTimer);
+                        isRecording = false;
+                        mediaRecorder.stop();
+                        return;
+                    }
+
+                    updateStatusText('recording', `(${remaining}s)`);
+                }, 100);
             }
         });
 
         document.addEventListener('keyup', (e) => {
+            // Don't trigger recording if user is typing in drawer text input
+            if (e.target === drawerTextInput) {
+                return;
+            }
+
             if (e.code === 'Space' && isRecording) {
                 e.preventDefault();
                 isRecording = false;
+                if (recordingTimer) {
+                    clearInterval(recordingTimer);
+                    recordingTimer = null;
+                }
                 mediaRecorder.stop();
             }
         });
@@ -206,15 +730,105 @@
         });
 
         socket.on('response', (data) => {
-            addMessage('assistant', data.text);
+            addMessage('assistant', data.text, data.yes_no);
         });
 
-        function addMessage(role, text) {
+        function addMessage(role, text, yesNoQuestion = false) {
             const message = document.createElement('div');
             message.className = `message ${role}`;
-            message.textContent = text;
+            const timestamp = Date.now();
+
+            // Store timestamp on element for later updates
+            message.dataset.timestamp = timestamp;
+
+            // Create content wrapper
+            const contentDiv = document.createElement('div');
+
+            // Check for [YES_NO: question] format
+            const yesNoMatch = text.match(/\[YES_NO:\s*(.+?)\]/);
+
+            if (yesNoMatch || yesNoQuestion) {
+                const questionText = yesNoMatch ? yesNoMatch[1] : text;
+                const cleanText = yesNoMatch ? text.replace(/\[YES_NO:\s*.+?\]/, '').trim() : '';
+
+                // Add any leading text (before the question) with markdown
+                if (cleanText) {
+                    contentDiv.innerHTML += markdownToHtml(cleanText) + '<br>';
+                }
+
+                // Add the question text (no markdown for yes/no questions)
+                const questionNode = document.createTextNode(questionText);
+                contentDiv.appendChild(questionNode);
+
+                // Create button group
+                const buttonGroup = document.createElement('div');
+                buttonGroup.className = 'button-group';
+
+                const yesButton = document.createElement('button');
+                yesButton.className = 'yes-no-button primary';
+                yesButton.textContent = 'Yes';
+                yesButton.onclick = () => handleYesNoClick(message, 'Yes', buttonGroup);
+
+                const noButton = document.createElement('button');
+                noButton.className = 'yes-no-button secondary';
+                noButton.textContent = 'No';
+                noButton.onclick = () => handleYesNoClick(message, 'No', buttonGroup);
+
+                buttonGroup.appendChild(yesButton);
+                buttonGroup.appendChild(noButton);
+                contentDiv.appendChild(buttonGroup);
+
+                // Set gating flag - block voice/text input until button is clicked
+                yesNoQuestionPending = true;
+                updateStatusText('waiting for button');
+                updateSendButtonState();
+            } else {
+                // Use markdown rendering for regular messages
+                contentDiv.innerHTML = markdownToHtml(text);
+
+                // If this is an assistant message without YES_NO pattern, clear any pending gate
+                if (role === 'assistant' && yesNoQuestionPending) {
+                    yesNoQuestionPending = false;
+                    updateStatusText('idle');
+                    updateSendButtonState();
+                }
+            }
+
+            message.appendChild(contentDiv);
+
+            // Add timestamp
+            const timestampDiv = document.createElement('div');
+            timestampDiv.className = 'message-timestamp';
+            timestampDiv.textContent = getRelativeTime(timestamp);
+            message.appendChild(timestampDiv);
+
             conversation.appendChild(message);
             conversation.scrollTop = conversation.scrollHeight;
+        }
+
+        function handleYesNoClick(messageEl, answer, buttonGroup) {
+            // Disable buttons
+            const buttons = buttonGroup.querySelectorAll('.yes-no-button');
+            buttons.forEach(btn => btn.disabled = true);
+
+            // Show selected answer with timestamp
+            const selectedDiv = document.createElement('div');
+            selectedDiv.className = 'selected-answer';
+            const selectionTime = Date.now();
+            selectedDiv.dataset.timestamp = selectionTime;
+            selectedDiv.textContent = `Selected: ${answer} (${getRelativeTime(selectionTime)})`;
+            messageEl.appendChild(selectedDiv);
+
+            // Clear gating flag - allow voice/text input again
+            yesNoQuestionPending = false;
+            updateStatusText('idle');
+            updateSendButtonState();
+
+            // Send answer as user message
+            addMessage('user', answer);
+
+            // Emit to server
+            socket.emit('button_response', { answer: answer });
         }
 
         socket.on('error', (data) => {
@@ -225,14 +839,83 @@
         function setState(state) {
             currentState = state;
             dot.className = `dot ${state}`;
+            miniStatusDot.className = `mini-status-dot ${state}`;
+            miniStatusText.textContent = state;
+            updateStatusText(state);
 
-            // Show stop button when speaking
+            // Show stop button and mini stop link when speaking
             if (state === 'speaking') {
                 stopButton.classList.add('visible');
+                miniStopLink.classList.add('visible');
             } else {
                 stopButton.classList.remove('visible');
+                miniStopLink.classList.remove('visible');
+            }
+
+            // Handle activity timer (persists across thinking/idle transitions)
+            if (state === 'thinking' || state === 'idle') {
+                // Start timer if not already running
+                if (!activityTimer) {
+                    activityStartTime = Date.now();
+                    estimatedTokens = 0;
+                    activityTimer = setInterval(() => {
+                        const elapsed = Math.floor((Date.now() - activityStartTime) / 1000);
+                        // Estimate token generation rate: ~50-100 tokens/sec during thinking
+                        if (currentState === 'thinking') {
+                            estimatedTokens += Math.floor(Math.random() * 50) + 25;
+                            const tokenStr = estimatedTokens >= 1000 ? (estimatedTokens / 1000).toFixed(1) + 'k' : estimatedTokens;
+                            updateStatusText('thinking', `(${elapsed}s) ${tokenStr} tokens`);
+                        } else if (currentState === 'idle') {
+                            updateStatusText('idle', `(${elapsed}s)`);
+                        }
+                    }, 200);
+                } else {
+                    // Timer already running - just update immediately with current state
+                    const elapsed = Math.floor((Date.now() - activityStartTime) / 1000);
+                    if (state === 'thinking') {
+                        const tokenStr = estimatedTokens >= 1000 ? (estimatedTokens / 1000).toFixed(1) + 'k' : estimatedTokens;
+                        updateStatusText('thinking', `(${elapsed}s) ${tokenStr} tokens`);
+                    } else {
+                        updateStatusText('idle', `(${elapsed}s)`);
+                    }
+                }
+            } else {
+                // Clear activity timer when leaving thinking/idle states
+                if (activityTimer) {
+                    clearInterval(activityTimer);
+                    activityTimer = null;
+                    estimatedTokens = 0;
+                }
             }
         }
+
+        // Update all relative timestamps in the conversation
+        function updateAllTimestamps() {
+            // Update message timestamps
+            const messages = document.querySelectorAll('.message[data-timestamp]');
+            messages.forEach(message => {
+                const timestamp = parseInt(message.dataset.timestamp);
+                const timestampDiv = message.querySelector('.message-timestamp');
+                if (timestampDiv) {
+                    timestampDiv.textContent = getRelativeTime(timestamp);
+                }
+            });
+
+            // Update selection timestamps
+            const selections = document.querySelectorAll('.selected-answer[data-timestamp]');
+            selections.forEach(selection => {
+                const timestamp = parseInt(selection.dataset.timestamp);
+                const text = selection.textContent;
+                // Extract the answer (Yes or No) from existing text
+                const match = text.match(/Selected: (Yes|No)/);
+                if (match) {
+                    selection.textContent = `Selected: ${match[1]} (${getRelativeTime(timestamp)})`;
+                }
+            });
+        }
+
+        // Update timestamps every 30 seconds
+        setInterval(updateAllTimestamps, 30000);
 
         // Initialize on load
         initAudio();
