@@ -332,6 +332,477 @@
             font-size: 14px;
         }
 
+        .approval-card {
+            margin-top: 15px;
+            padding: 15px;
+            background: rgba(50, 50, 50, 0.8);
+            border-left: 4px solid #FFA500;
+            border-radius: 6px;
+        }
+
+        .approval-card.action-Read {
+            border-left-color: #4169E1;
+        }
+
+        .approval-card.action-Write {
+            border-left-color: #FFD700;
+        }
+
+        .approval-card.action-Edit {
+            border-left-color: #FFA500;
+        }
+
+        .approval-card.action-Bash {
+            border-left-color: #FF4444;
+        }
+
+        .approval-header {
+            display: flex;
+            align-items: center;
+            gap: 10px;
+            margin-bottom: 10px;
+        }
+
+        .approval-icon {
+            font-size: 20px;
+        }
+
+        .approval-title {
+            font-weight: bold;
+            color: #fff;
+            font-size: 14px;
+        }
+
+        .approval-target {
+            color: #aaa;
+            font-size: 12px;
+            font-family: 'Monaco', 'Courier New', monospace;
+            margin-bottom: 8px;
+        }
+
+        .approval-description {
+            color: #ccc;
+            font-size: 14px;
+            margin-bottom: 10px;
+        }
+
+        .approval-preview {
+            background: rgba(0, 0, 0, 0.4);
+            border: 1px solid #444;
+            border-radius: 4px;
+            padding: 10px;
+            margin-bottom: 10px;
+            max-height: 200px;
+            overflow-y: auto;
+        }
+
+        .approval-preview pre {
+            margin: 0;
+            color: #ddd;
+            font-family: 'Monaco', 'Courier New', monospace;
+            font-size: 12px;
+            white-space: pre-wrap;
+            word-wrap: break-word;
+        }
+
+        .approval-preview.collapsed {
+            max-height: 60px;
+            overflow: hidden;
+            position: relative;
+        }
+
+        .approval-preview.collapsed::after {
+            content: '';
+            position: absolute;
+            bottom: 0;
+            left: 0;
+            right: 0;
+            height: 30px;
+            background: linear-gradient(to bottom, transparent, rgba(0, 0, 0, 0.4));
+        }
+
+        .approval-toggle {
+            color: #888;
+            font-size: 12px;
+            cursor: pointer;
+            text-decoration: underline;
+            margin-bottom: 10px;
+            display: inline-block;
+        }
+
+        .approval-toggle:hover {
+            color: #aaa;
+        }
+
+        .approval-buttons {
+            display: flex;
+            gap: 10px;
+        }
+
+        .approval-button {
+            flex: 1;
+            padding: 10px 20px;
+            border: none;
+            border-radius: 6px;
+            font-size: 14px;
+            font-weight: bold;
+            cursor: pointer;
+            transition: all 0.2s;
+        }
+
+        .approval-button.approve {
+            background: #00FF00;
+            color: #000;
+        }
+
+        .approval-button.approve:hover {
+            background: #00CC00;
+        }
+
+        .approval-button.deny {
+            background: #FF4444;
+            color: #fff;
+        }
+
+        .approval-button.deny:hover {
+            background: #CC0000;
+        }
+
+        .approval-button:disabled {
+            opacity: 0.5;
+            cursor: not-allowed;
+        }
+
+        .approval-decision {
+            margin-top: 10px;
+            padding: 8px 12px;
+            background: rgba(0, 0, 0, 0.3);
+            border-radius: 4px;
+            color: #888;
+            font-size: 13px;
+        }
+
+        .approval-decision.approved {
+            border-left: 3px solid #00FF00;
+        }
+
+        .approval-decision.denied {
+            border-left: 3px solid #FF4444;
+        }
+
+        /* Yes/No Card Styles (matching approval cards) */
+        .yes-no-card {
+            margin-top: 15px;
+            padding: 15px;
+            background: rgba(50, 50, 50, 0.8);
+            border-left: 4px solid #00B8D4;
+            border-radius: 6px;
+        }
+
+        .yes-no-header {
+            display: flex;
+            align-items: center;
+            gap: 10px;
+            margin-bottom: 10px;
+        }
+
+        .yes-no-icon {
+            font-size: 20px;
+        }
+
+        .yes-no-title {
+            font-weight: bold;
+            color: #fff;
+            font-size: 14px;
+        }
+
+        .yes-no-question {
+            color: #eee;
+            font-size: 14px;
+            margin-bottom: 12px;
+            line-height: 1.4;
+        }
+
+        .yes-no-buttons {
+            display: flex;
+            gap: 10px;
+        }
+
+        .yes-no-button {
+            flex: 1;
+            padding: 10px 20px;
+            border: none;
+            border-radius: 6px;
+            font-size: 14px;
+            font-weight: bold;
+            cursor: pointer;
+            transition: all 0.2s;
+        }
+
+        .yes-no-button.primary {
+            background: #00FF00;
+            color: #000;
+        }
+
+        .yes-no-button.primary:hover {
+            background: #00CC00;
+        }
+
+        .yes-no-button.secondary {
+            background: #FF4444;
+            color: #fff;
+        }
+
+        .yes-no-button.secondary:hover {
+            background: #CC0000;
+        }
+
+        .yes-no-button:disabled {
+            opacity: 0.5;
+            cursor: not-allowed;
+        }
+
+        .yes-no-decision {
+            margin-top: 10px;
+            padding: 8px 12px;
+            background: rgba(0, 0, 0, 0.3);
+            border-radius: 4px;
+            color: #888;
+            font-size: 13px;
+        }
+
+        .yes-no-decision.yes {
+            border-left: 3px solid #00FF00;
+        }
+
+        .yes-no-decision.no {
+            border-left: 3px solid #FF4444;
+        }
+
+        /* Confidence Controls */
+        .confidence-section {
+            margin-top: 12px;
+            padding: 12px;
+            background: rgba(0, 0, 0, 0.3);
+            border-radius: 4px;
+            border: 1px solid #333;
+        }
+
+        .confidence-section.collapsed {
+            display: none;
+        }
+
+        .confidence-toggle {
+            color: #888;
+            font-size: 12px;
+            cursor: pointer;
+            text-decoration: underline;
+            margin-top: 8px;
+            display: inline-block;
+        }
+
+        .confidence-toggle:hover {
+            color: #aaa;
+        }
+
+        .confidence-slider {
+            margin-bottom: 10px;
+        }
+
+        .confidence-slider-label {
+            color: #aaa;
+            font-size: 12px;
+            margin-bottom: 4px;
+            display: flex;
+            justify-content: space-between;
+        }
+
+        .confidence-slider-label .value {
+            color: #ccc;
+            font-weight: bold;
+        }
+
+        .confidence-slider input[type="range"] {
+            width: 100%;
+            height: 6px;
+            border-radius: 3px;
+            background: rgba(255, 255, 255, 0.1);
+            outline: none;
+            -webkit-appearance: none;
+        }
+
+        .confidence-slider input[type="range"]::-webkit-slider-thumb {
+            -webkit-appearance: none;
+            appearance: none;
+            width: 16px;
+            height: 16px;
+            border-radius: 50%;
+            background: #fff;
+            cursor: pointer;
+        }
+
+        .confidence-slider input[type="range"]::-moz-range-thumb {
+            width: 16px;
+            height: 16px;
+            border-radius: 50%;
+            background: #fff;
+            cursor: pointer;
+            border: none;
+        }
+
+        .color-preview {
+            height: 40px;
+            border-radius: 4px;
+            margin-top: 8px;
+            border: 1px solid #444;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            color: rgba(255, 255, 255, 0.8);
+            font-size: 11px;
+            font-family: Monaco, monospace;
+        }
+
+        .confidence-interpretation {
+            margin-top: 8px;
+            padding: 8px;
+            background: rgba(0, 0, 0, 0.2);
+            border-radius: 3px;
+            font-size: 11px;
+            color: #999;
+            line-height: 1.5;
+        }
+
+        .confidence-interpretation span {
+            color: #ccc;
+            font-weight: bold;
+        }
+
+        /* Input Cards */
+        .input-card {
+            background: rgba(26, 26, 26, 0.95);
+            border: 1px solid #333;
+            border-radius: 8px;
+            padding: 16px;
+            margin-top: 12px;
+            max-width: 500px;
+        }
+
+        .input-header {
+            display: flex;
+            align-items: center;
+            gap: 8px;
+            margin-bottom: 12px;
+            padding-bottom: 8px;
+            border-bottom: 1px solid #333;
+        }
+
+        .input-icon {
+            font-size: 18px;
+        }
+
+        .input-title {
+            color: #aaa;
+            font-size: 13px;
+            font-weight: 500;
+            text-transform: uppercase;
+            letter-spacing: 0.5px;
+        }
+
+        .input-question {
+            color: #fff;
+            font-size: 15px;
+            margin-bottom: 16px;
+            line-height: 1.4;
+        }
+
+        .input-text-area {
+            width: 100%;
+            min-height: 80px;
+            padding: 10px;
+            background: rgba(0, 0, 0, 0.3);
+            border: 1px solid #444;
+            border-radius: 4px;
+            color: #fff;
+            font-size: 14px;
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+            resize: vertical;
+            outline: none;
+        }
+
+        .input-text-area:focus {
+            border-color: #666;
+        }
+
+        .input-submit-button {
+            margin-top: 12px;
+            padding: 10px 20px;
+            background: #1a73e8;
+            color: white;
+            border: none;
+            border-radius: 4px;
+            font-size: 14px;
+            font-weight: 500;
+            cursor: pointer;
+            transition: all 0.2s;
+        }
+
+        .input-submit-button:hover {
+            background: #1557b0;
+        }
+
+        .input-submit-button:disabled {
+            background: #333;
+            color: #666;
+            cursor: not-allowed;
+        }
+
+        .choice-options {
+            display: flex;
+            flex-direction: column;
+            gap: 8px;
+        }
+
+        .choice-option {
+            padding: 12px 16px;
+            background: rgba(0, 0, 0, 0.3);
+            border: 1px solid #444;
+            border-radius: 4px;
+            color: #fff;
+            font-size: 14px;
+            cursor: pointer;
+            transition: all 0.2s;
+            display: flex;
+            align-items: center;
+            gap: 10px;
+        }
+
+        .choice-option:hover {
+            border-color: #666;
+            background: rgba(255, 255, 255, 0.05);
+        }
+
+        .choice-color-indicator {
+            width: 20px;
+            height: 20px;
+            border-radius: 3px;
+            flex-shrink: 0;
+        }
+
+        .input-response-display {
+            margin-top: 12px;
+            padding: 10px;
+            background: rgba(0, 0, 0, 0.3);
+            border-left: 3px solid #1a73e8;
+            border-radius: 3px;
+            color: #aaa;
+            font-size: 13px;
+            max-width: 100%;
+            overflow: hidden;
+            text-overflow: ellipsis;
+            white-space: nowrap;
+        }
+
         .label {
             position: absolute;
             top: 10px;
@@ -497,6 +968,7 @@
         let isRecording = false;
         let currentState = 'idle';
         let yesNoQuestionPending = false;
+        let approvalPending = false;
         let sessionStart = Date.now();
         let recordingTimer = null;
         let recordingStartTime = 0;
@@ -537,7 +1009,7 @@
 
         // Update send button visual state
         function updateSendButtonState() {
-            if (yesNoQuestionPending) {
+            if (yesNoQuestionPending || approvalPending) {
                 drawerSendButton.classList.add('disabled');
                 gateIndicator.classList.add('active');
             } else {
@@ -563,6 +1035,80 @@
 
             const days = Math.floor(hours / 24);
             return `${days}d ago`;
+        }
+
+        // HSL to Hex color conversion
+        function hslToHex(h, s, l) {
+            s = s / 100;
+            l = l / 100;
+            const c = (1 - Math.abs(2 * l - 1)) * s;
+            const x = c * (1 - Math.abs((h / 60) % 2 - 1));
+            const m = l - c / 2;
+
+            let r, g, b;
+            if (0 <= h && h < 60) {
+                r = c; g = x; b = 0;
+            } else if (60 <= h && h < 120) {
+                r = x; g = c; b = 0;
+            } else if (120 <= h && h < 180) {
+                r = 0; g = c; b = x;
+            } else if (180 <= h && h < 240) {
+                r = 0; g = x; b = c;
+            } else if (240 <= h && h < 300) {
+                r = x; g = 0; b = c;
+            } else {
+                r = c; g = 0; b = x;
+            }
+
+            r = Math.round((r + m) * 255);
+            g = Math.round((g + m) * 255);
+            b = Math.round((b + m) * 255);
+
+            return `#${r.toString(16).padStart(2, '0')}${g.toString(16).padStart(2, '0')}${b.toString(16).padStart(2, '0')}`;
+        }
+
+        // Interpret HSL values into semantic meaning
+        function interpretConfidence(h, s, l) {
+            let domain, conviction, clarity;
+
+            // Domain interpretation (hue)
+            if (0 <= h && h < 60) {
+                domain = 'urgent/time-sensitive';
+            } else if (60 <= h && h < 120) {
+                domain = 'creative/experimental';
+            } else if (120 <= h && h < 180) {
+                domain = 'safe/approved-pattern';
+            } else if (180 <= h && h < 240) {
+                domain = 'data-driven/analytical';
+            } else if (240 <= h && h < 300) {
+                domain = 'strategic/long-term';
+            } else {
+                domain = 'edge-case/exception';
+            }
+
+            // Conviction interpretation (saturation)
+            if (s > 75) {
+                conviction = 'very strong';
+            } else if (s > 50) {
+                conviction = 'moderate';
+            } else if (s > 25) {
+                conviction = 'weak';
+            } else {
+                conviction = 'uncertain';
+            }
+
+            // Clarity interpretation (lightness)
+            if (l > 70) {
+                clarity = 'very clear';
+            } else if (l > 50) {
+                clarity = 'moderately clear';
+            } else if (l > 30) {
+                clarity = 'somewhat unclear';
+            } else {
+                clarity = 'very uncertain';
+            }
+
+            return { domain, conviction, clarity };
         }
 
         // Simple markdown to HTML converter
@@ -592,7 +1138,7 @@
 
         // Drawer text input handlers
         function sendDrawerTextMessage() {
-            if (yesNoQuestionPending) {
+            if (yesNoQuestionPending || approvalPending) {
                 updateStatusText('waiting for button');
                 setTimeout(() => updateStatusText(currentState), 1500);
                 return;
@@ -665,8 +1211,8 @@
             if (e.code === 'Space' && !isRecording) {
                 e.preventDefault();
 
-                // Block voice input if yes/no question is pending
-                if (yesNoQuestionPending) {
+                // Block voice input if yes/no question or approval is pending
+                if (yesNoQuestionPending || approvalPending) {
                     updateStatusText('waiting for button');
                     setTimeout(() => updateStatusText(currentState), 1500);
                     return;
@@ -744,10 +1290,95 @@
             // Create content wrapper
             const contentDiv = document.createElement('div');
 
-            // Check for [YES_NO: question] format
-            const yesNoMatch = text.match(/\[YES_NO:\s*(.+?)\]/);
+            // Helper function to extract JSON from patterns with nested braces
+            function extractNestedJson(text, pattern) {
+                const startMatch = text.match(pattern);
+                if (!startMatch) return null;
 
-            if (yesNoMatch || yesNoQuestion) {
+                const startIndex = startMatch.index + startMatch[0].indexOf('{');
+                let braceCount = 0;
+                let endIndex = -1;
+
+                for (let i = startIndex; i < text.length; i++) {
+                    if (text[i] === '{') braceCount++;
+                    if (text[i] === '}') {
+                        braceCount--;
+                        if (braceCount === 0) {
+                            endIndex = i;
+                            break;
+                        }
+                    }
+                }
+
+                if (endIndex === -1) return null;
+
+                return {
+                    json: text.substring(startIndex, endIndex + 1),
+                    fullMatch: text.substring(startMatch.index, endIndex + 2), // Include closing ]
+                    leadingText: text.substring(0, startMatch.index).trim(),
+                    trailingText: text.substring(endIndex + 2).trim()
+                };
+            }
+
+            // Check for [INPUT: {...}] format first
+            const inputExtract = extractNestedJson(text, /\[INPUT:\s*\{/);
+
+            if (inputExtract) {
+                try {
+                    // Normalize smart quotes to straight quotes for JSON parsing
+                    const normalizedJson = inputExtract.json
+                        .replace(/[\u201C\u201D]/g, '"')  // Smart double quotes
+                        .replace(/[\u2018\u2019]/g, "'"); // Smart single quotes
+
+                    const inputData = JSON.parse(normalizedJson);
+                    const cleanText = (inputExtract.leadingText + ' ' + inputExtract.trailingText).trim();
+
+                    // Add any leading text before the input request
+                    if (cleanText) {
+                        contentDiv.innerHTML += markdownToHtml(cleanText) + '<br>';
+                    }
+
+                    // Render input card based on type
+                    renderInputCard(contentDiv, inputData, message);
+
+                    // Set gating flag - block voice/text input until answered
+                    approvalPending = true;
+                    updateStatusText('waiting for input');
+                    updateSendButtonState();
+                } catch (e) {
+                    console.error('Failed to parse INPUT JSON:', e);
+                    contentDiv.innerHTML = markdownToHtml(text);
+                }
+            }
+            // Check for [APPROVAL: {...}] format
+            else {
+                const approvalExtract = extractNestedJson(text, /\[APPROVAL:\s*\{/);
+                if (approvalExtract) {
+                    try {
+                        const approvalData = JSON.parse(approvalExtract.json);
+                        const cleanText = (approvalExtract.leadingText + ' ' + approvalExtract.trailingText).trim();
+
+                    // Add any leading text before the approval request
+                    if (cleanText) {
+                        contentDiv.innerHTML += markdownToHtml(cleanText) + '<br>';
+                    }
+
+                    // Render approval card
+                    renderApprovalCard(contentDiv, approvalData, message);
+
+                    // Set gating flag - block voice/text input until button is clicked
+                    approvalPending = true;
+                    updateStatusText('waiting for approval');
+                    updateSendButtonState();
+                } catch (e) {
+                    console.error('Failed to parse APPROVAL JSON:', e);
+                    contentDiv.innerHTML = markdownToHtml(text);
+                }
+                } else {
+                    // Check for [YES_NO: question] format
+                const yesNoMatch = text.match(/\[YES_NO:\s*(.+?)\]/);
+
+                if (yesNoMatch || yesNoQuestion) {
                 const questionText = yesNoMatch ? yesNoMatch[1] : text;
                 const cleanText = yesNoMatch ? text.replace(/\[YES_NO:\s*.+?\]/, '').trim() : '';
 
@@ -756,27 +1387,8 @@
                     contentDiv.innerHTML += markdownToHtml(cleanText) + '<br>';
                 }
 
-                // Add the question text (no markdown for yes/no questions)
-                const questionNode = document.createTextNode(questionText);
-                contentDiv.appendChild(questionNode);
-
-                // Create button group
-                const buttonGroup = document.createElement('div');
-                buttonGroup.className = 'button-group';
-
-                const yesButton = document.createElement('button');
-                yesButton.className = 'yes-no-button primary';
-                yesButton.textContent = 'Yes';
-                yesButton.onclick = () => handleYesNoClick(message, 'Yes', buttonGroup);
-
-                const noButton = document.createElement('button');
-                noButton.className = 'yes-no-button secondary';
-                noButton.textContent = 'No';
-                noButton.onclick = () => handleYesNoClick(message, 'No', buttonGroup);
-
-                buttonGroup.appendChild(yesButton);
-                buttonGroup.appendChild(noButton);
-                contentDiv.appendChild(buttonGroup);
+                // Render YES/NO card
+                renderYesNoCard(contentDiv, questionText, message);
 
                 // Set gating flag - block voice/text input until button is clicked
                 yesNoQuestionPending = true;
@@ -786,11 +1398,13 @@
                 // Use markdown rendering for regular messages
                 contentDiv.innerHTML = markdownToHtml(text);
 
-                // If this is an assistant message without YES_NO pattern, clear any pending gate
-                if (role === 'assistant' && yesNoQuestionPending) {
-                    yesNoQuestionPending = false;
-                    updateStatusText('idle');
-                    updateSendButtonState();
+                    // If this is an assistant message without YES_NO pattern, clear any pending gate
+                    if (role === 'assistant' && yesNoQuestionPending) {
+                        yesNoQuestionPending = false;
+                        updateStatusText('idle');
+                        updateSendButtonState();
+                    }
+                }
                 }
             }
 
@@ -806,18 +1420,655 @@
             conversation.scrollTop = conversation.scrollHeight;
         }
 
-        function handleYesNoClick(messageEl, answer, buttonGroup) {
+        function renderApprovalCard(contentDiv, approvalData, messageEl) {
+            const card = document.createElement('div');
+            card.className = `approval-card action-${approvalData.action || 'Unknown'}`;
+
+            // Header with icon and action
+            const header = document.createElement('div');
+            header.className = 'approval-header';
+
+            const icon = document.createElement('span');
+            icon.className = 'approval-icon';
+            icon.textContent = '🔐';
+            header.appendChild(icon);
+
+            const title = document.createElement('span');
+            title.className = 'approval-title';
+            title.textContent = `${approvalData.action || 'Action'} Request`;
+            header.appendChild(title);
+
+            card.appendChild(header);
+
+            // Target
+            if (approvalData.target) {
+                const target = document.createElement('div');
+                target.className = 'approval-target';
+                target.textContent = approvalData.target;
+                card.appendChild(target);
+            }
+
+            // Description
+            if (approvalData.description) {
+                const desc = document.createElement('div');
+                desc.className = 'approval-description';
+                desc.textContent = approvalData.description;
+                card.appendChild(desc);
+            }
+
+            // Preview
+            if (approvalData.preview) {
+                const previewContainer = document.createElement('div');
+                previewContainer.className = 'approval-preview collapsed';
+                const pre = document.createElement('pre');
+                pre.textContent = approvalData.preview;
+                previewContainer.appendChild(pre);
+                card.appendChild(previewContainer);
+
+                // Toggle for preview
+                const toggle = document.createElement('a');
+                toggle.className = 'approval-toggle';
+                toggle.textContent = 'Show full preview';
+                toggle.onclick = () => {
+                    if (previewContainer.classList.contains('collapsed')) {
+                        previewContainer.classList.remove('collapsed');
+                        toggle.textContent = 'Hide preview';
+                    } else {
+                        previewContainer.classList.add('collapsed');
+                        toggle.textContent = 'Show full preview';
+                    }
+                };
+                card.appendChild(toggle);
+            }
+
+            // Confidence Controls (collapsible)
+            const confidenceSection = renderConfidenceControls(card);
+            card.appendChild(confidenceSection);
+
+            // Confidence toggle
+            const confToggle = document.createElement('a');
+            confToggle.className = 'confidence-toggle';
+            confToggle.textContent = 'Adjust confidence';
+            confToggle.onclick = () => {
+                if (confidenceSection.classList.contains('collapsed')) {
+                    confidenceSection.classList.remove('collapsed');
+                    confToggle.textContent = 'Hide confidence';
+                } else {
+                    confidenceSection.classList.add('collapsed');
+                    confToggle.textContent = 'Adjust confidence';
+                }
+            };
+            card.appendChild(confToggle);
+
+            // Buttons
+            const buttonsDiv = document.createElement('div');
+            buttonsDiv.className = 'approval-buttons';
+
+            const approveBtn = document.createElement('button');
+            approveBtn.className = 'approval-button approve';
+            approveBtn.textContent = 'Approve';
+            approveBtn.onclick = () => handleApprovalClick(messageEl, 'Approve', approvalData, buttonsDiv, confidenceSection);
+
+            const denyBtn = document.createElement('button');
+            denyBtn.className = 'approval-button deny';
+            denyBtn.textContent = 'Deny';
+            denyBtn.onclick = () => handleApprovalClick(messageEl, 'Deny', approvalData, buttonsDiv, confidenceSection);
+
+            buttonsDiv.appendChild(approveBtn);
+            buttonsDiv.appendChild(denyBtn);
+            card.appendChild(buttonsDiv);
+
+            contentDiv.appendChild(card);
+        }
+
+        function renderConfidenceControls(card) {
+            const section = document.createElement('div');
+            section.className = 'confidence-section';
+
+            // Default values: data-driven (190°), moderate-strong (75%), clear (60%)
+            const defaultH = 190;
+            const defaultS = 75;
+            const defaultL = 60;
+
+            // Store current values
+            section.dataset.h = defaultH;
+            section.dataset.s = defaultS;
+            section.dataset.l = defaultL;
+
+            // Helper to update preview
+            const updatePreview = () => {
+                const h = parseInt(section.dataset.h);
+                const s = parseInt(section.dataset.s);
+                const l = parseInt(section.dataset.l);
+
+                const hex = hslToHex(h, s, l);
+                const interp = interpretConfidence(h, s, l);
+
+                preview.style.backgroundColor = hex;
+                preview.textContent = hex;
+
+                interpretation.innerHTML = `
+                    Domain: <span>${interp.domain}</span><br>
+                    Conviction: <span>${interp.conviction}</span><br>
+                    Clarity: <span>${interp.clarity}</span>
+                `;
+            };
+
+            // Hue slider
+            const hueSlider = document.createElement('div');
+            hueSlider.className = 'confidence-slider';
+            hueSlider.innerHTML = `
+                <div class="confidence-slider-label">
+                    <span>Domain (Hue)</span>
+                    <span class="value" id="hue-value">${defaultH}°</span>
+                </div>
+                <input type="range" min="0" max="360" value="${defaultH}" id="hue-input">
+            `;
+            const hueInput = hueSlider.querySelector('input');
+            const hueValue = hueSlider.querySelector('.value');
+            hueInput.oninput = () => {
+                section.dataset.h = hueInput.value;
+                hueValue.textContent = `${hueInput.value}°`;
+                updatePreview();
+            };
+
+            // Saturation slider
+            const satSlider = document.createElement('div');
+            satSlider.className = 'confidence-slider';
+            satSlider.innerHTML = `
+                <div class="confidence-slider-label">
+                    <span>Conviction (Saturation)</span>
+                    <span class="value" id="sat-value">${defaultS}%</span>
+                </div>
+                <input type="range" min="0" max="100" value="${defaultS}" id="sat-input">
+            `;
+            const satInput = satSlider.querySelector('input');
+            const satValue = satSlider.querySelector('.value');
+            satInput.oninput = () => {
+                section.dataset.s = satInput.value;
+                satValue.textContent = `${satInput.value}%`;
+                updatePreview();
+            };
+
+            // Lightness slider
+            const lightSlider = document.createElement('div');
+            lightSlider.className = 'confidence-slider';
+            lightSlider.innerHTML = `
+                <div class="confidence-slider-label">
+                    <span>Clarity (Lightness)</span>
+                    <span class="value" id="light-value">${defaultL}%</span>
+                </div>
+                <input type="range" min="0" max="100" value="${defaultL}" id="light-input">
+            `;
+            const lightInput = lightSlider.querySelector('input');
+            const lightValue = lightSlider.querySelector('.value');
+            lightInput.oninput = () => {
+                section.dataset.l = lightInput.value;
+                lightValue.textContent = `${lightInput.value}%`;
+                updatePreview();
+            };
+
+            // Color preview
+            const preview = document.createElement('div');
+            preview.className = 'color-preview';
+
+            // Interpretation
+            const interpretation = document.createElement('div');
+            interpretation.className = 'confidence-interpretation';
+
+            section.appendChild(hueSlider);
+            section.appendChild(satSlider);
+            section.appendChild(lightSlider);
+            section.appendChild(preview);
+            section.appendChild(interpretation);
+
+            // Initial preview update
+            updatePreview();
+
+            return section;
+        }
+
+        function renderYesNoCard(contentDiv, questionText, messageEl) {
+            const card = document.createElement('div');
+            card.className = 'yes-no-card';
+
+            // Header with icon and title
+            const header = document.createElement('div');
+            header.className = 'yes-no-header';
+
+            const icon = document.createElement('span');
+            icon.className = 'yes-no-icon';
+            icon.textContent = '❓';
+            header.appendChild(icon);
+
+            const title = document.createElement('span');
+            title.className = 'yes-no-title';
+            title.textContent = 'Confirmation Request';
+            header.appendChild(title);
+
+            card.appendChild(header);
+
+            // Question text
+            const question = document.createElement('div');
+            question.className = 'yes-no-question';
+            question.textContent = questionText;
+            card.appendChild(question);
+
+            // Buttons
+            const buttonsDiv = document.createElement('div');
+            buttonsDiv.className = 'yes-no-buttons';
+
+            const yesButton = document.createElement('button');
+            yesButton.className = 'yes-no-button primary';
+            yesButton.textContent = 'Yes';
+            yesButton.onclick = () => handleYesNoClick(messageEl, 'Yes', card, buttonsDiv);
+
+            const noButton = document.createElement('button');
+            noButton.className = 'yes-no-button secondary';
+            noButton.textContent = 'No';
+            noButton.onclick = () => handleYesNoClick(messageEl, 'No', card, buttonsDiv);
+
+            buttonsDiv.appendChild(yesButton);
+            buttonsDiv.appendChild(noButton);
+            card.appendChild(buttonsDiv);
+
+            contentDiv.appendChild(card);
+        }
+
+        // INPUT card rendering functions
+        function renderInputCard(contentDiv, inputData, message) {
+            const type = inputData.type;
+
+            if (type === 'text') {
+                renderTextInput(contentDiv, inputData, message);
+            } else if (type === 'slider') {
+                // Distinguish between VRGB (semantic metaphorical) and legacy HSL sliders
+                if (inputData.scale && inputData.scale.low && inputData.scale.high) {
+                    // VRGB slider (semantic metaphorical interface with labeled poles)
+                    renderVRGBSlider(contentDiv, inputData, message);
+                } else {
+                    // Legacy multi-dimensional HSL slider (deprecated)
+                    renderSliderInput(contentDiv, inputData, message);
+                }
+            } else if (type === 'choice') {
+                renderChoiceInput(contentDiv, inputData, message);
+            } else {
+                console.error('Unknown input type:', type);
+            }
+        }
+
+        function renderTextInput(contentDiv, inputData, message) {
+            const card = document.createElement('div');
+            card.className = 'input-card';
+
+            // Header
+            const header = document.createElement('div');
+            header.className = 'input-header';
+            const icon = document.createElement('span');
+            icon.className = 'input-icon';
+            icon.textContent = '✏️';
+            const title = document.createElement('span');
+            title.className = 'input-title';
+            title.textContent = 'Text Input';
+            header.appendChild(icon);
+            header.appendChild(title);
+            card.appendChild(header);
+
+            // Question
+            const question = document.createElement('div');
+            question.className = 'input-question';
+            question.textContent = inputData.question;
+            card.appendChild(question);
+
+            // Key label (if provided)
+            const key = inputData.key || 'input';
+            if (inputData.key) {
+                const keyLabel = document.createElement('div');
+                keyLabel.className = 'input-key-label';
+                keyLabel.textContent = `Key: ${key}`;
+                card.appendChild(keyLabel);
+            }
+
+            // Text area
+            const textarea = document.createElement('textarea');
+            textarea.className = 'input-text-area';
+            textarea.placeholder = `Enter ${key}...`;
+            card.appendChild(textarea);
+
+            // Submit button
+            const submitBtn = document.createElement('button');
+            submitBtn.className = 'input-submit-button';
+            submitBtn.textContent = 'Submit';
+            submitBtn.onclick = () => {
+                const kvPair = {
+                    key: key,
+                    value: textarea.value
+                };
+                handleInputSubmit(message, kvPair, card, submitBtn);
+            };
+            card.appendChild(submitBtn);
+
+            contentDiv.appendChild(card);
+        }
+
+        function renderSliderInput(contentDiv, inputData, message) {
+            const card = document.createElement('div');
+            card.className = 'input-card';
+
+            // Header
+            const header = document.createElement('div');
+            header.className = 'input-header';
+            const icon = document.createElement('span');
+            icon.className = 'input-icon';
+            icon.textContent = '🎨';
+            const title = document.createElement('span');
+            title.className = 'input-title';
+            title.textContent = 'HSL Slider Input';
+            header.appendChild(icon);
+            header.appendChild(title);
+            card.appendChild(header);
+
+            // Question
+            const question = document.createElement('div');
+            question.className = 'input-question';
+            question.textContent = inputData.question;
+            card.appendChild(question);
+
+            // Reuse confidence controls (they're HSL sliders)
+            const sliderSection = renderConfidenceControls(card);
+            sliderSection.classList.remove('collapsed'); // Show by default
+            card.appendChild(sliderSection);
+
+            // Submit button
+            const submitBtn = document.createElement('button');
+            submitBtn.className = 'input-submit-button';
+            submitBtn.textContent = 'Submit';
+            submitBtn.onclick = () => {
+                const h = parseInt(sliderSection.dataset.h);
+                const s = parseInt(sliderSection.dataset.s);
+                const l = parseInt(sliderSection.dataset.l);
+                const hex = hslToHex(h, s, l);
+                const interp = interpretConfidence(h, s, l);
+                const inputValue = {
+                    hsl: { h, s, l },
+                    hex: hex,
+                    interpretation: interp
+                };
+                // Include key if present (for session variables)
+                if (inputData.key) {
+                    inputValue.key = inputData.key;
+                }
+                handleInputSubmit(message, inputValue, card, submitBtn);
+            };
+            card.appendChild(submitBtn);
+
+            contentDiv.appendChild(card);
+        }
+
+        function renderVRGBSlider(contentDiv, inputData, message) {
+            const card = document.createElement('div');
+            card.className = 'input-card';
+
+            // Header
+            const header = document.createElement('div');
+            header.className = 'input-header';
+            const icon = document.createElement('span');
+            icon.className = 'input-icon';
+            icon.textContent = '📊';
+            const title = document.createElement('span');
+            title.className = 'input-title';
+            title.textContent = 'Parameter Input';
+            header.appendChild(icon);
+            header.appendChild(title);
+            card.appendChild(header);
+
+            // Question
+            const question = document.createElement('div');
+            question.className = 'input-question';
+            question.textContent = inputData.question;
+            card.appendChild(question);
+
+            // Slider container
+            const sliderContainer = document.createElement('div');
+            sliderContainer.style.padding = '20px';
+
+            // Scale labels (semantic endpoints)
+            const scaleLabels = document.createElement('div');
+            scaleLabels.style.display = 'flex';
+            scaleLabels.style.justifyContent = 'space-between';
+            scaleLabels.style.marginBottom = '10px';
+            scaleLabels.style.fontSize = '14px';
+            scaleLabels.style.color = '#666';
+
+            const lowLabel = document.createElement('span');
+            lowLabel.textContent = inputData.scale?.low || 'low';
+            const highLabel = document.createElement('span');
+            highLabel.textContent = inputData.scale?.high || 'high';
+            scaleLabels.appendChild(lowLabel);
+            scaleLabels.appendChild(highLabel);
+            sliderContainer.appendChild(scaleLabels);
+
+            // Slider input
+            const slider = document.createElement('input');
+            slider.type = 'range';
+            slider.min = '0';
+            slider.max = '100';
+            slider.value = '50';
+            slider.style.width = '100%';
+
+            // Current value display
+            const valueDisplay = document.createElement('div');
+            valueDisplay.style.textAlign = 'center';
+            valueDisplay.style.marginTop = '10px';
+            valueDisplay.style.fontSize = '18px';
+            valueDisplay.style.fontWeight = 'bold';
+            valueDisplay.textContent = '50';
+
+            // Update value display on slider change
+            slider.oninput = () => {
+                valueDisplay.textContent = slider.value;
+            };
+
+            sliderContainer.appendChild(slider);
+            sliderContainer.appendChild(valueDisplay);
+            card.appendChild(sliderContainer);
+
+            // Submit button
+            const submitBtn = document.createElement('button');
+            submitBtn.className = 'input-submit-button';
+            submitBtn.textContent = 'Submit';
+            submitBtn.onclick = () => {
+                const sliderValue = parseInt(slider.value);
+
+                // Generate simple HSL encoding from scalar value (backend encoding)
+                // Map 0-100 to hue 0-360
+                const h = Math.round(sliderValue * 3.6);
+                const s = 50;  // Fixed saturation
+                const l = 50;  // Fixed lightness
+
+                const hex = hslToHex(h, s, l);
+
+                // Create interpretation using scale labels
+                const interpretation = {
+                    domain: inputData.scale?.low || 'low',
+                    conviction: inputData.scale?.high || 'high',
+                    clarity: `${sliderValue}/100`
+                };
+
+                // Extract semantic label
+                const semanticLabel = inputData.semantic_label ||
+                                     (inputData.question ? inputData.question.toLowerCase().replace(/[^a-z0-9]/g, '_') : 'param');
+
+                const inputValue = {
+                    hsl: { h, s, l },
+                    hex: hex,
+                    interpretation: interpretation,
+                    slider_value: sliderValue,
+                    semantic_label: semanticLabel,
+                    question: inputData.question,
+                    scale: inputData.scale
+                };
+
+                handleInputSubmit(message, inputValue, card, submitBtn);
+            };
+            card.appendChild(submitBtn);
+
+            contentDiv.appendChild(card);
+        }
+
+        function renderChoiceInput(contentDiv, inputData, message) {
+            const card = document.createElement('div');
+            card.className = 'input-card';
+
+            // Header
+            const header = document.createElement('div');
+            header.className = 'input-header';
+            const icon = document.createElement('span');
+            icon.className = 'input-icon';
+            icon.textContent = '☑️';
+            const title = document.createElement('span');
+            title.className = 'input-title';
+            title.textContent = 'Multiple Choice';
+            header.appendChild(icon);
+            header.appendChild(title);
+            card.appendChild(header);
+
+            // Question
+            const question = document.createElement('div');
+            question.className = 'input-question';
+            question.textContent = inputData.question;
+            card.appendChild(question);
+
+            // Options
+            const optionsDiv = document.createElement('div');
+            optionsDiv.className = 'choice-options';
+
+            inputData.options.forEach((option, index) => {
+                const optionBtn = document.createElement('div');
+                optionBtn.className = 'choice-option';
+
+                // Color indicator (if HSL provided)
+                if (option.hsl) {
+                    const colorIndicator = document.createElement('div');
+                    colorIndicator.className = 'choice-color-indicator';
+                    const hex = hslToHex(option.hsl.h, option.hsl.s, option.hsl.l);
+                    colorIndicator.style.backgroundColor = hex;
+                    optionBtn.appendChild(colorIndicator);
+                }
+
+                // Option text
+                const optionText = document.createElement('span');
+                optionText.textContent = option.label;
+                optionBtn.appendChild(optionText);
+
+                optionBtn.onclick = () => handleChoiceClick(message, option, card, optionsDiv);
+
+                optionsDiv.appendChild(optionBtn);
+            });
+
+            card.appendChild(optionsDiv);
+            contentDiv.appendChild(card);
+        }
+
+        function handleInputSubmit(messageEl, inputValue, card, submitBtn) {
+            // Disable submit button
+            submitBtn.disabled = true;
+
+            // Show response
+            const responseDiv = document.createElement('div');
+            responseDiv.className = 'input-response-display';
+            responseDiv.textContent = `Submitted: ${typeof inputValue === 'string' ? inputValue : JSON.stringify(inputValue)}`;
+            card.appendChild(responseDiv);
+
+            // Clear gating flag
+            approvalPending = false;
+            updateStatusText('idle');
+            updateSendButtonState();
+
+            // Add user message
+            const userMessage = typeof inputValue === 'string' ? inputValue : JSON.stringify(inputValue);
+            addMessage('user', userMessage);
+
+            // Emit to server
+            socket.emit('input_response', { input: inputValue });
+        }
+
+        function handleChoiceClick(messageEl, selectedOption, card, optionsDiv) {
+            // Disable all options
+            const options = optionsDiv.querySelectorAll('.choice-option');
+            options.forEach(opt => opt.style.pointerEvents = 'none');
+
+            // Highlight selected
+            options.forEach(opt => opt.style.opacity = '0.5');
+            event.target.closest('.choice-option').style.opacity = '1';
+            event.target.closest('.choice-option').style.borderColor = '#1a73e8';
+
+            // Show response
+            const responseDiv = document.createElement('div');
+            responseDiv.className = 'input-response-display';
+            responseDiv.textContent = `Selected: ${selectedOption.label}`;
+            card.appendChild(responseDiv);
+
+            // Clear gating flag
+            approvalPending = false;
+            updateStatusText('idle');
+            updateSendButtonState();
+
+            // Add user message
+            addMessage('user', selectedOption.label);
+
+            // Emit to server
+            socket.emit('input_response', { choice: selectedOption });
+        }
+
+        function handleApprovalClick(messageEl, decision, approvalData, buttonsDiv, confidenceSection) {
             // Disable buttons
-            const buttons = buttonGroup.querySelectorAll('.yes-no-button');
+            const buttons = buttonsDiv.querySelectorAll('.approval-button');
             buttons.forEach(btn => btn.disabled = true);
 
-            // Show selected answer with timestamp
-            const selectedDiv = document.createElement('div');
-            selectedDiv.className = 'selected-answer';
+            // Show decision
+            const decisionDiv = document.createElement('div');
+            decisionDiv.className = `approval-decision ${decision.toLowerCase()}d`;
+            const timestamp = Date.now();
+            decisionDiv.dataset.timestamp = timestamp;
+            decisionDiv.textContent = `${decision}d (${getRelativeTime(timestamp)})`;
+            messageEl.querySelector('.approval-card').appendChild(decisionDiv);
+
+            // Clear gating flag - allow voice/text input again
+            approvalPending = false;
+            updateStatusText('idle');
+            updateSendButtonState();
+
+            // Add user message
+            addMessage('user', `${decision} (${approvalData.action} on ${approvalData.target})`);
+
+            // Extract confidence values from section
+            const confidence = {
+                h: parseInt(confidenceSection.dataset.h),
+                s: parseInt(confidenceSection.dataset.s),
+                l: parseInt(confidenceSection.dataset.l)
+            };
+
+            // Emit to server with confidence data
+            socket.emit('approval_response', {
+                decision: decision,
+                approval_data: approvalData,
+                confidence: confidence
+            });
+        }
+
+        function handleYesNoClick(messageEl, answer, card, buttonsDiv) {
+            // Disable buttons
+            const buttons = buttonsDiv.querySelectorAll('.yes-no-button');
+            buttons.forEach(btn => btn.disabled = true);
+
+            // Show decision in card
+            const decisionDiv = document.createElement('div');
+            decisionDiv.className = `yes-no-decision ${answer.toLowerCase()}`;
             const selectionTime = Date.now();
-            selectedDiv.dataset.timestamp = selectionTime;
-            selectedDiv.textContent = `Selected: ${answer} (${getRelativeTime(selectionTime)})`;
-            messageEl.appendChild(selectedDiv);
+            decisionDiv.dataset.timestamp = selectionTime;
+            decisionDiv.textContent = `Selected: ${answer} (${getRelativeTime(selectionTime)})`;
+            card.appendChild(decisionDiv);
 
             // Clear gating flag - allow voice/text input again
             yesNoQuestionPending = false;
