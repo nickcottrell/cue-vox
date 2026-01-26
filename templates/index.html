@@ -1485,20 +1485,20 @@
             const confidenceSection = renderConfidenceControls(card);
             card.appendChild(confidenceSection);
 
-            // Confidence toggle
-            const confToggle = document.createElement('a');
-            confToggle.className = 'confidence-toggle';
-            confToggle.textContent = 'Adjust confidence';
-            confToggle.onclick = () => {
-                if (confidenceSection.classList.contains('collapsed')) {
-                    confidenceSection.classList.remove('collapsed');
-                    confToggle.textContent = 'Hide confidence';
-                } else {
-                    confidenceSection.classList.add('collapsed');
-                    confToggle.textContent = 'Adjust confidence';
-                }
-            };
-            card.appendChild(confToggle);
+            // Confidence toggle - HIDDEN (not needed)
+            // const confToggle = document.createElement('a');
+            // confToggle.className = 'confidence-toggle';
+            // confToggle.textContent = 'Adjust confidence';
+            // confToggle.onclick = () => {
+            //     if (confidenceSection.classList.contains('collapsed')) {
+            //         confidenceSection.classList.remove('collapsed');
+            //         confToggle.textContent = 'Hide confidence';
+            //     } else {
+            //         confidenceSection.classList.add('collapsed');
+            //         confToggle.textContent = 'Adjust confidence';
+            //     }
+            // };
+            // card.appendChild(confToggle);
 
             // Buttons
             const buttonsDiv = document.createElement('div');
