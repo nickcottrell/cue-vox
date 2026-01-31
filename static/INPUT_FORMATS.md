@@ -1,10 +1,22 @@
-# CUE-VOX Structured Input Formats
+# cue-vox UI Contract: Structured Input Protocol
 
-This document describes the structured input formats supported by the cue-vox v2 frontend.
+**Version:** 1.0
+**Status:** Stable Public API
+
+This document defines the **UI contract** for cue-vox: the text-based markup format that the frontend recognizes and the responses it sends back.
 
 ## Overview
 
-The frontend can parse and render interactive UI components embedded in text messages. These components use special markup tags that the JavaScript parser detects and converts into interactive elements.
+cue-vox is a voice-enabled web UI that renders special text tags as interactive components. Any backend (Claude Code, custom LLM, etc.) can use these tags to request structured user input.
+
+**Contract:**
+- Backend sends text containing markup tags (e.g., `[YES_NO: question]`)
+- Frontend parses tags and renders interactive UI (buttons, sliders, etc.)
+- User interacts with UI
+- Frontend sends structured text response back to backend
+- Conversation continues
+
+This is a **stable, text-based protocol** - no API calls, no SDK dependencies, just text in/text out.
 
 ## YES/NO Questions
 
