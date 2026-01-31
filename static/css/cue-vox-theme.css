@@ -1,0 +1,24 @@
+/*
+ * CUE-VOX THEME
+ * Generated from VRGB Color Picker: https://d103b89icpzdo3.cloudfront.net/color-picker.html
+ *
+ * INSTRUCTIONS:
+ * 1. Visit the color picker
+ * 2. Adjust the 4 VRGB sliders to design your theme
+ * 3. Click "Export CSS"
+ * 4. Paste the generated CSS here
+ *
+ * This file contains ONLY token overrides - no layout or structure.
+ */
+
+:root {
+  /* Paste your generated theme tokens here */
+  /* Example:
+  --d1_h: 210;
+  --d1_s: 70%;
+  --d1_l: 50%;
+  --d2_l: 50;
+  --d3_l: 50;
+  --d4_l: 50;
+  */
+}
