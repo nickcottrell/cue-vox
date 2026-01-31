@@ -92,6 +92,8 @@ def sanitize_for_tts(text):
     Sanitize text for TTS by extracting question text from structured input tags.
     Prevents TTS from trying to speak raw tags like [YES_NO: ...] or [INPUT: {...}]
     """
+    print(f"[TTS DEBUG] Input text: {text[:200]}")  # Log first 200 chars
+
     # Check if entire message is a YES_NO question - extract the question text
     yes_no_match = re.match(r'^\[YES_NO:\s*(.+?)\]$', text, re.IGNORECASE)
     if yes_no_match:
@@ -133,9 +135,12 @@ def sanitize_for_tts(text):
             except:
                 result = result.replace(match.group(0), '')
 
-        return result.strip()
+        result_text = result.strip()
+        print(f"[TTS DEBUG] Sanitized to: {result_text[:200]}")
+        return result_text
 
     # No structured tags found, return original text
+    print(f"[TTS DEBUG] No tags found, returning original")
     return text
 
 def ensure_log_dir():
@@ -1122,7 +1127,10 @@ IMPORTANT: When speaking, say "Yes OR No" not "yes-no" or "yes slash no".
 
         # Speak response (sanitize for TTS)
         tts_text = sanitize_for_tts(response)
-        subprocess.run(['say', tts_text], check=True)
+        try:
+            subprocess.run(['say', tts_text], check=False, timeout=30)
+        except Exception as e:
+            print(f"[TTS ERROR] Failed to speak: {e}")
 
         # Mark speech as completed
         finish_speech()
@@ -1207,7 +1215,10 @@ IMPORTANT: When speaking, say "Yes OR No" not "yes-no" or "yes slash no"."""
 
         # Speak response (sanitize for TTS)
         tts_text = sanitize_for_tts(response)
-        subprocess.run(['say', tts_text], check=True)
+        try:
+            subprocess.run(['say', tts_text], check=False, timeout=30)
+        except Exception as e:
+            print(f"[TTS ERROR] Failed to speak: {e}")
 
         # Mark speech as completed
         finish_speech()
@@ -1296,7 +1307,10 @@ IMPORTANT: When speaking, say "Yes OR No" not "yes-no" or "yes slash no"."""
 
         # Speak response (sanitize for TTS)
         tts_text = sanitize_for_tts(response)
-        subprocess.run(['say', tts_text], check=True)
+        try:
+            subprocess.run(['say', tts_text], check=False, timeout=30)
+        except Exception as e:
+            print(f"[TTS ERROR] Failed to speak: {e}")
 
         # Mark speech as completed
         finish_speech()
@@ -1454,7 +1468,10 @@ def handle_input_response(data):
 
         # Speak response (sanitize for TTS)
         tts_text = sanitize_for_tts(response)
-        subprocess.run(['say', tts_text], check=True)
+        try:
+            subprocess.run(['say', tts_text], check=False, timeout=30)
+        except Exception as e:
+            print(f"[TTS ERROR] Failed to speak: {e}")
 
         # Mark speech as completed
         finish_speech()
@@ -1548,7 +1565,10 @@ IMPORTANT: When speaking, say "Yes OR No" not "yes-no" or "yes slash no".
 
         # Speak response (sanitize for TTS)
         tts_text = sanitize_for_tts(response)
-        subprocess.run(['say', tts_text], check=True)
+        try:
+            subprocess.run(['say', tts_text], check=False, timeout=30)
+        except Exception as e:
+            print(f"[TTS ERROR] Failed to speak: {e}")
 
         # Mark speech as completed
         finish_speech()
