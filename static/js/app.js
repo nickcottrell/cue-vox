@@ -624,10 +624,18 @@ function handleTextResponse(value, textarea, submitBtn, semanticLabel) {
   // Remove submit button
   submitBtn.remove();
 
-  // Add choice indicator
+  // Add submitted text indicator (truncated at 2 lines)
   const choiceIndicator = document.createElement('div');
-  choiceIndicator.className = 'choice-indicator';
-  choiceIndicator.textContent = 'Submitted';
+  choiceIndicator.className = 'choice-indicator choice-indicator--text';
+
+  const label = document.createElement('strong');
+  label.textContent = 'Submitted: ';
+  choiceIndicator.appendChild(label);
+
+  const textSpan = document.createElement('span');
+  textSpan.className = 'submitted-text';
+  textSpan.textContent = value;
+  choiceIndicator.appendChild(textSpan);
 
   textarea.parentNode.parentNode.appendChild(choiceIndicator);
 

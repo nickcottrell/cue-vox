@@ -207,6 +207,21 @@ body {
   text-align: right;
 }
 
+.choice-indicator--text {
+  text-align: left;
+  display: block;
+  line-height: 1.4;
+}
+
+.submitted-text {
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  word-wrap: break-word;
+}
+
 .structured-question .btn:disabled,
 .structured-question .btn.disabled {
   opacity: 0.4;
