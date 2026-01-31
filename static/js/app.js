@@ -354,6 +354,9 @@ function renderMessageContent(container, text) {
         if (inputData.type === 'slider') {
           console.log('  → Creating slider:', inputData.question);
           container.appendChild(createSemanticSlider(inputData));
+        } else if (inputData.type === 'text') {
+          console.log('  → Creating text input:', inputData.question);
+          container.appendChild(createTextInput(inputData));
         } else {
           console.warn('  ⚠️ Unknown input type:', inputData.type);
         }
@@ -558,6 +561,80 @@ function handleSliderResponse(value, slider, submitBtn, semanticLabel) {
   setPendingInput(false);
 
   // Add user message immediately (backend doesn't echo slider responses)
+  addMessage('user', response);
+}
+
+// Create text input (from JSON INPUT)
+function createTextInput(inputData) {
+  const container = document.createElement('div');
+  container.className = 'structured-question';
+
+  const question = document.createElement('p');
+  question.className = 'card__description';
+  question.textContent = inputData.question;
+  container.appendChild(question);
+
+  // Textarea container
+  const textareaContainer = document.createElement('div');
+  textareaContainer.className = 'text-input-container';
+  textareaContainer.style.marginTop = 'var(--space-md, 0.75rem)';
+
+  // Textarea input
+  const textarea = document.createElement('textarea');
+  textarea.className = 'text-input';
+  textarea.placeholder = inputData.placeholder || 'Enter your response...';
+  textarea.rows = inputData.rows || 4;
+  textarea.dataset.semanticLabel = inputData.semantic_label || '';
+
+  textareaContainer.appendChild(textarea);
+  container.appendChild(textareaContainer);
+
+  // Submit button
+  const submitBtn = document.createElement('button');
+  submitBtn.className = 'btn btn--primary';
+  submitBtn.textContent = 'Submit';
+  submitBtn.style.marginTop = 'var(--space-md, 0.75rem)';
+  submitBtn.addEventListener('click', (e) => {
+    e.stopPropagation();
+    handleTextResponse(textarea.value, textarea, submitBtn, inputData.semantic_label);
+  });
+
+  container.appendChild(submitBtn);
+
+  // Block other input when question is pending
+  setPendingInput(true);
+
+  return container;
+}
+
+// Handle text input response
+function handleTextResponse(value, textarea, submitBtn, semanticLabel) {
+  console.log('Text input response:', value, 'Label:', semanticLabel);
+
+  // Send the response (with semantic label if provided)
+  const response = semanticLabel ? `${semanticLabel}: ${value}` : value;
+  console.log('Sending response:', response);
+
+  socket.emit('text_message', { text: response });
+
+  // Disable textarea
+  textarea.disabled = true;
+  textarea.classList.add('disabled');
+
+  // Remove submit button
+  submitBtn.remove();
+
+  // Add choice indicator
+  const choiceIndicator = document.createElement('div');
+  choiceIndicator.className = 'choice-indicator';
+  choiceIndicator.textContent = 'Submitted';
+
+  textarea.parentNode.parentNode.appendChild(choiceIndicator);
+
+  // Unblock input
+  setPendingInput(false);
+
+  // Add user message immediately (backend doesn't echo text input responses)
   addMessage('user', response);
 }
 

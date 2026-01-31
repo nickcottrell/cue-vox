@@ -86,6 +86,53 @@ urgency: 75
 
 ---
 
+## Text Input (Multi-line)
+
+**Format:**
+```
+[INPUT: {
+  "type": "text",
+  "question": "question text",
+  "placeholder": "placeholder text",
+  "rows": number,
+  "semantic_label": "variable_name"
+}]
+```
+
+**Example:**
+```
+Please provide feedback: [INPUT: {
+  "type": "text",
+  "question": "What are your thoughts on this feature?",
+  "placeholder": "Enter your feedback...",
+  "rows": 5,
+  "semantic_label": "feedback"
+}]
+```
+
+**Behavior:**
+- Can be embedded in text (before/after explanatory text)
+- Renders a multi-line textarea
+- Shows placeholder text when empty
+- After submission:
+  - Textarea becomes disabled and grayed out
+  - Shows "Submitted" below
+  - Blocks other inputs until submitted
+
+**Response sent:**
+```
+feedback: User's multi-line text response here...
+```
+
+**All fields:**
+- `type`: Must be `"text"`
+- `question`: The question text displayed above the textarea
+- `placeholder`: Placeholder text shown in empty textarea (optional)
+- `rows`: Number of rows for textarea height (optional, default: 4)
+- `semantic_label`: Variable name used in response (optional)
+
+---
+
 ## Embedding Multiple Inputs
 
 You can include multiple structured tags in a single message:
