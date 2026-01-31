@@ -373,23 +373,12 @@ function renderMessageContent(container, text) {
 
   // If no structured content was found, just render as plain text
   if (!hasContent) {
-    // Check for legacy SLIDER format
-    const sliderMatch = text.match(/^\[SLIDER:\s*(?:(\d+),(\d+),(\d+(?:\.\d+)?):\s*)?(.+?)\]$/);
-    if (sliderMatch) {
-      console.log('✅ Detected legacy SLIDER format');
-      const min = sliderMatch[1] ? parseInt(sliderMatch[1]) : 0;
-      const max = sliderMatch[2] ? parseInt(sliderMatch[2]) : 100;
-      const step = sliderMatch[3] ? parseFloat(sliderMatch[3]) : 1;
-      const question = sliderMatch[4];
-      container.appendChild(createSliderQuestion(question, min, max, step));
-    } else {
-      // Plain text message
-      console.log('📄 Plain text message');
-      const p = document.createElement('p');
-      p.className = 'card__description';
-      p.textContent = text;
-      container.appendChild(p);
-    }
+    // Plain text message
+    console.log('📄 Plain text message');
+    const p = document.createElement('p');
+    p.className = 'card__description';
+    p.textContent = text;
+    container.appendChild(p);
   } else {
     // Add any remaining text after the last tag
     const textAfter = text.substring(lastIndex).trim();
@@ -472,61 +461,6 @@ function handleQuestionResponse(answer, buttonGroup) {
 
   // Add user message immediately (backend doesn't echo button responses)
   addMessage('user', answer);
-}
-
-// Create SLIDER question UI
-function createSliderQuestion(questionText, min, max, step) {
-  const container = document.createElement('div');
-  container.className = 'structured-question';
-
-  const question = document.createElement('p');
-  question.className = 'card__description';
-  question.textContent = questionText;
-  container.appendChild(question);
-
-  // Slider container
-  const sliderContainer = document.createElement('div');
-  sliderContainer.className = 'slider-container';
-  sliderContainer.style.marginTop = 'var(--space-md, 0.75rem)';
-
-  // Value display
-  const valueDisplay = document.createElement('div');
-  valueDisplay.className = 'slider-value';
-  valueDisplay.textContent = min;
-
-  // Slider input
-  const slider = document.createElement('input');
-  slider.type = 'range';
-  slider.min = min;
-  slider.max = max;
-  slider.step = step;
-  slider.value = min;
-  slider.className = 'slider-input';
-
-  // Update value display on change
-  slider.addEventListener('input', (e) => {
-    valueDisplay.textContent = e.target.value;
-  });
-
-  sliderContainer.appendChild(slider);
-  sliderContainer.appendChild(valueDisplay);
-  container.appendChild(sliderContainer);
-
-  // Submit button
-  const submitBtn = document.createElement('button');
-  submitBtn.className = 'btn btn--primary';
-  submitBtn.textContent = 'Submit';
-  submitBtn.style.marginTop = 'var(--space-md, 0.75rem)';
-  submitBtn.addEventListener('click', () => {
-    handleSliderResponse(slider.value, slider, submitBtn);
-  });
-
-  container.appendChild(submitBtn);
-
-  // Block other input when question is pending
-  setPendingInput(true);
-
-  return container;
 }
 
 // Create semantic slider (from JSON INPUT)

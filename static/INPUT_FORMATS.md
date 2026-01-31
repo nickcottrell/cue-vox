@@ -86,29 +86,6 @@ urgency: 75
 
 ---
 
-## Legacy Slider Format
-
-**Format:**
-```
-[SLIDER: min,max,step: question text]
-```
-or
-```
-[SLIDER: question text]
-```
-
-**Example:**
-```
-[SLIDER: 0,10,1: Rate this feature]
-```
-
-**Behavior:**
-- Simple numeric slider
-- Defaults: min=0, max=100, step=1
-- No scale labels
-
----
-
 ## Embedding Multiple Inputs
 
 You can include multiple structured tags in a single message:
