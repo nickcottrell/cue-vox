@@ -76,8 +76,8 @@ async function initAudio() {
 // ============================================
 
 document.addEventListener('keydown', (e) => {
-  // Don't trigger if typing in textarea
-  if (e.target === drawerTextInput) return;
+  // Don't trigger if typing in any text input or textarea
+  if (e.target === drawerTextInput || e.target.matches('textarea, input[type="text"]')) return;
 
   if (e.code === 'Space' && !isRecording) {
     e.preventDefault();
@@ -106,7 +106,8 @@ document.addEventListener('keydown', (e) => {
 });
 
 document.addEventListener('keyup', (e) => {
-  if (e.target === drawerTextInput) return;
+  // Don't trigger if typing in any text input or textarea
+  if (e.target === drawerTextInput || e.target.matches('textarea, input[type="text"]')) return;
 
   if (e.code === 'Space' && isRecording) {
     e.preventDefault();
