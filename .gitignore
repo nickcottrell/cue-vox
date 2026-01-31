@@ -34,3 +34,6 @@ Thumbs.db
 # Logs
 *.log
 logs/
+
+# Separate repos (cloned locally for development)
+claude-init/
