@@ -89,28 +89,51 @@ CONTEXT_DIR = Path(__file__).parent.parent / '.claude'
 
 def sanitize_for_tts(text):
     """
-    Sanitize text for TTS by detecting structured input tags and replacing with generic message.
+    Sanitize text for TTS by extracting question text from structured input tags.
     Prevents TTS from trying to speak raw tags like [YES_NO: ...] or [INPUT: {...}]
     """
-    # Check if entire message is a YES_NO question
-    if re.match(r'^\[YES_NO:', text, re.IGNORECASE):
-        return "Please provide input"
+    # Check if entire message is a YES_NO question - extract the question text
+    yes_no_match = re.match(r'^\[YES_NO:\s*(.+?)\]$', text, re.IGNORECASE)
+    if yes_no_match:
+        return yes_no_match.group(1).strip()
 
-    # Check if entire message is an INPUT question
-    if re.match(r'^\[INPUT:', text, re.IGNORECASE):
+    # Check if entire message is an INPUT question - extract the question from JSON
+    input_match = re.match(r'^\[INPUT:\s*(\{[\s\S]+?\})\]$', text, re.IGNORECASE)
+    if input_match:
+        try:
+            import json
+            input_data = json.loads(input_match.group(1))
+            if 'question' in input_data:
+                return input_data['question']
+        except:
+            pass
         return "Please provide input"
 
     # Check if message contains structured tags anywhere
     if re.search(r'\[YES_NO:', text, re.IGNORECASE) or re.search(r'\[INPUT:', text, re.IGNORECASE):
-        # Remove tags but keep surrounding text
-        cleaned = re.sub(r'\[YES_NO:\s*.+?\]', '', text, flags=re.IGNORECASE)
-        cleaned = re.sub(r'\[INPUT:\s*\{[\s\S]+?\}\]', '', cleaned, flags=re.IGNORECASE)
-        cleaned = cleaned.strip()
+        # Extract questions and surrounding text
+        result = text
 
-        # If nothing left after removing tags, use generic message
-        if not cleaned:
-            return "Please provide input"
-        return cleaned
+        # Extract YES_NO questions
+        yes_no_matches = re.finditer(r'\[YES_NO:\s*(.+?)\]', result, re.IGNORECASE)
+        for match in yes_no_matches:
+            question = match.group(1).strip()
+            result = result.replace(match.group(0), question)
+
+        # Extract INPUT questions
+        input_matches = re.finditer(r'\[INPUT:\s*(\{[\s\S]+?\})\]', result, re.IGNORECASE)
+        for match in input_matches:
+            try:
+                import json
+                input_data = json.loads(match.group(1))
+                if 'question' in input_data:
+                    result = result.replace(match.group(0), input_data['question'])
+                else:
+                    result = result.replace(match.group(0), '')
+            except:
+                result = result.replace(match.group(0), '')
+
+        return result.strip()
 
     # No structured tags found, return original text
     return text
