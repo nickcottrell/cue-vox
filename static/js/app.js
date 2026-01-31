@@ -597,7 +597,7 @@ function createTextInput(inputData) {
   submitBtn.style.marginTop = 'var(--space-md, 0.75rem)';
   submitBtn.addEventListener('click', (e) => {
     e.stopPropagation();
-    handleTextResponse(textarea.value, textarea, submitBtn, inputData.semantic_label);
+    handleTextResponse(textarea.value, textarea, submitBtn, inputData.semantic_label, inputData.question);
   });
 
   container.appendChild(submitBtn);
@@ -609,11 +609,18 @@ function createTextInput(inputData) {
 }
 
 // Handle text input response
-function handleTextResponse(value, textarea, submitBtn, semanticLabel) {
+function handleTextResponse(value, textarea, submitBtn, semanticLabel, question) {
   console.log('Text input response:', value, 'Label:', semanticLabel);
 
-  // Send the response (with semantic label if provided)
-  const response = semanticLabel ? `${semanticLabel}: ${value}` : value;
+  // Send the response with question context for better AI understanding
+  let response;
+  if (semanticLabel) {
+    response = `${semanticLabel}: ${value}`;
+  } else if (question) {
+    response = `[Response to "${question}"]: ${value}`;
+  } else {
+    response = value;
+  }
   console.log('Sending response:', response);
 
   socket.emit('text_message', { text: response });
