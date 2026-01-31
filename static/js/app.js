@@ -420,7 +420,7 @@ function createYesNoQuestion(questionText) {
   yesBtn.textContent = 'Yes';
   yesBtn.addEventListener('click', (e) => {
     e.stopPropagation();
-    handleQuestionResponse('Yes', buttonGroup);
+    handleQuestionResponse('Yes', buttonGroup, questionText);
   });
 
   const noBtn = document.createElement('button');
@@ -428,7 +428,7 @@ function createYesNoQuestion(questionText) {
   noBtn.textContent = 'No';
   noBtn.addEventListener('click', (e) => {
     e.stopPropagation();
-    handleQuestionResponse('No', buttonGroup);
+    handleQuestionResponse('No', buttonGroup, questionText);
   });
 
   buttonGroup.appendChild(yesBtn);
@@ -442,9 +442,10 @@ function createYesNoQuestion(questionText) {
 }
 
 // Handle question response
-function handleQuestionResponse(answer, buttonGroup) {
-  // Send the response
-  socket.emit('text_message', { text: answer });
+function handleQuestionResponse(answer, buttonGroup, questionText) {
+  // Send the response with question context
+  const response = `[Response to "${questionText}"]: ${answer}`;
+  socket.emit('text_message', { text: response });
 
   // Disable all buttons in the group
   const buttons = buttonGroup.querySelectorAll('button');
@@ -464,7 +465,7 @@ function handleQuestionResponse(answer, buttonGroup) {
   setPendingInput(false);
 
   // Add user message immediately (backend doesn't echo button responses)
-  addMessage('user', answer);
+  addMessage('user', response);
 }
 
 // Create semantic slider (from JSON INPUT)
@@ -523,7 +524,7 @@ function createSemanticSlider(inputData) {
   submitBtn.style.marginTop = 'var(--space-md, 0.75rem)';
   submitBtn.addEventListener('click', (e) => {
     e.stopPropagation();
-    handleSliderResponse(slider.value, slider, submitBtn, inputData.semantic_label);
+    handleSliderResponse(slider.value, slider, submitBtn, inputData.semantic_label, inputData.question);
   });
 
   container.appendChild(submitBtn);
@@ -535,11 +536,18 @@ function createSemanticSlider(inputData) {
 }
 
 // Handle slider response
-function handleSliderResponse(value, slider, submitBtn, semanticLabel) {
+function handleSliderResponse(value, slider, submitBtn, semanticLabel, question) {
   console.log('Slider response:', value, 'Label:', semanticLabel);
 
-  // Send the response (with semantic label if provided)
-  const response = semanticLabel ? `${semanticLabel}: ${value}` : String(value);
+  // Send the response with context
+  let response;
+  if (semanticLabel) {
+    response = `${semanticLabel}: ${value}`;
+  } else if (question) {
+    response = `[Response to "${question}"]: ${value}`;
+  } else {
+    response = String(value);
+  }
   console.log('Sending response:', response);
 
   socket.emit('text_message', { text: response });
