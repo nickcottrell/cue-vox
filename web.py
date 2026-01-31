@@ -18,6 +18,7 @@ from datetime import datetime, timedelta
 import threading
 import time
 import math
+import re
 
 app = Flask(__name__)
 app.config['SECRET_KEY'] = 'cue-vox-secret'
@@ -85,6 +86,34 @@ SCALAR_PARAM_TOKEN_EXPIRY_HOURS = 12
 # Token directories
 TOKENS_DIR = Path(__file__).parent.parent / '.claude' / 'tokens'
 CONTEXT_DIR = Path(__file__).parent.parent / '.claude'
+
+def sanitize_for_tts(text):
+    """
+    Sanitize text for TTS by detecting structured input tags and replacing with generic message.
+    Prevents TTS from trying to speak raw tags like [YES_NO: ...] or [INPUT: {...}]
+    """
+    # Check if entire message is a YES_NO question
+    if re.match(r'^\[YES_NO:', text, re.IGNORECASE):
+        return "Please provide input"
+
+    # Check if entire message is an INPUT question
+    if re.match(r'^\[INPUT:', text, re.IGNORECASE):
+        return "Please provide input"
+
+    # Check if message contains structured tags anywhere
+    if re.search(r'\[YES_NO:', text, re.IGNORECASE) or re.search(r'\[INPUT:', text, re.IGNORECASE):
+        # Remove tags but keep surrounding text
+        cleaned = re.sub(r'\[YES_NO:\s*.+?\]', '', text, flags=re.IGNORECASE)
+        cleaned = re.sub(r'\[INPUT:\s*\{[\s\S]+?\}\]', '', cleaned, flags=re.IGNORECASE)
+        cleaned = cleaned.strip()
+
+        # If nothing left after removing tags, use generic message
+        if not cleaned:
+            return "Please provide input"
+        return cleaned
+
+    # No structured tags found, return original text
+    return text
 
 def ensure_log_dir():
     LOG_DIR.mkdir(exist_ok=True)
@@ -1068,8 +1097,9 @@ IMPORTANT: When speaking, say "Yes OR No" not "yes-no" or "yes slash no".
         # Start tracking speech playback
         start_speech_tracking(response)
 
-        # Speak response
-        subprocess.run(['say', response], check=True)
+        # Speak response (sanitize for TTS)
+        tts_text = sanitize_for_tts(response)
+        subprocess.run(['say', tts_text], check=True)
 
         # Mark speech as completed
         finish_speech()
@@ -1152,8 +1182,9 @@ IMPORTANT: When speaking, say "Yes OR No" not "yes-no" or "yes slash no"."""
         # Start tracking speech playback
         start_speech_tracking(response)
 
-        # Speak response
-        subprocess.run(['say', response], check=True)
+        # Speak response (sanitize for TTS)
+        tts_text = sanitize_for_tts(response)
+        subprocess.run(['say', tts_text], check=True)
 
         # Mark speech as completed
         finish_speech()
@@ -1240,8 +1271,9 @@ IMPORTANT: When speaking, say "Yes OR No" not "yes-no" or "yes slash no"."""
         # Start tracking speech playback
         start_speech_tracking(response)
 
-        # Speak response
-        subprocess.run(['say', response], check=True)
+        # Speak response (sanitize for TTS)
+        tts_text = sanitize_for_tts(response)
+        subprocess.run(['say', tts_text], check=True)
 
         # Mark speech as completed
         finish_speech()
@@ -1397,8 +1429,9 @@ def handle_input_response(data):
         # Start tracking speech playback
         start_speech_tracking(response)
 
-        # Speak response
-        subprocess.run(['say', response], check=True)
+        # Speak response (sanitize for TTS)
+        tts_text = sanitize_for_tts(response)
+        subprocess.run(['say', tts_text], check=True)
 
         # Mark speech as completed
         finish_speech()
@@ -1490,8 +1523,9 @@ IMPORTANT: When speaking, say "Yes OR No" not "yes-no" or "yes slash no".
         # Start tracking speech playback
         start_speech_tracking(response)
 
-        # Speak response
-        subprocess.run(['say', response], check=True)
+        # Speak response (sanitize for TTS)
+        tts_text = sanitize_for_tts(response)
+        subprocess.run(['say', tts_text], check=True)
 
         # Mark speech as completed
         finish_speech()
