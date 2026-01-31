@@ -296,9 +296,10 @@ function renderMessageContent(container, text) {
   console.log('📝 Rendering message:', text.substring(0, 100) + (text.length > 100 ? '...' : ''));
   console.log('   Container children before:', container.children.length);
 
-  // Find all structured tags (YES_NO and INPUT) and sort by position
+  // Find all structured tags (YES_NO, INPUT, and APPROVAL) and sort by position
   const yesNoRegex = /\[YES_NO:\s*(.+?)\]/g;
   const inputRegex = /\[INPUT:\s*(\{[\s\S]+?\})\]/g;
+  const approvalRegex = /\[APPROVAL:\s*(\{[\s\S]+?\})\]/g;
 
   const matches = [];
   let match;
@@ -317,6 +318,16 @@ function renderMessageContent(container, text) {
   while ((match = inputRegex.exec(text)) !== null) {
     matches.push({
       type: 'INPUT',
+      index: match.index,
+      length: match[0].length,
+      data: match[1]
+    });
+  }
+
+  // Collect all APPROVAL matches
+  while ((match = approvalRegex.exec(text)) !== null) {
+    matches.push({
+      type: 'APPROVAL',
       index: match.index,
       length: match[0].length,
       data: match[1]
@@ -347,6 +358,20 @@ function renderMessageContent(container, text) {
     if (match.type === 'YES_NO') {
       console.log('  → Creating YES/NO question:', match.data);
       container.appendChild(createYesNoQuestion(match.data));
+    } else if (match.type === 'APPROVAL') {
+      try {
+        const approvalData = JSON.parse(match.data);
+        console.log('  → Parsed APPROVAL data:', approvalData);
+        container.appendChild(createApprovalGate(approvalData));
+      } catch (e) {
+        console.error('❌ Failed to parse APPROVAL JSON:', e);
+        console.error('   Raw JSON string:', match.data);
+        const p = document.createElement('p');
+        p.className = 'card__description';
+        p.textContent = `[APPROVAL: ${match.data}]`;
+        p.style.color = 'var(--error, #ff4444)';
+        container.appendChild(p);
+      }
     } else if (match.type === 'INPUT') {
       try {
         const inputData = JSON.parse(match.data);
@@ -659,6 +684,126 @@ function handleTextResponse(value, textarea, submitBtn, semanticLabel, question)
   setPendingInput(false);
 
   // Add user message immediately (backend doesn't echo text input responses)
+  addMessage('user', response);
+}
+
+// Create approval gate
+function createApprovalGate(approvalData) {
+  const container = document.createElement('div');
+  container.className = 'structured-question approval-gate';
+
+  // Title showing action and description
+  const title = document.createElement('p');
+  title.className = 'card__description approval-gate__title';
+  const actionText = approvalData.action || 'Action';
+  const descText = approvalData.description || 'Approve this action';
+  title.innerHTML = `<strong>${actionText}:</strong> ${descText}`;
+  container.appendChild(title);
+
+  // Target (if provided)
+  if (approvalData.target) {
+    const target = document.createElement('p');
+    target.className = 'card__description approval-gate__target';
+    target.textContent = `Target: ${approvalData.target}`;
+    target.style.fontSize = 'var(--font-size-sm, 0.875rem)';
+    target.style.color = 'var(--text-secondary, #888)';
+    target.style.marginTop = 'var(--space-xs, 0.25rem)';
+    container.appendChild(target);
+  }
+
+  // Preview (if provided) - truncated to 5 lines
+  if (approvalData.preview) {
+    const previewContainer = document.createElement('div');
+    previewContainer.className = 'approval-gate__preview';
+    previewContainer.style.marginTop = 'var(--space-md, 0.75rem)';
+    previewContainer.style.padding = 'var(--space-md, 0.75rem)';
+    previewContainer.style.background = 'var(--surface-secondary, rgba(255, 255, 255, 0.03))';
+    previewContainer.style.borderRadius = 'var(--radius-sm, 4px)';
+    previewContainer.style.fontSize = 'var(--font-size-sm, 0.875rem)';
+    previewContainer.style.maxHeight = '120px';
+    previewContainer.style.overflow = 'hidden';
+    previewContainer.style.position = 'relative';
+
+    const preview = document.createElement('pre');
+    preview.className = 'approval-gate__preview-text';
+    preview.style.margin = '0';
+    preview.style.whiteSpace = 'pre-wrap';
+    preview.style.wordWrap = 'break-word';
+    preview.style.fontFamily = 'monospace';
+    preview.textContent = approvalData.preview;
+    previewContainer.appendChild(preview);
+
+    container.appendChild(previewContainer);
+  }
+
+  // Button group
+  const buttonGroup = document.createElement('div');
+  buttonGroup.className = 'button-group';
+  buttonGroup.style.marginTop = 'var(--space-md, 0.75rem)';
+  buttonGroup.style.display = 'flex';
+  buttonGroup.style.gap = 'var(--space-sm, 0.5rem)';
+
+  const approveBtn = document.createElement('button');
+  approveBtn.className = 'btn btn--primary';
+  approveBtn.textContent = 'Approve';
+  approveBtn.addEventListener('click', (e) => {
+    e.stopPropagation();
+    handleApprovalResponse('Approve', buttonGroup, approvalData);
+  });
+
+  const rejectBtn = document.createElement('button');
+  rejectBtn.className = 'btn btn--secondary';
+  rejectBtn.textContent = 'Reject';
+  rejectBtn.addEventListener('click', (e) => {
+    e.stopPropagation();
+    handleApprovalResponse('Reject', buttonGroup, approvalData);
+  });
+
+  buttonGroup.appendChild(approveBtn);
+  buttonGroup.appendChild(rejectBtn);
+  container.appendChild(buttonGroup);
+
+  // Block other input when approval is pending
+  setPendingInput(true);
+
+  return container;
+}
+
+// Handle approval response
+function handleApprovalResponse(decision, buttonGroup, approvalData) {
+  console.log('Approval response:', decision, 'Data:', approvalData);
+
+  // Send the response with context
+  const actionText = approvalData.action || 'Action';
+  const descText = approvalData.description || 'action';
+  const response = `[Response to "${actionText}: ${descText}"]: ${decision}`;
+  socket.emit('text_message', { text: response });
+
+  // Disable all buttons
+  const buttons = buttonGroup.querySelectorAll('button');
+  buttons.forEach(btn => {
+    btn.disabled = true;
+    btn.style.opacity = '0.5';
+  });
+
+  // Highlight selected button
+  const selectedBtn = Array.from(buttons).find(btn => btn.textContent === decision);
+  if (selectedBtn) {
+    selectedBtn.style.opacity = '1';
+    selectedBtn.style.fontWeight = 'bold';
+  }
+
+  // Add choice indicator
+  const choiceIndicator = document.createElement('div');
+  choiceIndicator.className = 'choice-indicator';
+  choiceIndicator.style.marginTop = 'var(--space-sm, 0.5rem)';
+  choiceIndicator.innerHTML = `<strong>Decision:</strong> ${decision}`;
+  buttonGroup.parentNode.appendChild(choiceIndicator);
+
+  // Unblock input
+  setPendingInput(false);
+
+  // Add user message immediately
   addMessage('user', response);
 }
 

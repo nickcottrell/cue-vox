@@ -133,6 +133,65 @@ feedback: User's multi-line text response here...
 
 ---
 
+## Approval Gate
+
+**Format:**
+```
+[APPROVAL: {
+  "action": "action name",
+  "target": "target path or identifier",
+  "description": "what this approval is for",
+  "preview": "preview text (optional)"
+}]
+```
+
+**Example:**
+```
+[APPROVAL: {
+  "action": "Write",
+  "target": "/path/to/file.md",
+  "description": "Creating character profile",
+  "preview": "# Character Name\n\n## Background\n..."
+}]
+```
+
+**Behavior:**
+- Can be embedded in text (before/after explanatory text)
+- Renders an approval card with:
+  - Action and description as title
+  - Target path/identifier (if provided)
+  - Preview section with truncated content (if provided)
+  - Approve/Reject buttons
+- After decision:
+  - Both buttons become disabled
+  - Selected button is highlighted
+  - Shows "Decision: [Approve/Reject]" below
+  - Blocks other inputs until answered
+
+**Response sent:**
+```
+[Response to "Write: Creating character profile"]: Approve
+```
+or
+```
+[Response to "Write: Creating character profile"]: Reject
+```
+
+**All fields:**
+- `action`: Short action name (e.g., "Write", "Delete", "Execute") - shown in title
+- `target`: Path, identifier, or target of the action (optional) - shown below title
+- `description`: Human-readable description of what's being approved
+- `preview`: Preview text or content (optional) - shown in truncated preview box
+
+**Use cases:**
+- File creation/modification approval
+- Command execution approval
+- Configuration changes
+- Destructive operations
+- Any action requiring explicit user consent
+
+---
+
 ## Embedding Multiple Inputs
 
 You can include multiple structured tags in a single message:

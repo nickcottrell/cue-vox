@@ -376,6 +376,56 @@ body {
   background: var(--surface-secondary, rgba(255, 255, 255, 0.02));
 }
 
+/* Approval gate */
+.approval-gate {
+  padding: var(--space-md, 0.75rem);
+  background: var(--surface-secondary, rgba(255, 255, 255, 0.03));
+  border-left: 3px solid var(--primary, rgba(255, 255, 255, 0.3));
+  border-radius: var(--radius-sm, 4px);
+}
+
+.approval-gate__title {
+  margin: 0;
+  font-size: var(--font-size-md, 1rem);
+}
+
+.approval-gate__target {
+  margin: var(--space-xs, 0.25rem) 0 0 0;
+  font-size: var(--font-size-sm, 0.875rem);
+  color: var(--text-secondary, #888);
+}
+
+.approval-gate__preview {
+  margin-top: var(--space-md, 0.75rem);
+  padding: var(--space-md, 0.75rem);
+  background: var(--surface-secondary, rgba(255, 255, 255, 0.03));
+  border-radius: var(--radius-sm, 4px);
+  font-size: var(--font-size-sm, 0.875rem);
+  max-height: 120px;
+  overflow: hidden;
+  position: relative;
+}
+
+.approval-gate__preview::after {
+  content: '';
+  position: absolute;
+  bottom: 0;
+  left: 0;
+  right: 0;
+  height: 30px;
+  background: linear-gradient(to bottom, transparent, var(--surface-secondary, rgba(255, 255, 255, 0.03)));
+  pointer-events: none;
+}
+
+.approval-gate__preview-text {
+  margin: 0;
+  white-space: pre-wrap;
+  word-wrap: break-word;
+  font-family: monospace;
+  font-size: var(--font-size-sm, 0.875rem);
+  line-height: 1.4;
+}
+
 /* ============================================
    DRAWER STATUS
    ============================================ */
