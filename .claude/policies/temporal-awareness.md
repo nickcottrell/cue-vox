@@ -46,10 +46,36 @@ Trigger patterns (non-exhaustive):
 
 **Voice Interface Rule:** Responses will be spoken aloud. Be conversational, not computational.
 
+## Grounding Protocol
+
+**Temporal queries are GROUNDING REQUESTS** - the user is synchronizing shared reality with you.
+
+When asked about current time/date:
+
+1. **ALWAYS attempt verification FIRST**
+   ```bash
+   date
+   ```
+
+2. **If verification succeeds:**
+   - Provide the exact answer from verification
+   - DO NOT approximate or round
+   - DO NOT add uncertainty qualifiers
+
+3. **If verification fails:**
+   ```
+   ✅ "I cannot verify the current time - my verification tools are unavailable"
+   ❌ "I think it's around..."
+   ❌ "Based on our conversation, approximately..."
+   ❌ Making up an answer
+   ```
+
+**CRITICAL:** Grounding queries demand TRUTH or EXPLICIT LIMITATION, never guesses.
+
 ## Anti-Patterns (NEVER Do This)
 
-❌ "I don't have access to the current time"
-✅ Run `date` command
+❌ "I don't have access to the current time" (without attempting `date` first)
+✅ Attempt `date`, then state limitation only if it fails
 
 ❌ "This appears to be the beginning of our session"
 ✅ Check logs first: `cat cue-vox/logs/$(date +%Y-%m-%d).jsonl`
@@ -57,5 +83,8 @@ Trigger patterns (non-exhaustive):
 ❌ "I only know the date, not the time"
 ✅ Run `date` - it shows both
 
+❌ Guessing the day of week (e.g., saying "Saturday" when it's Friday)
+✅ Parse the exact output from `date` command
+
 ❌ Asking user what time it is
-✅ Check yourself with `date`
+✅ Check yourself with `date`, or state verification unavailable

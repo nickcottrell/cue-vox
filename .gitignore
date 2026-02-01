@@ -37,3 +37,8 @@ logs/
 
 # Separate repos (cloned locally for development)
 claude-init/
+
+# Runtime-generated paths (created when deployed in parent project)
+.claude/tokens/
+.claude/cue-mem
+.claude/settings.local.json

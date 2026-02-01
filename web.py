@@ -19,6 +19,23 @@ import threading
 import time
 import math
 import re
+import sys
+
+# Try to import CUE-MEM if available
+CUE_MEM_AVAILABLE = False
+try:
+    # Look for .claude/cue-mem symlink
+    parent_dir = Path(__file__).parent
+    cue_mem_lib = parent_dir / '.claude' / 'cue-mem' / 'lib'
+    if cue_mem_lib.exists():
+        sys.path.insert(0, str(cue_mem_lib))
+        from tokens import create_token as cue_mem_create_token
+        from tokens import list_tokens as cue_mem_list_tokens
+        CUE_MEM_AVAILABLE = True
+        print("✓ CUE-MEM integration enabled")
+except ImportError as e:
+    print(f"⚠️  CUE-MEM not available, using local token storage: {e}")
+    pass
 
 app = Flask(__name__)
 app.config['SECRET_KEY'] = 'cue-vox-secret'
@@ -271,6 +288,182 @@ def generate_scalar_token_id(semantic_label):
     timestamp = int(time.time())
     return f"ctx_{semantic_label}_{timestamp}"
 
+def create_text_input_token(key, value, question=None):
+    """
+    Create a persistent text input token.
+
+    Args:
+        key: Variable/parameter name
+        value: Text response from user
+        question: Optional question text that prompted this input
+
+    Returns:
+        token_id: Generated token identifier
+    """
+    ensure_tokens_dir()
+    now = datetime.now()
+
+    if CUE_MEM_AVAILABLE:
+        # Use CUE-MEM for thermal decay-based token management
+        cue_mem_token = cue_mem_create_token(
+            label=key,
+            value=value,
+            token_type='text_input',
+            visibility='shared',
+            base_temp=75,
+            tags=['text_input']
+        )
+        token_id = cue_mem_token['token_id']
+
+        # Extend CUE-MEM token with cue-vox specific metadata
+        token = {
+            **cue_mem_token,
+            'key': key,
+            'question': question or ''
+        }
+
+        print(f"✅ Created text input token via CUE-MEM: {token_id} ({key}: {value})")
+        print(f"   Temperature: {cue_mem_token['temperature']}°")
+    else:
+        # Fallback to local storage with expiry times
+        expiry = now + timedelta(hours=SCALAR_PARAM_TOKEN_EXPIRY_HOURS)
+        token_id = generate_scalar_token_id(key)
+
+        token = {
+            'token_id': token_id,
+            'type': 'text_input',
+            'key': key,
+            'value': value,
+            'question': question or '',
+            'created_at': now.isoformat(),
+            'expires_at': expiry.isoformat(),
+            'status': 'active'
+        }
+
+        # Persist to local file
+        token_file = TOKENS_DIR / f"{token_id}.json"
+        with open(token_file, 'w') as f:
+            json.dump(token, f, indent=2)
+
+        print(f"✅ Created text input token: {token_id} ({key}: {value})")
+        print(f"   Expires: {expiry.strftime('%Y-%m-%d %H:%M')}")
+
+    # Store in memory (cue-vox specific)
+    input_history[token_id] = token
+
+    # Append to daily log (cue-vox specific)
+    ensure_log_dir()
+    today = datetime.now().strftime('%Y-%m-%d')
+    log_file = LOG_DIR / f"{today}.jsonl"
+
+    log_entry = {
+        'timestamp': now.isoformat(),
+        'event': 'token_created',
+        'token': token
+    }
+
+    with open(log_file, 'a') as f:
+        f.write(json.dumps(log_entry) + '\n')
+
+    return token_id
+
+
+def create_yes_no_token(answer, question_context=None):
+    """
+    Create a persistent YES/NO response token.
+
+    Args:
+        answer: "Yes" or "No"
+        question_context: Optional question text that was asked
+
+    Returns:
+        token_id: Generated token identifier
+    """
+    ensure_tokens_dir()
+    now = datetime.now()
+
+    # Generate a meaningful label from question context if available
+    label = 'response'
+    if question_context:
+        # Extract key words from question for label
+        # Remove common question words and punctuation
+        import re
+        cleaned = re.sub(r'[^\w\s]', '', question_context.lower())
+        words = cleaned.split()
+        # Filter out common question words
+        stop_words = {'should', 'would', 'could', 'can', 'do', 'does', 'is', 'are', 'the', 'a', 'an', 'to', 'i', 'you', 'we', 'this', 'that'}
+        key_words = [w for w in words if w not in stop_words]
+        if key_words:
+            label = '_'.join(key_words[:3])  # Use first 3 key words
+
+    if CUE_MEM_AVAILABLE:
+        # Use CUE-MEM for thermal decay-based token management
+        cue_mem_token = cue_mem_create_token(
+            label=label,
+            value=answer,
+            token_type='yes_no_response',
+            visibility='shared',
+            base_temp=75,
+            tags=['yes_no', question_context or 'no_context']
+        )
+        token_id = cue_mem_token['token_id']
+
+        # Extend CUE-MEM token with cue-vox specific metadata
+        token = {
+            **cue_mem_token,
+            'answer': answer,
+            'question': question_context or ''
+        }
+
+        print(f"✅ Created YES/NO token via CUE-MEM: {token_id} ({label}: {answer})")
+        print(f"   Question: {question_context or 'N/A'}")
+        print(f"   Temperature: {cue_mem_token['temperature']}°")
+    else:
+        # Fallback to local storage with expiry times
+        expiry = now + timedelta(hours=SCALAR_PARAM_TOKEN_EXPIRY_HOURS)
+        token_id = generate_scalar_token_id(label)
+
+        token = {
+            'token_id': token_id,
+            'type': 'yes_no_response',
+            'label': label,
+            'value': answer,
+            'answer': answer,
+            'question': question_context or '',
+            'created_at': now.isoformat(),
+            'expires_at': expiry.isoformat(),
+            'status': 'active'
+        }
+
+        # Persist to local file
+        token_file = TOKENS_DIR / f"{token_id}.json"
+        with open(token_file, 'w') as f:
+            json.dump(token, f, indent=2)
+
+        print(f"✅ Created YES/NO token: {token_id} ({label}: {answer})")
+        print(f"   Question: {question_context or 'N/A'}")
+        print(f"   Expires: {expiry.strftime('%Y-%m-%d %H:%M')}")
+
+    # Store in memory (cue-vox specific)
+    input_history[token_id] = token
+
+    # Append to daily log (cue-vox specific)
+    ensure_log_dir()
+    today = datetime.now().strftime('%Y-%m-%d')
+    log_file = LOG_DIR / f"{today}.jsonl"
+
+    log_entry = {
+        'timestamp': now.isoformat(),
+        'event': 'token_created',
+        'token': token
+    }
+
+    with open(log_file, 'a') as f:
+        f.write(json.dumps(log_entry) + '\n')
+
+    return token_id
+
+
 def create_scalar_param_token(slider_value, semantic_label, hex_value, hsl_value, question=None):
     """
     Create a persistent scalar parameter token from slider input.
@@ -278,7 +471,7 @@ def create_scalar_param_token(slider_value, semantic_label, hex_value, hsl_value
     This implements the object creation pipeline for VRGB-encoded tokens.
     Tokens are stored in:
     - input_history (in-memory)
-    - .claude/tokens/{token_id}.json (persistent file)
+    - .claude/tokens/{token_id}.json (via CUE-MEM if available, or local storage)
     - logs/{date}.jsonl (appended to daily log)
 
     Args:
@@ -294,38 +487,68 @@ def create_scalar_param_token(slider_value, semantic_label, hex_value, hsl_value
     ensure_tokens_dir()
 
     now = datetime.now()
-    expiry = now + timedelta(hours=SCALAR_PARAM_TOKEN_EXPIRY_HOURS)
-
-    # Generate token ID
-    token_id = generate_scalar_token_id(semantic_label)
 
     # Map slider value to natural language
     natural_value = map_slider_to_semantic_value(slider_value, semantic_label)
 
-    # Create token object
-    token = {
-        'token_id': token_id,
-        'type': 'scalar_param',
-        'semantic_label': semantic_label,
-        'value_hex': hex_value,
-        'value_decoded': hsl_value,
-        'slider_value': slider_value,
-        'natural_value': natural_value,
-        'question': question or '',
-        'created_at': now.isoformat(),
-        'expires_at': expiry.isoformat(),
-        'status': 'active'
-    }
+    if CUE_MEM_AVAILABLE:
+        # Use CUE-MEM for thermal decay-based token management
+        cue_mem_token = cue_mem_create_token(
+            label=semantic_label,
+            value=natural_value,
+            token_type='scalar_param',
+            visibility='shared',
+            base_temp=75,
+            tags=[f'slider:{slider_value}', f'hex:{hex_value}']
+        )
+        token_id = cue_mem_token['token_id']
 
-    # Store in memory
+        # Extend CUE-MEM token with cue-vox specific metadata
+        token = {
+            **cue_mem_token,
+            'semantic_label': semantic_label,
+            'value_hex': hex_value,
+            'value_decoded': hsl_value,
+            'slider_value': slider_value,
+            'natural_value': natural_value,
+            'question': question or ''
+        }
+
+        print(f"✅ Created scalar param token via CUE-MEM: {token_id} ({semantic_label}: {natural_value})")
+        print(f"   Encoded as: {hex_value}")
+        print(f"   Temperature: {cue_mem_token['temperature']}°")
+    else:
+        # Fallback to local storage with expiry times
+        expiry = now + timedelta(hours=SCALAR_PARAM_TOKEN_EXPIRY_HOURS)
+        token_id = generate_scalar_token_id(semantic_label)
+
+        token = {
+            'token_id': token_id,
+            'type': 'scalar_param',
+            'semantic_label': semantic_label,
+            'value_hex': hex_value,
+            'value_decoded': hsl_value,
+            'slider_value': slider_value,
+            'natural_value': natural_value,
+            'question': question or '',
+            'created_at': now.isoformat(),
+            'expires_at': expiry.isoformat(),
+            'status': 'active'
+        }
+
+        # Persist to local file
+        token_file = TOKENS_DIR / f"{token_id}.json"
+        with open(token_file, 'w') as f:
+            json.dump(token, f, indent=2)
+
+        print(f"✅ Created scalar param token: {token_id} ({semantic_label}: {natural_value})")
+        print(f"   Encoded as: {hex_value}")
+        print(f"   Expires: {expiry.strftime('%Y-%m-%d %H:%M')}")
+
+    # Store in memory (cue-vox specific)
     input_history[token_id] = token
 
-    # Persist to file
-    token_file = TOKENS_DIR / f"{token_id}.json"
-    with open(token_file, 'w') as f:
-        json.dump(token, f, indent=2)
-
-    # Append to daily log
+    # Append to daily log (cue-vox specific)
     ensure_log_dir()
     today = datetime.now().strftime('%Y-%m-%d')
     log_file = LOG_DIR / f"{today}.jsonl"
@@ -338,10 +561,6 @@ def create_scalar_param_token(slider_value, semantic_label, hex_value, hsl_value
 
     with open(log_file, 'a') as f:
         f.write(json.dumps(log_entry) + '\n')
-
-    print(f"✅ Created scalar param token: {token_id} ({semantic_label}: {natural_value})")
-    print(f"   Encoded as: {hex_value}")
-    print(f"   Expires: {expiry.strftime('%Y-%m-%d %H:%M')}")
 
     return token_id
 
@@ -450,23 +669,62 @@ def cleanup_expired_tokens():
 
 def get_active_scalar_tokens():
     """
-    Get all active (non-expired) scalar parameter tokens.
+    Get all active (non-expired) structured input tokens.
+
+    Includes: scalar_param (sliders), text_input, yes_no_response
 
     Returns:
         list: Active token objects with natural language values
     """
-    check_and_expire_tokens()  # Ensure expiry status is current
-
     active_tokens = []
 
-    for token_id, token_data in input_history.items():
-        if token_data.get('type') == 'scalar_param' and token_data.get('status') == 'active':
-            active_tokens.append({
-                'label': token_data.get('semantic_label'),
-                'value': token_data.get('natural_value'),
-                'created_at': token_data.get('created_at'),
-                'token_id': token_id
-            })
+    if CUE_MEM_AVAILABLE:
+        # Use CUE-MEM to get active tokens
+        try:
+            cue_mem_tokens = cue_mem_list_tokens()
+            for token in cue_mem_tokens:
+                token_type = token.get('type')
+                # Include all structured input token types
+                if token_type in ['scalar_param', 'text_input', 'yes_no_response'] and token.get('status') == 'active':
+                    active_tokens.append({
+                        'label': token.get('label'),
+                        'value': token.get('value'),
+                        'created_at': token.get('created_at'),
+                        'token_id': token.get('token_id'),
+                        'temperature': token.get('temperature'),
+                        'type': token_type
+                    })
+        except Exception as e:
+            print(f"⚠️  Failed to read CUE-MEM tokens: {e}")
+            # Fall through to local cache
+
+    if not CUE_MEM_AVAILABLE or not active_tokens:
+        # Fallback to local in-memory cache
+        check_and_expire_tokens()  # Ensure expiry status is current
+
+        for token_id, token_data in input_history.items():
+            token_type = token_data.get('type')
+            if token_type in ['scalar_param', 'text_input', 'yes_no_response'] and token_data.get('status') == 'active':
+                # Different token types have different field names
+                if token_type == 'scalar_param':
+                    label = token_data.get('semantic_label')
+                    value = token_data.get('natural_value')
+                elif token_type == 'text_input':
+                    label = token_data.get('key')
+                    value = token_data.get('value')
+                elif token_type == 'yes_no_response':
+                    label = token_data.get('label')
+                    value = token_data.get('answer')
+                else:
+                    continue
+
+                active_tokens.append({
+                    'label': label,
+                    'value': value,
+                    'created_at': token_data.get('created_at'),
+                    'token_id': token_id,
+                    'type': token_type
+                })
 
     return active_tokens
 
@@ -1155,6 +1413,25 @@ def handle_button_response(data):
 
         answer = data['answer']  # "Yes" or "No"
 
+        # Extract question context from recent conversation
+        recent_logs = load_recent_logs(limit=5)
+        question_context = None
+        if recent_logs:
+            # Get the most recent assistant message (which likely contains the YES_NO question)
+            last_entry = recent_logs[-1]
+            last_assistant_msg = last_entry.get('assistant', '')
+            # Try to extract question from [YES_NO: ...] pattern
+            import re
+            yes_no_match = re.search(r'\[YES_NO:\s*(.+?)\]', last_assistant_msg)
+            if yes_no_match:
+                question_context = yes_no_match.group(1).strip()
+
+        # Create persistent YES/NO token
+        token_id = create_yes_no_token(
+            answer=answer,
+            question_context=question_context
+        )
+
         emit('state_change', {'state': 'thinking'})
 
         # Calculate input length for response matching
@@ -1162,7 +1439,6 @@ def handle_button_response(data):
         length_constraint = get_response_length_constraint(input_word_count)
 
         # Load recent conversation for context
-        recent_logs = load_recent_logs(limit=5)
         context = ""
         if recent_logs:
             context = "[RECENT CONVERSATION]\n"
@@ -1344,11 +1620,21 @@ def handle_input_response(data):
             if 'key' in input_data and 'value' in input_data:
                 key = input_data['key']
                 value = input_data['value']
+                question = input_data.get('question', '')
+
                 # Store as session variable
                 session_variables[key] = value
                 user_message = f"{key}={value}"
 
-                # Track in input history
+                # Create persistent text input token
+                token_id = create_text_input_token(
+                    key=key,
+                    value=value,
+                    question=question
+                )
+
+                # Track in input history (token is already stored by create_text_input_token)
+                # This is redundant but kept for backwards compatibility with local cache
                 input_history[input_id] = {
                     'type': 'text',
                     'key': key,
