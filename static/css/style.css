@@ -455,31 +455,31 @@ body {
   width: 12px;
   height: 12px;
   border-radius: 50%;
-  background: var(--text-secondary, #888);
+  background: var(--state-idle, #888);
 }
 
 .status-dot[data-state="idle"] {
-  background: var(--text-secondary, #888);
+  background: var(--state-idle, #888);
 }
 
 .status-dot[data-state="recording"] {
-  background: #ff4444;
-  box-shadow: 0 0 8px rgba(255, 68, 68, 0.6);
+  background: var(--state-recording, #ff4444);
+  box-shadow: 0 0 8px color-mix(in srgb, var(--state-recording, #ff4444) 60%, transparent);
 }
 
 .status-dot[data-state="transcribing"] {
-  background: #ffd700;
-  box-shadow: 0 0 8px rgba(255, 215, 0, 0.6);
+  background: var(--state-transcribing, #ffd700);
+  box-shadow: 0 0 8px color-mix(in srgb, var(--state-transcribing, #ffd700) 60%, transparent);
 }
 
 .status-dot[data-state="thinking"] {
-  background: #4169e1;
-  box-shadow: 0 0 8px rgba(65, 105, 225, 0.6);
+  background: var(--state-thinking, #4169e1);
+  box-shadow: 0 0 8px color-mix(in srgb, var(--state-thinking, #4169e1) 60%, transparent);
 }
 
 .status-dot[data-state="speaking"] {
-  background: #00ff00;
-  box-shadow: 0 0 8px rgba(0, 255, 0, 0.6);
+  background: var(--state-speaking, #00ff00);
+  box-shadow: 0 0 8px color-mix(in srgb, var(--state-speaking, #00ff00) 60%, transparent);
 }
 
 .status-text {
@@ -502,6 +502,7 @@ body {
   min-height: 44px;
   max-height: 200px;
   resize: vertical;
+  color: inherit;
 }
 
 .drawer-input textarea:disabled {
@@ -581,24 +582,24 @@ body {
 
 /* State colors */
 .state-dot__inner[data-state="idle"] {
-  background: #666;
-  border: 2px solid #999;
+  background: var(--state-idle, #666);
+  border: 2px solid color-mix(in srgb, var(--state-idle, #666) 50%, white);
 }
 
 .state-dot__inner[data-state="recording"] {
-  background: #ff0000;
+  background: var(--state-recording, #ff0000);
 }
 
 .state-dot__inner[data-state="transcribing"] {
-  background: #ffa500;
+  background: var(--state-transcribing, #ffa500);
 }
 
 .state-dot__inner[data-state="thinking"] {
-  background: #0080ff;
+  background: var(--state-thinking, #0080ff);
 }
 
 .state-dot__inner[data-state="speaking"] {
-  background: #00ff00;
+  background: var(--state-speaking, #00ff00);
 }
 
 /* Stop audio button under dot */

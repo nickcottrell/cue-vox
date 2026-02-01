@@ -21,4 +21,11 @@
   --d3_l: 50;
   --d4_l: 50;
   */
+
+  /* State color tokens (functional) */
+  --state-idle: #666;
+  --state-recording: #ff0000;
+  --state-transcribing: #ffa500;
+  --state-thinking: #0080ff;
+  --state-speaking: #00ff00;
 }
