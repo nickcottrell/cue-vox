@@ -8,11 +8,59 @@
     <!-- Haberdash CSS (base components + default tokens) -->
     <link rel="stylesheet" href="https://nickcottrell.github.io/haberdash/haberdash.css">
 
-    <!-- VRGB Theme (generated from color picker) -->
+    <!-- Dynamic VRGB tokens (injected by Spectra) -->
+    <style id="vrgb-tokens">/* Tokens will be injected here by JavaScript */</style>
+
+    <!-- VRGB Theme (static fallback) -->
     <link rel="stylesheet" href="/static/css/cue-vox-theme.css">
 
     <!-- Layout/Structure (cue-vox-specific) -->
     <link rel="stylesheet" href="/static/css/style.css">
+
+    <!-- Spectra Theme Loader -->
+    <script>
+        const THEME_NODE_ID = 'haberdash-ui-theme';
+        const API_BASE = 'https://zf8klzvd4k.execute-api.us-east-2.amazonaws.com/prod';
+
+        async function loadTheme() {
+            try {
+                const nodeResponse = await fetch(`${API_BASE}/api/node?node_id=${THEME_NODE_ID}`);
+                const nodeData = await nodeResponse.json();
+
+                if (nodeData.unstyled || !nodeData.vrgb) {
+                    console.log('Using default unstyled theme');
+                    return;
+                }
+
+                if (nodeData.vrgb) {
+                    const params = new URLSearchParams({
+                        d1_hsl: nodeData.vrgb.d1_hsl.join(','),
+                        d2_lab: nodeData.vrgb.d2_lab.join(','),
+                        d3_lab: nodeData.vrgb.d3_lab.join(','),
+                        d4_lab: nodeData.vrgb.d4_lab.join(',')
+                    });
+
+                    const generateResponse = await fetch(`${API_BASE}/api/generate?${params}`);
+                    const generateData = await generateResponse.json();
+
+                    if (generateData.tokens) {
+                        const cssRules = generateData.tokens.__css_rules__ || '';
+                        const tokenCSS = Object.entries(generateData.tokens)
+                            .filter(([k]) => k !== '__css_rules__')
+                            .map(([k, v]) => `${k}: ${v};`)
+                            .join(' ');
+                        const finalCSS = `:root { ${tokenCSS} }\n\n${cssRules}`;
+                        document.getElementById('vrgb-tokens').textContent = finalCSS;
+                        console.log('✓ Loaded Spectra theme');
+                    }
+                }
+            } catch (error) {
+                console.log('Using static fallback theme:', error);
+            }
+        }
+
+        loadTheme();
+    </script>
 
     <!-- Socket.IO -->
     <script src="https://cdn.socket.io/4.5.4/socket.io.min.js"></script>
