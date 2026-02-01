@@ -22,10 +22,10 @@
   --d4_l: 50;
   */
 
-  /* State color tokens (functional) */
-  --state-idle: #666;
-  --state-recording: #ff0000;
-  --state-transcribing: #ffa500;
-  --state-thinking: #0080ff;
-  --state-speaking: #00ff00;
+  /* State color tokens - derived from UI theme */
+  --state-idle: var(--text-secondary, #666);
+  --state-recording: var(--error, var(--danger, #ff0000));
+  --state-transcribing: var(--warning, #ffa500);
+  --state-thinking: var(--primary, #0080ff);
+  --state-speaking: var(--success, #00ff00);
 }
