@@ -90,7 +90,7 @@ body {
   height: 100vh;
   z-index: 1000;
   background: var(--surface, #1a1a1a);
-  opacity: 0.98;
+  opacity: 0.68;
   backdrop-filter: blur(20px);
   -webkit-backdrop-filter: blur(20px);
   transition: left 0.3s ease;
