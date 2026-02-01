@@ -16,6 +16,7 @@
 - Visual state feedback (colored dot)
 - Conversation history display
 - Interrupt capability (press SPACE during response)
+- Custom theming via [Spectra VRGB Color Picker](https://d103b89icpzdo3.cloudfront.net/color-picker.html)
 
 ---
 
@@ -78,6 +79,19 @@ See [INSTALL.md](INSTALL.md) for detailed setup instructions.
 3. **Claude CLI** → Processes transcription from parent directory (maestro)
 4. **macOS say** → Speaks response
 5. **Browser** → Updates conversation UI
+
+---
+
+## Theming
+
+Customize the interface colors using the [Spectra VRGB Color Picker](https://d103b89icpzdo3.cloudfront.net/color-picker.html).
+
+1. Open the color picker and design your theme
+2. Click "Export CSS"
+3. Paste the generated tokens into `static/css/cue-vox-theme.css`
+4. Reload the interface
+
+All UI colors, including state indicators, will update automatically to match your theme.
 
 ---
 
