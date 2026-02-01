@@ -100,6 +100,41 @@ VRGB_TOKEN_EXPIRY_HOURS = 24
 # Scalar parameter token expiry (half of active context window ~24h = 12h)
 SCALAR_PARAM_TOKEN_EXPIRY_HOURS = 12
 
+# Multi-scale rolling summary token configuration
+# Temporal pyramid: overlapping context windows at different resolutions
+SUMMARY_SCALES = {
+    'fine': {
+        'interval': 60,        # 1 minute - immediate context
+        'window': 5,           # last 5 exchanges
+        'base_temp': 90,       # hot (detailed)
+        'compression': 'light',
+        'last_created': None
+    },
+    'medium': {
+        'interval': 300,       # 5 minutes - conversation arcs
+        'window': 15,          # last 15 exchanges
+        'base_temp': 70,       # warm (moderate compression)
+        'compression': 'medium',
+        'last_created': None
+    },
+    'coarse': {
+        'interval': 1800,      # 30 minutes - session themes
+        'window': 50,          # last 50 exchanges
+        'base_temp': 50,       # cool (heavy compression)
+        'compression': 'heavy',
+        'last_created': None
+    }
+}
+
+# Token echo trail configuration
+# Meta-tokens that summarize other tokens - recursive awareness
+ECHO_INTERVAL_SECONDS = 180  # 3 minutes - echoes of the token constellation
+ECHO_BASE_TEMP = 65          # Moderate temp - already second-order compression
+last_echo_timestamp = None
+
+# In-memory token storage (fallback when CUE-MEM unavailable)
+in_memory_summary_tokens = []
+
 # Token directories
 TOKENS_DIR = Path(__file__).parent.parent / '.claude' / 'tokens'
 CONTEXT_DIR = Path(__file__).parent.parent / '.claude'
@@ -894,6 +929,14 @@ def log_conversation(user_text, assistant_text, speech_metadata=None, input_leng
     with open(log_file, 'a') as f:
         f.write(json.dumps(entry) + '\n')
 
+    # Event-driven multi-scale token generation with retrospective time-awareness
+    # Checks all scales (fine/medium/coarse) and creates tokens for any that are due
+    create_multiscale_summary_tokens()
+
+    # Create echo token - meta-token that summarizes the constellation of active tokens
+    # Creates recursive awareness where tokens become aware of tokens around them
+    create_token_echo()
+
     return log_file
 
 def cleanup_old_logs():
@@ -1048,6 +1091,392 @@ def format_logs_with_time(entries):
         formatted.append("")
 
     return "\n".join(formatted)
+
+
+def compress_conversation_chunk(entries, compression_level='light'):
+    """
+    Compress conversation entries into a concise summary.
+    Compression level determines how "baked" the summary is.
+
+    Args:
+        entries: List of conversation log entries
+        compression_level: 'light' (recent), 'medium' (aging), 'heavy' (old/baked)
+
+    Returns:
+        Compressed text suitable for thermal token storage.
+    """
+    if not entries:
+        return None
+
+    compressed_lines = []
+
+    if compression_level == 'heavy':
+        # Heavy "baked" compression for old memories
+        # Extract only key themes, ultra-condensed
+        topics = set()
+        for entry in entries:
+            user = entry.get('user', '')[:40]
+            if len(user) > 5:  # Skip very short inputs
+                topics.add(user)
+
+        return "Topics: " + "; ".join(list(topics)[:3])
+
+    elif compression_level == 'medium':
+        # Medium compression - key exchanges only
+        for entry in entries:
+            user = entry.get('user', '')[:50]
+            assistant = entry.get('assistant', '')[:60]
+            compressed_lines.append(f"U: {user} | A: {assistant}")
+
+        return "\n".join(compressed_lines)
+
+    else:  # 'light' - recent, less baked
+        # Light compression - preserve more detail
+        for entry in entries:
+            t_rel = entry.get('t_relative', '')
+            user = entry.get('user', '')[:80]
+            assistant = entry.get('assistant', '')[:100]
+            compressed_lines.append(f"{t_rel}: U: {user} | A: {assistant}")
+
+        return "\n".join(compressed_lines)
+
+
+def create_multiscale_summary_tokens():
+    """
+    Event-driven multi-scale token generation with retrospective time-awareness.
+
+    Checks all temporal scales (fine/medium/coarse) and creates tokens for any
+    that are due based on elapsed time since their last creation.
+
+    Called after each conversation exchange - piggybacks on the submit/respond cycle.
+    No background threads needed - time is checked retrospectively.
+
+    Returns list of created token IDs.
+    """
+    global in_memory_summary_tokens
+
+    now = datetime.now()
+    created_tokens = []
+
+    # Check each scale retrospectively
+    for scale_name, config in SUMMARY_SCALES.items():
+        # Check if this scale is due
+        last_created = config['last_created']
+        interval = config['interval']
+
+        if last_created is None or (now - last_created).total_seconds() >= interval:
+            # This scale is due - create token
+            token_id = create_scale_token(scale_name, config, now)
+            if token_id:
+                created_tokens.append((scale_name, token_id))
+                # Update last_created timestamp
+                config['last_created'] = now
+
+    return created_tokens
+
+
+def create_scale_token(scale_name, config, now):
+    """
+    Create a single thermal token for a specific temporal scale.
+
+    Args:
+        scale_name: 'fine', 'medium', or 'coarse'
+        config: Scale configuration dict
+        now: Current datetime
+
+    Returns token_id if created, None otherwise.
+    """
+    global in_memory_summary_tokens
+
+    # Load exchanges for this scale's window
+    recent_logs = load_recent_logs(limit=config['window'])
+
+    if not recent_logs or len(recent_logs) < 2:
+        return None  # Not enough activity
+
+    # Compress with this scale's compression level
+    summary_text = compress_conversation_chunk(recent_logs, compression_level=config['compression'])
+
+    if not summary_text:
+        return None
+
+    # Use this scale's base temperature
+    temperature = config['base_temp']
+
+    # Create CUE-MEM token if available
+    if CUE_MEM_AVAILABLE:
+        try:
+            token_id = cue_mem_create_token(
+                label=f"conv_{scale_name}_{int(now.timestamp())}",
+                value=summary_text,
+                base_temp=temperature,
+                token_type='conversation_summary',
+                visibility='local',
+                tags=['rolling_summary', 'context', scale_name],
+                metadata={
+                    'scale': scale_name,
+                    'window': config['window'],
+                    'exchanges': len(recent_logs),
+                    'created_at': now.isoformat()
+                }
+            )
+
+            print(f"✓ Created {scale_name} scale token: {token_id} (temp={temperature}°, {len(recent_logs)} exchanges)")
+            return token_id
+
+        except Exception as e:
+            print(f"⚠️  Failed to create {scale_name} scale token: {e}")
+            return None
+
+    # Fallback: Use in-memory storage
+    token_id = f"conv_{scale_name}_{int(now.timestamp())}"
+    in_memory_summary_tokens.append({
+        'token_id': token_id,
+        'label': token_id,
+        'value': summary_text,
+        'temperature': temperature,
+        'type': 'conversation_summary',
+        'status': 'active',
+        'scale': scale_name,
+        'created_at': now.isoformat(),
+        'metadata': {
+            'scale': scale_name,
+            'window': config['window'],
+            'exchanges': len(recent_logs)
+        }
+    })
+
+    print(f"✓ Created in-memory {scale_name} scale token: {token_id} (temp={temperature}°, {len(recent_logs)} exchanges)")
+    return token_id
+
+
+def create_token_echo():
+    """
+    Create an echo token - a meta-token that summarizes the constellation of active summary tokens.
+
+    This creates recursive awareness where tokens become aware of tokens around them.
+    With thermal decay, echoes preserve the essence of cooling/fading tokens.
+
+    Called after multi-scale token generation (piggyback on conversation cycle).
+    Returns echo_token_id if created, None otherwise.
+    """
+    global last_echo_timestamp, in_memory_summary_tokens
+
+    now = datetime.now()
+
+    # Check if enough time has elapsed for echo
+    if last_echo_timestamp:
+        elapsed = (now - last_echo_timestamp).total_seconds()
+        if elapsed < ECHO_INTERVAL_SECONDS:
+            return None  # Too soon for echo
+
+    # Get all active conversation summary tokens
+    active_tokens = []
+    summarized_token_ids = []
+
+    if CUE_MEM_AVAILABLE:
+        try:
+            all_tokens = cue_mem_list_tokens()
+            active_tokens = [
+                t for t in all_tokens
+                if t.get('type') == 'conversation_summary' and t.get('status') == 'active'
+            ]
+            summarized_token_ids = [t.get('token_id') or t.get('label') for t in active_tokens]
+        except Exception as e:
+            print(f"⚠️  Failed to list tokens for echo: {e}")
+            return None
+    else:
+        # Use in-memory storage
+        active_tokens = [
+            t for t in in_memory_summary_tokens
+            if t.get('type') == 'conversation_summary' and t.get('status') == 'active'
+        ]
+        summarized_token_ids = [t.get('token_id') for t in active_tokens]
+
+    if len(active_tokens) < 2:
+        return None  # Need at least 2 tokens to create meaningful echo
+
+    # Create meta-summary of the token constellation
+    echo_lines = []
+    for token in sorted(active_tokens, key=lambda t: t.get('temperature', 0), reverse=True):
+        scale = token.get('scale', token.get('metadata', {}).get('scale', 'unknown'))
+        temp = token.get('temperature', 0)
+        value = token.get('value', '')[:100]  # Truncate for meta-summary
+        echo_lines.append(f"[{scale}@{temp}°]: {value}")
+
+    echo_text = "Token Constellation:\n" + "\n".join(echo_lines)
+
+    # Create echo token
+    if CUE_MEM_AVAILABLE:
+        try:
+            echo_id = cue_mem_create_token(
+                label=f"echo_{int(now.timestamp())}",
+                value=echo_text,
+                base_temp=ECHO_BASE_TEMP,
+                token_type='token_echo',
+                visibility='local',
+                tags=['echo', 'meta_awareness'],
+                metadata={
+                    'echo_of': summarized_token_ids,
+                    'token_count': len(active_tokens),
+                    'created_at': now.isoformat()
+                }
+            )
+
+            last_echo_timestamp = now
+            print(f"✓ Created token echo: {echo_id} (temp={ECHO_BASE_TEMP}°, {len(active_tokens)} tokens)")
+            return echo_id
+
+        except Exception as e:
+            print(f"⚠️  Failed to create token echo: {e}")
+            return None
+
+    # Fallback: in-memory storage
+    echo_id = f"echo_{int(now.timestamp())}"
+    in_memory_summary_tokens.append({
+        'token_id': echo_id,
+        'label': echo_id,
+        'value': echo_text,
+        'temperature': ECHO_BASE_TEMP,
+        'type': 'token_echo',
+        'status': 'active',
+        'created_at': now.isoformat(),
+        'metadata': {
+            'echo_of': summarized_token_ids,
+            'token_count': len(active_tokens)
+        }
+    })
+
+    last_echo_timestamp = now
+    print(f"✓ Created in-memory token echo: {echo_id} (temp={ECHO_BASE_TEMP}°, {len(active_tokens)} tokens)")
+    return echo_id
+
+
+def get_conversation_summary_context():
+    """
+    Get formatted context from active conversation summary tokens.
+    Displays summaries with thermal-based baking levels:
+    - Hot (>85°): Fresh, detailed
+    - Warm (60-85°): Medium compression
+    - Cool (<60°): Baked, highly distilled
+
+    Returns string to inject into Claude prompt.
+    """
+    # Use in-memory storage if CUE-MEM unavailable
+    if not CUE_MEM_AVAILABLE:
+        if not in_memory_summary_tokens:
+            return ""
+
+        # Filter conversation summary tokens and echo tokens separately
+        summary_tokens = [
+            t for t in in_memory_summary_tokens
+            if t.get('type') == 'conversation_summary' and t.get('status') == 'active'
+        ]
+        echo_tokens = [
+            t for t in in_memory_summary_tokens
+            if t.get('type') == 'token_echo' and t.get('status') == 'active'
+        ]
+
+        if not summary_tokens and not echo_tokens:
+            return ""
+
+        context_lines = ["[CONVERSATION SUMMARY - Multi-Scale Temporal Pyramid with Echo Trail]"]
+        context_lines.append("")
+
+        # Sort summaries by temperature (hottest first)
+        summary_tokens.sort(key=lambda t: t.get('temperature', 0), reverse=True)
+
+        # Display conversation summaries
+        if summary_tokens:
+            context_lines.append("## Conversation Summaries:")
+            for token in summary_tokens[:10]:
+                temp = token.get('temperature', 0)
+                value = token.get('value', '')
+                scale = token.get('scale', token.get('metadata', {}).get('scale', 'unknown'))
+
+                if temp > 85:
+                    baking = "fresh"
+                elif temp > 60:
+                    baking = "settling"
+                else:
+                    baking = "baked"
+
+                context_lines.append(f"[{scale}] ({baking} | {temp}°) {value}")
+                context_lines.append("")
+
+        # Display echo tokens (meta-awareness layer)
+        if echo_tokens:
+            echo_tokens.sort(key=lambda t: t.get('temperature', 0), reverse=True)
+            context_lines.append("## Token Echoes (Meta-Awareness):")
+            for echo in echo_tokens[:3]:  # Limit to 3 most recent echoes
+                temp = echo.get('temperature', 0)
+                value = echo.get('value', '')
+                token_count = echo.get('metadata', {}).get('token_count', 0)
+
+                context_lines.append(f"[echo | {temp}° | {token_count} tokens] {value}")
+                context_lines.append("")
+
+        return "\n".join(context_lines) + "\n"
+
+    try:
+        # Get all active tokens from CUE-MEM
+        all_tokens = cue_mem_list_tokens()
+
+        # Filter conversation summary tokens and echo tokens separately
+        summary_tokens = [
+            t for t in all_tokens
+            if t.get('type') == 'conversation_summary' and t.get('status') == 'active'
+        ]
+        echo_tokens = [
+            t for t in all_tokens
+            if t.get('type') == 'token_echo' and t.get('status') == 'active'
+        ]
+
+        if not summary_tokens and not echo_tokens:
+            return ""
+
+        context_lines = ["[CONVERSATION SUMMARY - Multi-Scale Temporal Pyramid with Echo Trail]"]
+        context_lines.append("")
+
+        # Display conversation summaries
+        if summary_tokens:
+            # Sort by temperature (hottest first = most recent)
+            summary_tokens.sort(key=lambda t: t.get('temperature', 0), reverse=True)
+
+            context_lines.append("## Conversation Summaries:")
+            for token in summary_tokens[:10]:  # Limit to 10 most recent across all scales
+                temp = token.get('temperature', 0)
+                value = token.get('value', '')
+                scale = token.get('scale', token.get('metadata', {}).get('scale', 'unknown'))
+
+                # Determine baking level based on thermal temperature
+                if temp > 85:
+                    baking = "fresh"
+                elif temp > 60:
+                    baking = "settling"
+                else:
+                    baking = "baked"
+
+                context_lines.append(f"[{scale}] ({baking} | {temp}°) {value}")
+                context_lines.append("")
+
+        # Display echo tokens (meta-awareness layer)
+        if echo_tokens:
+            echo_tokens.sort(key=lambda t: t.get('temperature', 0), reverse=True)
+            context_lines.append("## Token Echoes (Meta-Awareness):")
+            for echo in echo_tokens[:3]:  # Limit to 3 most recent echoes
+                temp = echo.get('temperature', 0)
+                value = echo.get('value', '')
+                token_count = echo.get('metadata', {}).get('token_count', 0)
+
+                context_lines.append(f"[echo | {temp}° | {token_count} tokens] {value}")
+                context_lines.append("")
+
+        return "\n".join(context_lines) + "\n"
+
+    except Exception as e:
+        print(f"⚠️  Failed to load summary context: {e}")
+        return ""
 
 
 def get_input_word_count(text):
@@ -1325,13 +1754,14 @@ def handle_audio(data):
         # Inject temporal context if query is time-related
         enhanced_text = inject_temporal_context(text)
 
-        # Inject speech consumption, variables, and input history context
+        # Inject speech consumption, variables, input history, and rolling summary context
         speech_context = get_speech_consumption_context()
         variables_context = get_variables_context()
         input_history_context = get_input_history_context()
+        summary_context = get_conversation_summary_context()
 
         # Add yes/no button and approval instructions to ALL prompts
-        enhanced_text = f"""{speech_context}{variables_context}{input_history_context}{length_constraint}[VOICE INTERFACE INSTRUCTIONS]
+        enhanced_text = f"""{summary_context}{speech_context}{variables_context}{input_history_context}{length_constraint}[VOICE INTERFACE INSTRUCTIONS]
 When you need confirmation, format your response like this:
 [YES_NO: your question here]
 
@@ -1451,9 +1881,10 @@ def handle_button_response(data):
         speech_context = get_speech_consumption_context()
         variables_context = get_variables_context()
         input_history_context = get_input_history_context()
+        summary_context = get_conversation_summary_context()
 
         # Build prompt with context
-        enhanced_text = f"""{speech_context}{variables_context}{input_history_context}{length_constraint}{context}[USER'S RESPONSE TO YOUR LAST QUESTION]
+        enhanced_text = f"""{summary_context}{speech_context}{variables_context}{input_history_context}{length_constraint}{context}[USER'S RESPONSE TO YOUR LAST QUESTION]
 {answer}
 
 [VOICE INTERFACE INSTRUCTIONS]
@@ -1538,10 +1969,11 @@ def handle_approval_response(data):
         speech_context = get_speech_consumption_context()
         variables_context = get_variables_context()
         input_history_context = get_input_history_context()
+        summary_context = get_conversation_summary_context()
 
         # Build prompt with approval context
         action_summary = f"{approval_data.get('action', 'Action')} on {approval_data.get('target', 'target')}"
-        enhanced_text = f"""{speech_context}{variables_context}{input_history_context}{length_constraint}{context}[USER'S APPROVAL DECISION]
+        enhanced_text = f"""{summary_context}{speech_context}{variables_context}{input_history_context}{length_constraint}{context}[USER'S APPROVAL DECISION]
 Action requested: {action_summary}
 User decision: {decision}
 
@@ -1791,13 +2223,14 @@ def handle_text_message(data):
         # Inject temporal context if query is time-related
         enhanced_text = inject_temporal_context(text)
 
-        # Inject speech consumption, variables, and input history context
+        # Inject speech consumption, variables, input history, and rolling summary context
         speech_context = get_speech_consumption_context()
         variables_context = get_variables_context()
         input_history_context = get_input_history_context()
+        summary_context = get_conversation_summary_context()
 
         # Add yes/no button and approval instructions to ALL prompts
-        enhanced_text = f"""{speech_context}{variables_context}{input_history_context}{length_constraint}[VOICE INTERFACE INSTRUCTIONS]
+        enhanced_text = f"""{summary_context}{speech_context}{variables_context}{input_history_context}{length_constraint}[VOICE INTERFACE INSTRUCTIONS]
 When you need confirmation, format your response like this:
 [YES_NO: your question here]
 
