@@ -21,25 +21,108 @@ import math
 import re
 import sys
 
+# Determine maestro root directory
+def find_maestro_root():
+    """Find maestro root by walking up directory tree"""
+    # Priority 1: MAESTRO_ROOT env var
+    if 'MAESTRO_ROOT' in os.environ:
+        return Path(os.environ['MAESTRO_ROOT'])
+
+    # Priority 2: Walk up from current file location
+    # Skip cue-vox's own directory (it has .git + hooks but is NOT maestro root)
+    script_dir = Path(__file__).parent.resolve()
+    current = script_dir
+    while current != current.parent:
+        if current != script_dir and (current / '.git').exists() and (current / 'hooks').exists():
+            return current
+        current = current.parent
+
+    # Priority 3: Walk up from current working directory
+    current = Path.cwd()
+    while current != current.parent:
+        if (current / '.git').exists() and (current / 'hooks').exists():
+            return current
+        current = current.parent
+
+    # Fallback: current working directory
+    print(f"⚠️  Warning: Could not find maestro root, using cwd: {Path.cwd()}")
+    return Path.cwd()
+
+MAESTRO_ROOT = find_maestro_root()
+print(f"✓ Maestro root: {MAESTRO_ROOT}")
+
 # Try to import CUE-MEM if available
 CUE_MEM_AVAILABLE = False
 try:
-    # Look for .claude/cue-mem symlink
-    parent_dir = Path(__file__).parent
-    cue_mem_lib = parent_dir / '.claude' / 'cue-mem' / 'lib'
+    # Look for .claude/cue-mem symlink in maestro root
+    cue_mem_lib = MAESTRO_ROOT / '.claude' / 'cue-mem' / 'lib'
     if cue_mem_lib.exists():
         sys.path.insert(0, str(cue_mem_lib))
         from tokens import create_token as cue_mem_create_token
         from tokens import list_tokens as cue_mem_list_tokens
+        from tokens import get_token as cue_mem_get_token
         CUE_MEM_AVAILABLE = True
         print("✓ CUE-MEM integration enabled")
 except ImportError as e:
     print(f"⚠️  CUE-MEM not available, using local token storage: {e}")
     pass
 
+# Import TokenFactory
+try:
+    cue_mem_factory_lib = MAESTRO_ROOT / 'cue-mem' / 'lib'
+    if cue_mem_factory_lib.exists():
+        sys.path.insert(0, str(cue_mem_factory_lib))
+        from token_factory import TokenFactory
+        from token_profiles import resolve_thermal
+        from structured_sum import create_structured_sum
+        print("✓ TokenFactory loaded")
+    else:
+        TokenFactory = None
+        resolve_thermal = None
+        create_structured_sum = None
+except ImportError as e:
+    print("⚠️  TokenFactory not available: %s" % e)
+    TokenFactory = None
+    resolve_thermal = None
+    create_structured_sum = None
+
+# Import AuditLogger for structured audit trail
+_audit_logger = None
+_audit_subscriber = None
+try:
+    cue_mem_audit_lib = MAESTRO_ROOT / "cue-mem" / "lib"
+    if cue_mem_audit_lib.exists():
+        if str(cue_mem_audit_lib) not in sys.path:
+            sys.path.insert(0, str(cue_mem_audit_lib))
+        from audit import AuditLogger
+        from audit_subscriber import AuditSubscriber
+        from event_bus import get_bus
+        _audit_logger = AuditLogger(agent_id="cue-vox")
+        _audit_subscriber = AuditSubscriber(_audit_logger)
+        _audit_subscriber.connect()
+        print("✓ AuditLogger enabled")
+except ImportError as e:
+    print("⚠️  AuditLogger not available: %s" % e)
+
 app = Flask(__name__)
 app.config['SECRET_KEY'] = 'cue-vox-secret'
+app.config['SEND_FILE_MAX_AGE_DEFAULT'] = 0
 socketio = SocketIO(app, cors_allowed_origins="*")
+
+
+@app.after_request
+def add_no_cache_headers(response):
+    if '/static/' in response.headers.get('Content-Location', '') or \
+       request.path.startswith('/static/'):
+        response.headers['Cache-Control'] = 'no-cache, no-store, must-revalidate'
+        response.headers['Pragma'] = 'no-cache'
+        response.headers['Expires'] = '0'
+        response.cache_control.max_age = 0
+        if 'ETag' in response.headers:
+            del response.headers['ETag']
+        if 'Last-Modified' in response.headers:
+            del response.headers['Last-Modified']
+    return response
 
 # Load Whisper model lazily
 whisper_model = None
@@ -136,8 +219,45 @@ last_echo_timestamp = None
 in_memory_summary_tokens = []
 
 # Token directories
-TOKENS_DIR = Path(__file__).parent.parent / '.claude' / 'tokens'
-CONTEXT_DIR = Path(__file__).parent.parent / '.claude'
+TOKENS_DIR = MAESTRO_ROOT / '.claude' / 'tokens'
+CONTEXT_DIR = MAESTRO_ROOT / '.claude'
+
+# Load prompt template from file (Phase 1D)
+PROMPT_TEMPLATE_PATH = Path(__file__).parent / 'prompts' / 'input-protocol.txt'
+_prompt_template_cache = None
+
+def load_prompt_template():
+    """Load the voice interface prompt template from file."""
+    global _prompt_template_cache
+    if _prompt_template_cache is not None:
+        return _prompt_template_cache
+    if PROMPT_TEMPLATE_PATH.exists():
+        with open(PROMPT_TEMPLATE_PATH, "r") as f:
+            _prompt_template_cache = f.read()
+        print("Loaded prompt template from %s" % PROMPT_TEMPLATE_PATH)
+    else:
+        # Fallback inline template
+        _prompt_template_cache = (
+            "[VOICE INTERFACE INSTRUCTIONS]\n"
+            "When you need confirmation: [YES_NO: your question here]\n"
+            "When you need input: [INPUT: {\"type\": \"text\", \"question\": \"...\"}]\n"
+            "When you need approval: [APPROVAL: {\"action\": \"...\", \"description\": \"...\"}]\n"
+        )
+        print("Warning: prompt template file not found, using inline fallback")
+    return _prompt_template_cache
+
+# Initialize TokenFactory (unified token creation pipeline)
+if TokenFactory is not None:
+    token_factory = TokenFactory(
+        cue_mem_create_fn=cue_mem_create_token if CUE_MEM_AVAILABLE else None,
+        input_history=input_history,
+        log_dir=LOG_DIR,
+        tokens_dir=TOKENS_DIR,
+        fallback_expiry_hours=SCALAR_PARAM_TOKEN_EXPIRY_HOURS
+    )
+    print("✓ TokenFactory initialized")
+else:
+    token_factory = None
 
 def sanitize_for_tts(text):
     """
@@ -323,191 +443,152 @@ def generate_scalar_token_id(semantic_label):
     timestamp = int(time.time())
     return f"ctx_{semantic_label}_{timestamp}"
 
-def create_text_input_token(key, value, question=None):
+def create_text_input_token(key, value, question=None, thermal=None):
     """
     Create a persistent text input token.
+
+    Schema validated by the token type registry. Only type-specific
+    fields need to be passed here; defaults come from the registry.
 
     Args:
         key: Variable/parameter name
         value: Text response from user
         question: Optional question text that prompted this input
+        thermal: Optional thermal override dict from INPUT tag
 
     Returns:
         token_id: Generated token identifier
     """
+    fields = {"key": key}
+    if question:
+        fields["question"] = question
+
+    if token_factory is not None:
+        return token_factory.create(
+            token_type="text_input",
+            label=key,
+            value=value,
+            thermal=thermal,
+            extra_fields=fields
+        )
+
+    # Legacy fallback if TokenFactory unavailable
     ensure_tokens_dir()
     now = datetime.now()
 
     if CUE_MEM_AVAILABLE:
-        # Use CUE-MEM for thermal decay-based token management
         cue_mem_token = cue_mem_create_token(
-            label=key,
-            value=value,
-            token_type='text_input',
-            visibility='shared',
-            base_temp=75,
-            tags=['text_input']
+            label=key, value=value, token_type="text_input",
+            visibility="shared", base_temp=75, tags=["text_input"]
         )
-        token_id = cue_mem_token['token_id']
-
-        # Extend CUE-MEM token with cue-vox specific metadata
-        token = {
-            **cue_mem_token,
-            'key': key,
-            'question': question or ''
-        }
-
-        print(f"✅ Created text input token via CUE-MEM: {token_id} ({key}: {value})")
-        print(f"   Temperature: {cue_mem_token['temperature']}°")
+        token_id = cue_mem_token["token_id"]
+        token = {**cue_mem_token, **fields}
     else:
-        # Fallback to local storage with expiry times
         expiry = now + timedelta(hours=SCALAR_PARAM_TOKEN_EXPIRY_HOURS)
         token_id = generate_scalar_token_id(key)
-
         token = {
-            'token_id': token_id,
-            'type': 'text_input',
-            'key': key,
-            'value': value,
-            'question': question or '',
-            'created_at': now.isoformat(),
-            'expires_at': expiry.isoformat(),
-            'status': 'active'
+            "token_id": token_id, "type": "text_input",
+            "label": key, "value": value,
+            "created_at": now.isoformat(), "expires_at": expiry.isoformat(),
+            "status": "active", **fields
         }
-
-        # Persist to local file
-        token_file = TOKENS_DIR / f"{token_id}.json"
-        with open(token_file, 'w') as f:
+        token_file = TOKENS_DIR / ("%s.json" % token_id)
+        with open(token_file, "w") as f:
             json.dump(token, f, indent=2)
 
-        print(f"✅ Created text input token: {token_id} ({key}: {value})")
-        print(f"   Expires: {expiry.strftime('%Y-%m-%d %H:%M')}")
-
-    # Store in memory (cue-vox specific)
     input_history[token_id] = token
-
-    # Append to daily log (cue-vox specific)
     ensure_log_dir()
-    today = datetime.now().strftime('%Y-%m-%d')
-    log_file = LOG_DIR / f"{today}.jsonl"
-
-    log_entry = {
-        'timestamp': now.isoformat(),
-        'event': 'token_created',
-        'token': token
-    }
-
-    with open(log_file, 'a') as f:
-        f.write(json.dumps(log_entry) + '\n')
+    today = datetime.now().strftime("%Y-%m-%d")
+    log_file = LOG_DIR / ("%s.jsonl" % today)
+    with open(log_file, "a") as f:
+        f.write(json.dumps({"timestamp": now.isoformat(), "event": "token_created", "token": token}) + "\n")
 
     return token_id
 
 
-def create_yes_no_token(answer, question_context=None):
+def _extract_label_from_question(question_context):
+    """Extract key words from question to generate a semantic label."""
+    if not question_context:
+        return "response"
+    cleaned = re.sub(r"[^\w\s]", "", question_context.lower())
+    words = cleaned.split()
+    stop_words = {"should", "would", "could", "can", "do", "does", "is", "are",
+                  "the", "a", "an", "to", "i", "you", "we", "this", "that"}
+    key_words = [w for w in words if w not in stop_words]
+    if key_words:
+        return "_".join(key_words[:3])
+    return "response"
+
+
+def create_yes_no_token(answer, question_context=None, thermal=None):
     """
     Create a persistent YES/NO response token.
+
+    Schema validated by the token type registry.
 
     Args:
         answer: "Yes" or "No"
         question_context: Optional question text that was asked
+        thermal: Optional thermal override dict from INPUT tag
 
     Returns:
         token_id: Generated token identifier
     """
+    label = _extract_label_from_question(question_context)
+    fields = {"answer": answer}
+    if question_context:
+        fields["question"] = question_context
+
+    if token_factory is not None:
+        return token_factory.create(
+            token_type="yes_no_response",
+            label=label,
+            value=answer,
+            tags=[question_context or "no_context"],
+            thermal=thermal,
+            extra_fields=fields
+        )
+
+    # Legacy fallback if TokenFactory unavailable
     ensure_tokens_dir()
     now = datetime.now()
 
-    # Generate a meaningful label from question context if available
-    label = 'response'
-    if question_context:
-        # Extract key words from question for label
-        # Remove common question words and punctuation
-        import re
-        cleaned = re.sub(r'[^\w\s]', '', question_context.lower())
-        words = cleaned.split()
-        # Filter out common question words
-        stop_words = {'should', 'would', 'could', 'can', 'do', 'does', 'is', 'are', 'the', 'a', 'an', 'to', 'i', 'you', 'we', 'this', 'that'}
-        key_words = [w for w in words if w not in stop_words]
-        if key_words:
-            label = '_'.join(key_words[:3])  # Use first 3 key words
-
     if CUE_MEM_AVAILABLE:
-        # Use CUE-MEM for thermal decay-based token management
         cue_mem_token = cue_mem_create_token(
-            label=label,
-            value=answer,
-            token_type='yes_no_response',
-            visibility='shared',
-            base_temp=75,
-            tags=['yes_no', question_context or 'no_context']
+            label=label, value=answer, token_type="yes_no_response",
+            visibility="shared", base_temp=75,
+            tags=["yes_no", question_context or "no_context"]
         )
-        token_id = cue_mem_token['token_id']
-
-        # Extend CUE-MEM token with cue-vox specific metadata
-        token = {
-            **cue_mem_token,
-            'answer': answer,
-            'question': question_context or ''
-        }
-
-        print(f"✅ Created YES/NO token via CUE-MEM: {token_id} ({label}: {answer})")
-        print(f"   Question: {question_context or 'N/A'}")
-        print(f"   Temperature: {cue_mem_token['temperature']}°")
+        token_id = cue_mem_token["token_id"]
+        token = {**cue_mem_token, **fields}
     else:
-        # Fallback to local storage with expiry times
         expiry = now + timedelta(hours=SCALAR_PARAM_TOKEN_EXPIRY_HOURS)
         token_id = generate_scalar_token_id(label)
-
         token = {
-            'token_id': token_id,
-            'type': 'yes_no_response',
-            'label': label,
-            'value': answer,
-            'answer': answer,
-            'question': question_context or '',
-            'created_at': now.isoformat(),
-            'expires_at': expiry.isoformat(),
-            'status': 'active'
+            "token_id": token_id, "type": "yes_no_response",
+            "label": label, "value": answer,
+            "created_at": now.isoformat(), "expires_at": expiry.isoformat(),
+            "status": "active", **fields
         }
-
-        # Persist to local file
-        token_file = TOKENS_DIR / f"{token_id}.json"
-        with open(token_file, 'w') as f:
+        token_file = TOKENS_DIR / ("%s.json" % token_id)
+        with open(token_file, "w") as f:
             json.dump(token, f, indent=2)
 
-        print(f"✅ Created YES/NO token: {token_id} ({label}: {answer})")
-        print(f"   Question: {question_context or 'N/A'}")
-        print(f"   Expires: {expiry.strftime('%Y-%m-%d %H:%M')}")
-
-    # Store in memory (cue-vox specific)
     input_history[token_id] = token
-
-    # Append to daily log (cue-vox specific)
     ensure_log_dir()
-    today = datetime.now().strftime('%Y-%m-%d')
-    log_file = LOG_DIR / f"{today}.jsonl"
-
-    log_entry = {
-        'timestamp': now.isoformat(),
-        'event': 'token_created',
-        'token': token
-    }
-
-    with open(log_file, 'a') as f:
-        f.write(json.dumps(log_entry) + '\n')
+    today = datetime.now().strftime("%Y-%m-%d")
+    log_file = LOG_DIR / ("%s.jsonl" % today)
+    with open(log_file, "a") as f:
+        f.write(json.dumps({"timestamp": now.isoformat(), "event": "token_created", "token": token}) + "\n")
 
     return token_id
 
 
-def create_scalar_param_token(slider_value, semantic_label, hex_value, hsl_value, question=None):
+def create_scalar_param_token(slider_value, semantic_label, hex_value, hsl_value, question=None, thermal=None):
     """
     Create a persistent scalar parameter token from slider input.
 
-    This implements the object creation pipeline for VRGB-encoded tokens.
-    Tokens are stored in:
-    - input_history (in-memory)
-    - .claude/tokens/{token_id}.json (via CUE-MEM if available, or local storage)
-    - logs/{date}.jsonl (appended to daily log)
+    Schema validated by the token type registry.
 
     Args:
         slider_value: 0-100 slider position
@@ -515,89 +596,104 @@ def create_scalar_param_token(slider_value, semantic_label, hex_value, hsl_value
         hex_value: Hex-encoded coordinate string
         hsl_value: HSL breakdown dict {h, s, l}
         question: Optional question text that prompted this input
+        thermal: Optional thermal override dict from INPUT tag
 
     Returns:
         token_id: Generated token identifier
     """
-    ensure_tokens_dir()
-
-    now = datetime.now()
-
-    # Map slider value to natural language
     natural_value = map_slider_to_semantic_value(slider_value, semantic_label)
+    fields = {
+        "semantic_label": semantic_label,
+        "value_hex": hex_value,
+        "value_decoded": hsl_value,
+        "slider_value": slider_value,
+        "natural_value": natural_value,
+    }
+    if question:
+        fields["question"] = question
 
-    if CUE_MEM_AVAILABLE:
-        # Use CUE-MEM for thermal decay-based token management
-        cue_mem_token = cue_mem_create_token(
+    if token_factory is not None:
+        return token_factory.create(
+            token_type="scalar_param",
             label=semantic_label,
             value=natural_value,
-            token_type='scalar_param',
-            visibility='shared',
-            base_temp=75,
-            tags=[f'slider:{slider_value}', f'hex:{hex_value}']
+            tags=["slider:%s" % slider_value, "hex:%s" % hex_value],
+            thermal=thermal,
+            extra_fields=fields
         )
-        token_id = cue_mem_token['token_id']
 
-        # Extend CUE-MEM token with cue-vox specific metadata
+    # Legacy fallback if TokenFactory unavailable
+    ensure_tokens_dir()
+    now = datetime.now()
+
+    if CUE_MEM_AVAILABLE:
+        cue_mem_token = cue_mem_create_token(
+            label=semantic_label, value=natural_value, token_type="scalar_param",
+            visibility="shared", base_temp=75,
+            tags=["slider:%s" % slider_value, "hex:%s" % hex_value]
+        )
+        token_id = cue_mem_token["token_id"]
         token = {
             **cue_mem_token,
-            'semantic_label': semantic_label,
-            'value_hex': hex_value,
-            'value_decoded': hsl_value,
-            'slider_value': slider_value,
-            'natural_value': natural_value,
-            'question': question or ''
+            "semantic_label": semantic_label, "value_hex": hex_value,
+            "value_decoded": hsl_value, "slider_value": slider_value,
+            "natural_value": natural_value, "question": question or ""
         }
-
-        print(f"✅ Created scalar param token via CUE-MEM: {token_id} ({semantic_label}: {natural_value})")
-        print(f"   Encoded as: {hex_value}")
-        print(f"   Temperature: {cue_mem_token['temperature']}°")
     else:
-        # Fallback to local storage with expiry times
         expiry = now + timedelta(hours=SCALAR_PARAM_TOKEN_EXPIRY_HOURS)
         token_id = generate_scalar_token_id(semantic_label)
-
         token = {
-            'token_id': token_id,
-            'type': 'scalar_param',
-            'semantic_label': semantic_label,
-            'value_hex': hex_value,
-            'value_decoded': hsl_value,
-            'slider_value': slider_value,
-            'natural_value': natural_value,
-            'question': question or '',
-            'created_at': now.isoformat(),
-            'expires_at': expiry.isoformat(),
-            'status': 'active'
+            "token_id": token_id, "type": "scalar_param",
+            "semantic_label": semantic_label, "value_hex": hex_value,
+            "value_decoded": hsl_value, "slider_value": slider_value,
+            "natural_value": natural_value, "question": question or "",
+            "created_at": now.isoformat(), "expires_at": expiry.isoformat(),
+            "status": "active"
         }
-
-        # Persist to local file
-        token_file = TOKENS_DIR / f"{token_id}.json"
-        with open(token_file, 'w') as f:
+        token_file = TOKENS_DIR / ("%s.json" % token_id)
+        with open(token_file, "w") as f:
             json.dump(token, f, indent=2)
 
-        print(f"✅ Created scalar param token: {token_id} ({semantic_label}: {natural_value})")
-        print(f"   Encoded as: {hex_value}")
-        print(f"   Expires: {expiry.strftime('%Y-%m-%d %H:%M')}")
-
-    # Store in memory (cue-vox specific)
     input_history[token_id] = token
-
-    # Append to daily log (cue-vox specific)
     ensure_log_dir()
-    today = datetime.now().strftime('%Y-%m-%d')
-    log_file = LOG_DIR / f"{today}.jsonl"
-
-    log_entry = {
-        'timestamp': now.isoformat(),
-        'event': 'token_created',
-        'token': token
-    }
-
-    with open(log_file, 'a') as f:
-        f.write(json.dumps(log_entry) + '\n')
+    today = datetime.now().strftime("%Y-%m-%d")
+    log_file = LOG_DIR / ("%s.jsonl" % today)
+    with open(log_file, "a") as f:
+        f.write(json.dumps({"timestamp": now.isoformat(), "event": "token_created", "token": token}) + "\n")
 
     return token_id
+
+
+def maybe_create_structured_sum():
+    """
+    Create a structured_sum token aggregating all active structured data.
+
+    Called after each structured token creation (yes_no, text_input,
+    scalar_param) so the parameter landscape stays current.
+    Safe to call when dependencies are missing - returns None silently.
+    """
+    if token_factory is None or create_structured_sum is None:
+        return None
+    if not CUE_MEM_AVAILABLE:
+        return None
+    try:
+        return create_structured_sum(token_factory, cue_mem_list_tokens)
+    except Exception as e:
+        print("structured_sum creation skipped: %s" % e)
+        return None
+
+
+# Register pin management handlers from cue-mem plugin (if available)
+_hydrate_pins = None
+if CUE_MEM_AVAILABLE:
+    try:
+        from pin_handlers import register_pin_handlers
+        _token_dir = MAESTRO_ROOT / ".claude" / "tokens"
+        _hydrate_pins = register_pin_handlers(socketio, _token_dir, input_history, maybe_create_structured_sum)
+        print("✓ Pin management enabled")
+    except ImportError:
+        pass
+
 
 def check_and_expire_tokens():
     """
@@ -1506,6 +1602,73 @@ Respond thoroughly but stay focused on their points.
 """.format(word_count)
 
 
+def get_instance_identity():
+    """
+    Return instance identity header for cue-vox Claude.
+
+    This ensures cue-vox Claude always knows its role in the maestro ecosystem.
+    """
+    return """[INSTANCE IDENTITY]
+**You are: cue-vox Claude (Voice Interface)**
+
+**Your Role: Writer - Active token contributor**
+
+**Your Capabilities:**
+- Conversational interface with voice I/O
+- Automatically create conversation summary tokens
+- Write tokens to .claude/tokens/ with thermal metadata
+- Create scalar parameter tokens from slider inputs
+- Query hot tokens for context via flux-capacitor
+
+**Your Boundaries (defer to ninja Claude):**
+- Repository management (git submodule, commits, branches, .gitmodules)
+- File system restructuring
+- Multi-step debugging requiring multiple approvals
+- Build system operations
+
+**When to defer:**
+If a task involves repo operations or multi-step approval friction, respond:
+"That's a repository operation - ninja Claude handles those better. Run: claude-code"
+
+**Related Policies:**
+- instance-roles.md (Writer vs Reader roles)
+- instance-operational-boundaries.md (Task routing logic)
+
+---
+
+"""
+
+
+def get_flux_capacitor_context():
+    """
+    Get context from flux-capacitor generated memory summary.
+
+    flux-capacitor watches .claude/tokens/ and auto-generates
+    .claude/memory/recent_context.md with hot token summaries.
+
+    This provides the same context Claude Code direct sessions see.
+    """
+    recent_context_file = MAESTRO_ROOT / '.claude' / 'memory' / 'recent_context.md'
+
+    if not recent_context_file.exists():
+        return ""
+
+    try:
+        with open(recent_context_file, 'r') as f:
+            content = f.read()
+
+        if not content.strip():
+            return ""
+
+        return f"""[FLUX CAPACITOR CONTEXT - Auto-synced maestro memory]
+{content}
+
+"""
+    except Exception as e:
+        print(f"⚠️  Failed to read flux-capacitor context: {e}")
+        return ""
+
+
 def get_speech_consumption_context():
     """Get context about whether user absorbed previous response"""
     recent_logs = load_recent_logs(limit=1)
@@ -1692,7 +1855,8 @@ Examples of BAD responses (NEVER do this):
 @app.route('/')
 def index():
     print("📄 Serving index.html")
-    return render_template('index.html')
+    import time as _time
+    return render_template('index.html', cache_bust=int(_time.time()))
 
 
 @socketio.on('audio_data')
@@ -1754,44 +1918,24 @@ def handle_audio(data):
         # Inject temporal context if query is time-related
         enhanced_text = inject_temporal_context(text)
 
-        # Inject speech consumption, variables, input history, and rolling summary context
+        # Inject instance identity, speech consumption, variables, input history, and rolling summary context
+        identity_context = get_instance_identity()
         speech_context = get_speech_consumption_context()
         variables_context = get_variables_context()
         input_history_context = get_input_history_context()
         summary_context = get_conversation_summary_context()
+        flux_context = get_flux_capacitor_context()
 
-        # Add yes/no button and approval instructions to ALL prompts
-        enhanced_text = f"""{summary_context}{speech_context}{variables_context}{input_history_context}{length_constraint}[VOICE INTERFACE INSTRUCTIONS]
-When you need confirmation, format your response like this:
-[YES_NO: your question here]
-
-Example: "[YES_NO: Should I proceed with this operation?]"
-
-When you need approval for an action (Read/Write/Edit/Bash/etc), format your response like this:
-[APPROVAL: {{"action": "Write", "target": "/path/to/file", "description": "Creating new config file", "preview": "# Config\\nkey=value"}}]
-
-When you need user input, use one of these formats:
-
-1. Text input:
-[INPUT: {{"type": "text", "question": "What should I name this file?"}}]
-
-2. VRGB slider input (semantic metaphorical slider with labeled poles):
-[INPUT: {{"type": "slider", "question": "How urgent is this?", "scale": {{"low": "casual", "high": "critical"}}, "semantic_label": "urgency"}}]
-
-IMPORTANT: Always include "scale" with semantic pole labels (NOT technical HSL terms).
-
-3. Multiple choice:
-[INPUT: {{"type": "choice", "question": "Which approach should I use?", "options": [{{"label": "Option A", "hsl": {{"h": 120, "s": 75, "l": 60}}}}, {{"label": "Option B", "hsl": {{"h": 0, "s": 75, "l": 60}}}}]}}]
-
-The UI will automatically render interactive input cards with appropriate controls.
-
-IMPORTANT: When speaking, say "Yes OR No" not "yes-no" or "yes slash no".
-
-[USER INPUT]
-{enhanced_text}"""
+        # Build prompt from template file
+        prompt_template = load_prompt_template()
+        enhanced_text = "%s%s%s%s%s%s%s%s\n\n[USER INPUT]\n%s" % (
+            identity_context, flux_context, summary_context, speech_context,
+            variables_context, input_history_context, length_constraint,
+            prompt_template, enhanced_text
+        )
 
         # Send to Claude Code (run from parent maestro directory if exists)
-        cwd = Path(__file__).parent.parent if (Path(__file__).parent.parent / 'cuesheets').exists() else Path(__file__).parent
+        cwd = MAESTRO_ROOT
 
         process = subprocess.Popen(
             ['claude'],
@@ -1836,6 +1980,7 @@ IMPORTANT: When speaking, say "Yes OR No" not "yes-no" or "yes slash no".
 @socketio.on('button_response')
 def handle_button_response(data):
     """Handle yes/no button click - treat as voice input"""
+    print("[DEBUG] button_response received: %s" % data)
     try:
         # Handle any speech interruption and stop current speech
         handle_speech_interruption()
@@ -1861,6 +2006,14 @@ def handle_button_response(data):
             answer=answer,
             question_context=question_context
         )
+        maybe_create_structured_sum()
+        emit("token_created", {
+            "token_id": token_id,
+            "type": "yes_no_response",
+            "label": question_context or "yes_no",
+            "value": answer,
+            "question": question_context or ""
+        })
 
         emit('state_change', {'state': 'thinking'})
 
@@ -1877,14 +2030,16 @@ def handle_button_response(data):
                 context += f"Assistant: {entry.get('assistant', '')}\n"
             context += "\n"
 
-        # Inject speech consumption, variables, and input history context
+        # Inject instance identity, speech consumption, variables, and input history context
+        identity_context = get_instance_identity()
         speech_context = get_speech_consumption_context()
         variables_context = get_variables_context()
         input_history_context = get_input_history_context()
         summary_context = get_conversation_summary_context()
+        flux_context = get_flux_capacitor_context()
 
         # Build prompt with context
-        enhanced_text = f"""{summary_context}{speech_context}{variables_context}{input_history_context}{length_constraint}{context}[USER'S RESPONSE TO YOUR LAST QUESTION]
+        enhanced_text = f"""{identity_context}{flux_context}{summary_context}{speech_context}{variables_context}{input_history_context}{length_constraint}{context}[USER'S RESPONSE TO YOUR LAST QUESTION]
 {answer}
 
 [VOICE INTERFACE INSTRUCTIONS]
@@ -1898,7 +2053,7 @@ CRITICAL: If the user responds "No" to a yes/no question, accept their answer as
 IMPORTANT: When speaking, say "Yes OR No" not "yes-no" or "yes slash no"."""
 
         # Send to Claude Code
-        cwd = Path(__file__).parent.parent if (Path(__file__).parent.parent / 'cuesheets').exists() else Path(__file__).parent
+        cwd = MAESTRO_ROOT
 
         process = subprocess.Popen(
             ['claude'],
@@ -1949,6 +2104,22 @@ def handle_approval_response(data):
         approval_data = data.get('approval_data', {})
         confidence = data.get('confidence')  # HSL confidence values
 
+        # Create persistent token for the approval decision
+        action_label = approval_data.get('action', 'action')
+        question_ctx = "%s: %s" % (action_label, approval_data.get('description', ''))
+        token_id = create_yes_no_token(
+            answer=decision,
+            question_context=question_ctx
+        )
+        maybe_create_structured_sum()
+        emit("token_created", {
+            "token_id": token_id,
+            "type": "approval_response",
+            "label": action_label,
+            "value": decision,
+            "question": question_ctx
+        })
+
         emit('state_change', {'state': 'thinking'})
 
         # Calculate input length for response matching
@@ -1965,15 +2136,17 @@ def handle_approval_response(data):
                 context += f"Assistant: {entry.get('assistant', '')}\n"
             context += "\n"
 
-        # Inject speech consumption, variables, and input history context
+        # Inject instance identity, speech consumption, variables, and input history context
+        identity_context = get_instance_identity()
         speech_context = get_speech_consumption_context()
         variables_context = get_variables_context()
         input_history_context = get_input_history_context()
         summary_context = get_conversation_summary_context()
+        flux_context = get_flux_capacitor_context()
 
         # Build prompt with approval context
         action_summary = f"{approval_data.get('action', 'Action')} on {approval_data.get('target', 'target')}"
-        enhanced_text = f"""{summary_context}{speech_context}{variables_context}{input_history_context}{length_constraint}{context}[USER'S APPROVAL DECISION]
+        enhanced_text = f"""{identity_context}{flux_context}{summary_context}{speech_context}{variables_context}{input_history_context}{length_constraint}{context}[USER'S APPROVAL DECISION]
 Action requested: {action_summary}
 User decision: {decision}
 
@@ -1991,7 +2164,7 @@ When you need approval for an action, format your response like this:
 IMPORTANT: When speaking, say "Yes OR No" not "yes-no" or "yes slash no"."""
 
         # Send to Claude Code
-        cwd = Path(__file__).parent.parent if (Path(__file__).parent.parent / 'cuesheets').exists() else Path(__file__).parent
+        cwd = MAESTRO_ROOT
 
         process = subprocess.Popen(
             ['claude'],
@@ -2064,6 +2237,14 @@ def handle_input_response(data):
                     value=value,
                     question=question
                 )
+                maybe_create_structured_sum()
+                emit("token_created", {
+                    "token_id": token_id,
+                    "type": "text_input",
+                    "label": key,
+                    "value": value,
+                    "question": question
+                })
 
                 # Track in input history (token is already stored by create_text_input_token)
                 # This is redundant but kept for backwards compatibility with local cache
@@ -2118,6 +2299,16 @@ def handle_input_response(data):
                     hsl_value=hsl,
                     question=question
                 )
+                maybe_create_structured_sum()
+                emit("token_created", {
+                    "token_id": token_id,
+                    "type": "scalar_param",
+                    "label": semantic_label,
+                    "value": natural_value,
+                    "slider_value": slider_value,
+                    "question": question,
+                    "key": semantic_label
+                })
 
                 # Format user message to clearly indicate this is answering the question
                 if question:
@@ -2131,6 +2322,39 @@ def handle_input_response(data):
                     session_variables[key] = hsl_summary
 
                 # Note: Token is already stored in input_history by create_scalar_param_token()
+
+            # Simple slider input (no HSL encoding - from frontend slider widget)
+            elif 'slider_value' in input_data and 'semantic_label' in input_data:
+                slider_value = input_data['slider_value']
+                semantic_label = input_data['semantic_label']
+                question = input_data.get('question', '')
+                natural_value = map_slider_to_semantic_value(slider_value, semantic_label)
+
+                # Create scalar token with placeholder hex/hsl (no VRGB encoding)
+                token_id = create_scalar_param_token(
+                    slider_value=slider_value,
+                    semantic_label=semantic_label,
+                    hex_value="#000000",
+                    hsl_value={"h": 0, "s": 0, "l": slider_value},
+                    question=question
+                )
+                maybe_create_structured_sum()
+                emit("token_created", {
+                    "token_id": token_id,
+                    "type": "scalar_param",
+                    "label": semantic_label,
+                    "value": natural_value,
+                    "slider_value": slider_value,
+                    "question": question,
+                    "key": semantic_label
+                })
+
+                if question:
+                    user_message = f"[Re: {question}] {semantic_label}: {natural_value}"
+                else:
+                    user_message = f"{semantic_label}: {natural_value}"
+
+                session_variables[semantic_label] = natural_value
 
             # Choice input
             elif 'label' in input_data:
@@ -2157,12 +2381,14 @@ def handle_input_response(data):
         speech_context = get_temporal_context()
         variables_context = get_variables_context()
         history_context = get_input_history_context()
+        summary_context = get_conversation_summary_context()
+        flux_context = get_flux_capacitor_context()
 
         # Prepare input for Claude with all context
-        enhanced_text = f"{speech_context}{variables_context}{history_context}[USER INPUT]\n{user_message}"
+        enhanced_text = f"{flux_context}{summary_context}{speech_context}{variables_context}{history_context}[USER INPUT]\n{user_message}"
 
         # Send to Claude Code
-        cwd = Path(__file__).parent.parent if (Path(__file__).parent.parent / 'cuesheets').exists() else Path(__file__).parent
+        cwd = MAESTRO_ROOT
 
         process = subprocess.Popen(
             ['claude'],
@@ -2204,6 +2430,7 @@ def handle_input_response(data):
 @socketio.on('text_message')
 def handle_text_message(data):
     """Handle text message from input field - same flow as voice but without transcription"""
+    print("[DEBUG] text_message received: %s" % str(data)[:200])
     try:
         # Handle any speech interruption and stop current speech
         handle_speech_interruption()
@@ -2223,44 +2450,24 @@ def handle_text_message(data):
         # Inject temporal context if query is time-related
         enhanced_text = inject_temporal_context(text)
 
-        # Inject speech consumption, variables, input history, and rolling summary context
+        # Inject instance identity, speech consumption, variables, input history, and rolling summary context
+        identity_context = get_instance_identity()
         speech_context = get_speech_consumption_context()
         variables_context = get_variables_context()
         input_history_context = get_input_history_context()
         summary_context = get_conversation_summary_context()
+        flux_context = get_flux_capacitor_context()
 
-        # Add yes/no button and approval instructions to ALL prompts
-        enhanced_text = f"""{summary_context}{speech_context}{variables_context}{input_history_context}{length_constraint}[VOICE INTERFACE INSTRUCTIONS]
-When you need confirmation, format your response like this:
-[YES_NO: your question here]
-
-Example: "[YES_NO: Should I proceed with this operation?]"
-
-When you need approval for an action (Read/Write/Edit/Bash/etc), format your response like this:
-[APPROVAL: {{"action": "Write", "target": "/path/to/file", "description": "Creating new config file", "preview": "# Config\\nkey=value"}}]
-
-When you need user input, use one of these formats:
-
-1. Text input:
-[INPUT: {{"type": "text", "question": "What should I name this file?"}}]
-
-2. VRGB slider input (semantic metaphorical slider with labeled poles):
-[INPUT: {{"type": "slider", "question": "How urgent is this?", "scale": {{"low": "casual", "high": "critical"}}, "semantic_label": "urgency"}}]
-
-IMPORTANT: Always include "scale" with semantic pole labels (NOT technical HSL terms).
-
-3. Multiple choice:
-[INPUT: {{"type": "choice", "question": "Which approach should I use?", "options": [{{"label": "Option A", "hsl": {{"h": 120, "s": 75, "l": 60}}}}, {{"label": "Option B", "hsl": {{"h": 0, "s": 75, "l": 60}}}}]}}]
-
-The UI will automatically render interactive input cards with appropriate controls.
-
-IMPORTANT: When speaking, say "Yes OR No" not "yes-no" or "yes slash no".
-
-[USER INPUT]
-{enhanced_text}"""
+        # Build prompt from template file
+        prompt_template = load_prompt_template()
+        enhanced_text = "%s%s%s%s%s%s%s%s\n\n[USER INPUT]\n%s" % (
+            identity_context, flux_context, summary_context, speech_context,
+            variables_context, input_history_context, length_constraint,
+            prompt_template, enhanced_text
+        )
 
         # Send to Claude Code (run from parent maestro directory if exists)
-        cwd = Path(__file__).parent.parent if (Path(__file__).parent.parent / 'cuesheets').exists() else Path(__file__).parent
+        cwd = MAESTRO_ROOT
 
         process = subprocess.Popen(
             ['claude'],
@@ -2299,6 +2506,217 @@ IMPORTANT: When speaking, say "Yes OR No" not "yes-no" or "yes slash no".
         emit('state_change', {'state': 'idle'})
 
 
+@socketio.on('document_update')
+def handle_document_update(data):
+    """Handle document update from frontend editor"""
+    try:
+        doc_id = data.get("id")
+        action = data.get("action", "update")
+
+        if not doc_id:
+            emit("error", {"message": "Missing document ID"})
+            return
+
+        # Lazy-init DocumentManager
+        if not hasattr(handle_document_update, "_doc_manager"):
+            try:
+                cue_mem_factory_lib = MAESTRO_ROOT / "cue-mem" / "lib"
+                sys.path.insert(0, str(cue_mem_factory_lib))
+                from document import DocumentManager
+                import storage as doc_storage
+                handle_document_update._doc_manager = DocumentManager(
+                    cue_mem_create_fn=cue_mem_create_token if CUE_MEM_AVAILABLE else None,
+                    storage_module=doc_storage
+                )
+            except ImportError:
+                handle_document_update._doc_manager = None
+
+        doc_mgr = handle_document_update._doc_manager
+        if not doc_mgr:
+            emit("error", {"message": "DocumentManager not available"})
+            return
+
+        if action == "update":
+            content = data.get("content", "")
+            editor = data.get("editor", "user")
+            diff_summary = data.get("diff_summary", "")
+            doc = doc_mgr.update_document(doc_id, content, editor, diff_summary)
+            if doc:
+                emit("document_update", {
+                    "id": doc_id,
+                    "version": doc["version"],
+                    "content": doc["value"],
+                    "editor": editor
+                }, broadcast=True)
+        elif action == "close":
+            doc = doc_mgr.close_document(doc_id)
+            if doc:
+                emit("document_update", {
+                    "id": doc_id,
+                    "action": "close"
+                }, broadcast=True)
+        elif action == "open":
+            title = data.get("title", "Untitled")
+            content = data.get("content", "")
+            doc = doc_mgr.create_document(doc_id, title, content)
+            emit("document_update", {
+                "id": doc_id,
+                "action": "open",
+                "title": title,
+                "content": content,
+                "version": 1
+            }, broadcast=True)
+
+    except Exception as e:
+        print("Document update error: %s" % e)
+        emit("error", {"message": str(e)})
+
+
+@socketio.on('cue_dispatch')
+def handle_cue_dispatch(data):
+    """Handle CUE card dispatch after user approval"""
+    try:
+        cue_id = data.get("cue_id")
+        tool = data.get("tool")
+        payload = data.get("payload")
+        decision = data.get("decision")
+
+        if decision != "approved":
+            print("CUE %s rejected by user" % cue_id)
+            return
+
+        print("Dispatching CUE: %s -> %s" % (cue_id, tool))
+        if _audit_logger:
+            _audit_logger.log("cue:dispatched", details={"cue_id": cue_id, "tool": tool})
+
+        # Create persistent token for the cue dispatch decision
+        cue_question = "CUE: %s" % (tool or "unknown")
+        cue_token_id = create_yes_no_token(
+            answer="Approved",
+            question_context=cue_question
+        )
+        maybe_create_structured_sum()
+        emit("token_created", {
+            "token_id": cue_token_id,
+            "type": "cue_dispatch",
+            "label": tool or "cue",
+            "value": "Approved",
+            "question": cue_question
+        })
+
+        # Build cue dict for dispatcher
+        cue = {
+            "cue_id": cue_id,
+            "tool": tool,
+            "payload": payload,
+            "metadata": {
+                "dispatched_at": datetime.now().isoformat(),
+                "dispatcher": "cue-vox"
+            }
+        }
+
+        # Try to dispatch via cue-dispatcher
+        dispatcher_path = MAESTRO_ROOT / "tools" / "cue-dispatcher" / "dispatch.py"
+        if dispatcher_path.exists():
+            import tempfile
+            with tempfile.NamedTemporaryFile(mode="w", suffix=".json", delete=False) as f:
+                json.dump(cue, f)
+                cue_file = f.name
+
+            result = subprocess.run(
+                [sys.executable, str(dispatcher_path), cue_file],
+                capture_output=True, text=True, timeout=10
+            )
+
+            Path(cue_file).unlink(missing_ok=True)
+
+            if result.returncode == 0:
+                print("CUE dispatched: %s" % result.stdout.strip())
+                if _audit_logger:
+                    _audit_logger.log("cue:completed", details={"cue_id": cue_id, "tool": tool})
+            else:
+                print("CUE dispatch failed: %s" % result.stderr.strip())
+                if _audit_logger:
+                    _audit_logger.log("cue:failed", details={"cue_id": cue_id, "tool": tool, "error": result.stderr.strip()[:200]})
+        else:
+            print("cue-dispatcher not found at %s" % dispatcher_path)
+
+    except Exception as e:
+        print("CUE dispatch error: %s" % e)
+        if _audit_logger:
+            _audit_logger.log_error("CUE dispatch error: %s" % e, context={"cue_id": cue_id})
+        emit("error", {"message": str(e)})
+
+
+@socketio.on('cuesheet_execute')
+def handle_cuesheet_execute(data):
+    """Execute a compiled cue-sheet from a document"""
+    try:
+        doc_id = data.get("doc_id")
+
+        if not doc_id:
+            emit("error", {"message": "Missing doc_id for cue-sheet execution"})
+            return
+
+        # Get the document
+        if hasattr(handle_document_update, "_doc_manager"):
+            doc_mgr = handle_document_update._doc_manager
+        else:
+            emit("error", {"message": "DocumentManager not initialized"})
+            return
+
+        if not doc_mgr:
+            emit("error", {"message": "DocumentManager not available"})
+            return
+
+        doc = doc_mgr.get_document(doc_id)
+        if not doc:
+            emit("error", {"message": "Document not found: %s" % doc_id})
+            return
+
+        # Compile document to cue-sheet
+        try:
+            cue_mem_factory_lib = MAESTRO_ROOT / "cue-mem" / "lib"
+            sys.path.insert(0, str(cue_mem_factory_lib))
+            from compiler import CuesheetCompiler
+        except ImportError:
+            emit("error", {"message": "CuesheetCompiler not available"})
+            return
+
+        compiler = CuesheetCompiler()
+        cuesheet = compiler.compile(doc)
+
+        warnings = compiler.validate(cuesheet)
+        if warnings:
+            for w in warnings:
+                print("Cue-sheet warning: %s" % w)
+
+        # Execute via CuesheetExecutor
+        try:
+            from executors.cuesheet_executor import CuesheetExecutor
+        except ImportError:
+            # Try absolute path
+            executor_path = Path(__file__).parent / "executors"
+            sys.path.insert(0, str(executor_path))
+            from cuesheet_executor import CuesheetExecutor
+
+        dispatcher_path = MAESTRO_ROOT / "tools" / "cue-dispatcher" / "dispatch.py"
+        executor = CuesheetExecutor(
+            maestro_root=MAESTRO_ROOT,
+            dispatcher_path=str(dispatcher_path) if dispatcher_path.exists() else None,
+            token_factory=token_factory,
+            emit_fn=emit
+        )
+
+        result = executor.execute(cuesheet)
+
+        emit("cuesheet_result", result)
+
+    except Exception as e:
+        print("Cue-sheet execution error: %s" % e)
+        emit("error", {"message": str(e)})
+
+
 @socketio.on('interrupt')
 def handle_interrupt():
     """Stop current speech"""
@@ -2310,9 +2728,24 @@ def handle_interrupt():
     emit('state_change', {'state': 'idle'})
 
 
+@socketio.on_error_default
+def default_error_handler(e):
+    """Catch-all error handler for socket events"""
+    print("[DEBUG] Socket error: %s" % e)
+    if _audit_logger:
+        _audit_logger.log_error("Socket error: %s" % e)
+
+
+@socketio.on('*')
+def catch_all(event, data=None):
+    """Log all incoming socket events"""
+    print("[DEBUG] catch_all event: %s data: %s" % (event, str(data)[:200] if data else "None"))
+
+
 @socketio.on('connect')
 def handle_connect():
     """Track client connection"""
+    print("[DEBUG] Client connected")
     ensure_log_dir()
     timestamp = datetime.now()
     log_file = LOG_DIR / f"{timestamp.strftime('%Y-%m-%d')}.jsonl"
@@ -2328,6 +2761,12 @@ def handle_connect():
         f.write(json.dumps(entry) + '\n')
 
     print(f"🔌 Client connected at {timestamp.strftime('%Y-%m-%d %H:%M:%S')}")
+    if _audit_logger:
+        _audit_logger.log("agent:session_start")
+
+    # Hydrate pinned tokens via cue-mem plugin (if loaded)
+    if _hydrate_pins:
+        _hydrate_pins(MAESTRO_ROOT / ".claude" / "tokens")
 
 
 @socketio.on('disconnect')
@@ -2348,6 +2787,8 @@ def handle_disconnect():
         f.write(json.dumps(entry) + '\n')
 
     print(f"🔌 Client disconnected at {timestamp.strftime('%Y-%m-%d %H:%M:%S')}")
+    if _audit_logger:
+        _audit_logger.log("agent:session_end")
 
 
 if __name__ == '__main__':
@@ -2356,6 +2797,10 @@ if __name__ == '__main__':
 
     # Start background log cleanup thread
     start_log_cleanup_thread()
+
+    # Log system startup to audit trail
+    if _audit_logger:
+        _audit_logger.log("system:startup", details={"port": port})
 
     print("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━")
     print("🎙️  CUE-VOX Web Interface")

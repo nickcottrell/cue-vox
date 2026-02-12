@@ -12,10 +12,10 @@
     <style id="vrgb-tokens">/* Tokens will be injected here by JavaScript */</style>
 
     <!-- VRGB Theme (static fallback) -->
-    <link rel="stylesheet" href="/static/css/cue-vox-theme.css">
+    <link rel="stylesheet" href="/static/css/cue-vox-theme.css?v={{ cache_bust }}">
 
     <!-- Layout/Structure (cue-vox-specific) -->
-    <link rel="stylesheet" href="/static/css/style.css">
+    <link rel="stylesheet" href="/static/css/style.css?v={{ cache_bust }}">
 
     <!-- Spectra Theme Loader -->
     <script>
@@ -99,6 +99,9 @@
             cue-vox
         </h1>
 
+        <!-- Pinned Tokens -->
+        <nav class="pinned-tokens" id="pinnedTokens" aria-label="Pinned tokens"></nav>
+
         <!-- State Indicator Dot -->
         <div class="state-dot" id="stateDot" role="status" aria-label="System state">
             <div class="state-dot__inner" data-state="idle"></div>
@@ -120,7 +123,26 @@
         </p>
     </main>
 
+    <!-- Lightbox Modal -->
+    <div class="lightbox" id="lightbox" role="dialog" aria-modal="true" style="display: none;">
+        <div class="lightbox__backdrop" id="lightboxBackdrop"></div>
+        <article class="lightbox__content" id="lightboxContent">
+            <header class="lightbox__header">
+                <h3 class="lightbox__title" id="lightboxTitle"></h3>
+                <button class="lightbox__close" id="lightboxClose" aria-label="Close">&times;</button>
+            </header>
+            <div class="lightbox__body" id="lightboxBody"></div>
+            <footer class="lightbox__footer" id="lightboxFooter">
+                <button class="btn btn--secondary" id="lightboxUnpinBtn">Unpin</button>
+                <button class="btn btn--secondary" id="lightboxDeleteBtn">Delete</button>
+                <button class="btn btn--primary" id="lightboxEditBtn">Edit</button>
+                <button class="btn btn--secondary" id="lightboxCancelBtn" style="display:none;">Cancel</button>
+                <button class="btn btn--primary" id="lightboxSaveBtn" style="display:none;">Save</button>
+            </footer>
+        </article>
+    </div>
+
     <!-- Application Script -->
-    <script src="/static/js/app.js"></script>
+    <script src="/static/js/app.js?v={{ cache_bust }}"></script>
 </body>
 </html>

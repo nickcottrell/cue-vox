@@ -23,6 +23,15 @@ let isRecording = false;
 let currentState = 'idle';
 let hasPendingInput = false;
 let lastMessageHash = null; // Prevent duplicate messages
+let stateTimerInterval = null;
+let stateStartTime = Date.now();
+let recordingTimeout = null;
+var RECORDING_LIMIT_MS = 30000;
+
+// Pinnable token state
+var pinnedTokens = {};
+var tokenRegistry = {};
+var currentLightboxTokenId = null;
 
 // ============================================
 // Drawer Toggle
@@ -102,8 +111,33 @@ document.addEventListener('keydown', (e) => {
     isRecording = true;
     setState('recording');
     mediaRecorder.start(1000);
+
+    // 30-second recording limit
+    recordingTimeout = setTimeout(function() {
+      if (isRecording) {
+        console.log('⏱️ 30s recording limit reached');
+        stopRecording();
+      }
+    }, RECORDING_LIMIT_MS);
   }
 });
+
+function stopRecording() {
+  if (!isRecording) return;
+  console.log('⏹️ Stopping recording...');
+  isRecording = false;
+  if (recordingTimeout) {
+    clearTimeout(recordingTimeout);
+    recordingTimeout = null;
+  }
+  setState('transcribing');
+
+  if (mediaRecorder && mediaRecorder.state !== 'inactive') {
+    mediaRecorder.stop();
+  } else {
+    console.error('❌ MediaRecorder not active');
+  }
+}
 
 document.addEventListener('keyup', (e) => {
   // Don't trigger if typing in any text input or textarea
@@ -111,15 +145,7 @@ document.addEventListener('keyup', (e) => {
 
   if (e.code === 'Space' && isRecording) {
     e.preventDefault();
-    console.log('⏹️ Stopping recording...');
-    isRecording = false;
-    setState('transcribing');
-
-    if (mediaRecorder && mediaRecorder.state !== 'inactive') {
-      mediaRecorder.stop();
-    } else {
-      console.error('❌ MediaRecorder not active');
-    }
+    stopRecording();
   }
 });
 
@@ -194,8 +220,46 @@ socket.on('error', (data) => {
 // State Management
 // ============================================
 
+function formatElapsed(ms) {
+  var secs = Math.floor(ms / 1000);
+  if (secs < 60) return secs + "s";
+  var mins = Math.floor(secs / 60);
+  var remSecs = secs % 60;
+  if (mins < 60) return mins + "m " + remSecs + "s";
+  var hrs = Math.floor(mins / 60);
+  var remMins = mins % 60;
+  return hrs + "h " + remMins + "m";
+}
+
+function updateStatusTimer() {
+  var label;
+  if (currentState === "recording") {
+    var remaining = RECORDING_LIMIT_MS - (Date.now() - stateStartTime);
+    if (remaining < 0) remaining = 0;
+    label = currentState + " " + formatElapsed(remaining);
+  } else {
+    var elapsed = Date.now() - stateStartTime;
+    label = currentState + " " + formatElapsed(elapsed);
+  }
+  if (canvasStatus) canvasStatus.textContent = label;
+  if (drawerStatusText) drawerStatusText.textContent = label;
+}
+
 function setState(state) {
   currentState = state;
+  stateStartTime = Date.now();
+
+  // Clear previous timer
+  if (stateTimerInterval) {
+    clearInterval(stateTimerInterval);
+    stateTimerInterval = null;
+  }
+
+  // Clear recording timeout if leaving recording state
+  if (state !== "recording" && recordingTimeout) {
+    clearTimeout(recordingTimeout);
+    recordingTimeout = null;
+  }
 
   // Update state dot
   if (stateDot) {
@@ -207,13 +271,15 @@ function setState(state) {
     drawerStatusDot.setAttribute('data-state', state);
   }
 
+  // Set initial status text
+  var initialLabel = state === "recording" ? state + " 30s" : state + " 0s";
   if (drawerStatusText) {
-    drawerStatusText.textContent = state;
+    drawerStatusText.textContent = initialLabel;
   }
 
   // Update canvas status
   if (canvasStatus) {
-    canvasStatus.textContent = state;
+    canvasStatus.textContent = initialLabel;
 
     if (state === 'recording' || state === 'transcribing' || state === 'thinking') {
       canvasStatus.classList.add('active');
@@ -221,6 +287,9 @@ function setState(state) {
       canvasStatus.classList.remove('active');
     }
   }
+
+  // Start upcount timer
+  stateTimerInterval = setInterval(updateStatusTimer, 1000);
 
   // Show/hide stop audio controls
   if (canvasStopBtn && drawerStopLink) {
@@ -291,137 +360,169 @@ function addMessage(role, text) {
   conversation.scrollTop = conversation.scrollHeight;
 }
 
+// ============================================
+// Widget Registry
+// ============================================
+// Register widget creators by tag type. New types are added by registering
+// a function here - no parser changes needed.
+
+const widgetRegistry = {
+  // YES_NO: plain text question -> binary buttons
+  YES_NO: function(data) {
+    return createYesNoQuestion(data);
+  },
+
+  // APPROVAL: JSON -> approve/reject gate
+  APPROVAL: function(data) {
+    var approvalData = JSON.parse(data);
+    return createApprovalGate(approvalData);
+  },
+
+  // INPUT: JSON -> dispatches to sub-type widgets (slider, text, etc.)
+  INPUT: function(data) {
+    var inputData = JSON.parse(data);
+    var subtype = inputData.type;
+    if (inputWidgetRegistry[subtype]) {
+      return inputWidgetRegistry[subtype](inputData);
+    }
+    console.warn("Unknown input type:", subtype);
+    return null;
+  },
+
+  // DOCUMENT: JSON -> co-managed document editor
+  DOCUMENT: function(data) {
+    var docData = JSON.parse(data);
+    return createDocumentEditor(docData);
+  },
+
+  // CUE: JSON -> executable cue card with approval gate
+  CUE: function(data) {
+    var cueData = JSON.parse(data);
+    return createCueCard(cueData);
+  }
+};
+
+// Sub-registry for INPUT type dispatching
+const inputWidgetRegistry = {
+  slider: function(inputData) {
+    return createSemanticSlider(inputData);
+  },
+  text: function(inputData) {
+    return createTextInput(inputData);
+  }
+};
+
+
 // Render message content with embedded structured components
 function renderMessageContent(container, text) {
-  console.log('📝 Rendering message:', text.substring(0, 100) + (text.length > 100 ? '...' : ''));
-  console.log('   Container children before:', container.children.length);
+  console.log("Rendering message:", text.substring(0, 100) + (text.length > 100 ? "..." : ""));
 
-  // Find all structured tags (YES_NO, INPUT, and APPROVAL) and sort by position
-  const yesNoRegex = /\[YES_NO:\s*(.+?)\]/g;
-  const inputRegex = /\[INPUT:\s*(\{[\s\S]+?\})\]/g;
-  const approvalRegex = /\[APPROVAL:\s*(\{[\s\S]+?\})\]/g;
+  // Single master regex matches all structured tags
+  var tagRegex = /\[(YES_NO|INPUT|APPROVAL|DOCUMENT|CUE):\s*([\s\S]+?)\]/g;
 
-  const matches = [];
-  let match;
+  var matches = [];
+  var match;
 
-  // Collect all YES_NO matches
-  while ((match = yesNoRegex.exec(text)) !== null) {
+  while ((match = tagRegex.exec(text)) !== null) {
     matches.push({
-      type: 'YES_NO',
+      type: match[1],
       index: match.index,
       length: match[0].length,
-      data: match[1]
-    });
-  }
-
-  // Collect all INPUT matches
-  while ((match = inputRegex.exec(text)) !== null) {
-    matches.push({
-      type: 'INPUT',
-      index: match.index,
-      length: match[0].length,
-      data: match[1]
-    });
-  }
-
-  // Collect all APPROVAL matches
-  while ((match = approvalRegex.exec(text)) !== null) {
-    matches.push({
-      type: 'APPROVAL',
-      index: match.index,
-      length: match[0].length,
-      data: match[1]
+      data: match[2]
     });
   }
 
   // Sort by position
-  matches.sort((a, b) => a.index - b.index);
+  matches.sort(function(a, b) { return a.index - b.index; });
 
-  let lastIndex = 0;
-  let hasContent = matches.length > 0;
+  var lastIndex = 0;
+  var hasContent = matches.length > 0;
 
   // Process each match in order
-  matches.forEach((match, i) => {
-    console.log(`✅ Detected ${match.type} tag at position ${match.index}`);
+  matches.forEach(function(m) {
+    console.log("Detected " + m.type + " tag at position " + m.index);
 
     // Add text before the tag
-    const textBefore = text.substring(lastIndex, match.index).trim();
+    var textBefore = text.substring(lastIndex, m.index).trim();
     if (textBefore) {
-      console.log('  → Adding text before:', textBefore.substring(0, 50));
-      const p = document.createElement('p');
-      p.className = 'card__description';
+      var p = document.createElement("p");
+      p.className = "card__description";
       p.textContent = textBefore;
       container.appendChild(p);
     }
 
-    // Add the structured component
-    if (match.type === 'YES_NO') {
-      console.log('  → Creating YES/NO question:', match.data);
-      container.appendChild(createYesNoQuestion(match.data));
-    } else if (match.type === 'APPROVAL') {
+    // Look up widget creator from registry
+    var creator = widgetRegistry[m.type];
+    if (creator) {
       try {
-        const approvalData = JSON.parse(match.data);
-        console.log('  → Parsed APPROVAL data:', approvalData);
-        container.appendChild(createApprovalGate(approvalData));
-      } catch (e) {
-        console.error('❌ Failed to parse APPROVAL JSON:', e);
-        console.error('   Raw JSON string:', match.data);
-        const p = document.createElement('p');
-        p.className = 'card__description';
-        p.textContent = `[APPROVAL: ${match.data}]`;
-        p.style.color = 'var(--error, #ff4444)';
-        container.appendChild(p);
-      }
-    } else if (match.type === 'INPUT') {
-      try {
-        const inputData = JSON.parse(match.data);
-        console.log('  → Parsed INPUT data:', inputData);
-
-        if (inputData.type === 'slider') {
-          console.log('  → Creating slider:', inputData.question);
-          container.appendChild(createSemanticSlider(inputData));
-        } else if (inputData.type === 'text') {
-          console.log('  → Creating text input:', inputData.question);
-          container.appendChild(createTextInput(inputData));
-        } else {
-          console.warn('  ⚠️ Unknown input type:', inputData.type);
+        var widget = creator(m.data);
+        if (widget) {
+          container.appendChild(widget);
         }
       } catch (e) {
-        console.error('❌ Failed to parse INPUT JSON:', e);
-        console.error('   Raw JSON string:', match.data);
-        const p = document.createElement('p');
-        p.className = 'card__description';
-        p.textContent = `[INPUT: ${match.data}]`;
-        p.style.color = 'var(--error, #ff4444)';
-        container.appendChild(p);
+        console.error("Failed to create " + m.type + " widget:", e);
+        var errorP = document.createElement("p");
+        errorP.className = "card__description";
+        errorP.textContent = "[" + m.type + ": " + m.data + "]";
+        errorP.style.color = "var(--error, #ff4444)";
+        container.appendChild(errorP);
       }
+    } else {
+      console.warn("No widget registered for tag type:", m.type);
     }
 
-    lastIndex = match.index + match.length;
+    lastIndex = m.index + m.length;
   });
 
-  // If no structured content was found, just render as plain text
+  // If no structured content was found, render as plain text
   if (!hasContent) {
-    // Plain text message
-    console.log('📄 Plain text message');
-    const p = document.createElement('p');
-    p.className = 'card__description';
-    p.textContent = text;
-    container.appendChild(p);
+    var plainP = document.createElement("p");
+    plainP.className = "card__description";
+    plainP.textContent = text;
+    container.appendChild(plainP);
   } else {
     // Add any remaining text after the last tag
-    const textAfter = text.substring(lastIndex).trim();
+    var textAfter = text.substring(lastIndex).trim();
     if (textAfter) {
-      console.log('  → Adding text after:', textAfter.substring(0, 50));
-      const p = document.createElement('p');
-      p.className = 'card__description';
-      p.textContent = textAfter;
-      container.appendChild(p);
+      var afterP = document.createElement("p");
+      afterP.className = "card__description";
+      afterP.textContent = textAfter;
+      container.appendChild(afterP);
     }
   }
+}
 
-  console.log('   Container children after:', container.children.length);
-  console.log('   ---');
+// Create pin icon for structured question cards
+function createPinIcon() {
+  var btn = document.createElement("button");
+  btn.className = "pin-icon";
+  btn.setAttribute("data-state", "inactive");
+  btn.style.display = "none"; // hidden until token_created assigns an ID
+  btn.setAttribute("aria-label", "Pin token");
+
+  var glyph = document.createElement("span");
+  glyph.className = "pin-icon__glyph";
+  btn.appendChild(glyph);
+
+  btn.addEventListener("click", function(e) {
+    e.stopPropagation();
+    var tokenId = btn.dataset.tokenId;
+    if (!tokenId) return;
+
+    var state = btn.getAttribute("data-state");
+    if (state === "inactive" || state === "sleeping") {
+      socket.emit("pin_token", { token_id: tokenId });
+      btn.setAttribute("data-state", "active");
+      var card = btn.closest(".structured-question");
+      createPinnedThumbnail(tokenId, card);
+    } else {
+      socket.emit("unpin_token", { token_id: tokenId });
+      btn.setAttribute("data-state", "inactive");
+      removePinnedThumbnail(tokenId);
+    }
+  });
+
+  return btn;
 }
 
 // Create YES/NO question UI
@@ -460,6 +561,8 @@ function createYesNoQuestion(questionText) {
   buttonGroup.appendChild(noBtn);
   container.appendChild(buttonGroup);
 
+  container.appendChild(createPinIcon());
+
   // Block other input when question is pending
   setPendingInput(true);
 
@@ -468,9 +571,8 @@ function createYesNoQuestion(questionText) {
 
 // Handle question response
 function handleQuestionResponse(answer, buttonGroup, questionText) {
-  // Send the response with question context
-  const response = `[Response to "${questionText}"]: ${answer}`;
-  socket.emit('text_message', { text: response });
+  // Send as button_response so backend creates YES/NO token
+  socket.emit("button_response", { answer: answer });
 
   // Disable all buttons in the group
   const buttons = buttonGroup.querySelectorAll('button');
@@ -490,69 +592,71 @@ function handleQuestionResponse(answer, buttonGroup, questionText) {
   setPendingInput(false);
 
   // Add user message immediately (backend doesn't echo button responses)
-  addMessage('user', response);
+  addMessage("user", answer);
 }
 
 // Create semantic slider (from JSON INPUT)
 function createSemanticSlider(inputData) {
-  const container = document.createElement('div');
-  container.className = 'structured-question';
+  var container = document.createElement("div");
+  container.className = "structured-question";
 
-  const question = document.createElement('p');
-  question.className = 'card__description';
+  // Store thermal data for passthrough
+  if (inputData.thermal) {
+    container.dataset.thermal = JSON.stringify(inputData.thermal);
+  }
+
+  var question = document.createElement("p");
+  question.className = "card__description";
   question.textContent = inputData.question;
   container.appendChild(question);
 
   // Slider container
-  const sliderContainer = document.createElement('div');
-  sliderContainer.className = 'slider-container';
-  sliderContainer.style.marginTop = 'var(--space-md, 0.75rem)';
+  var sliderContainer = document.createElement("div");
+  sliderContainer.className = "slider-container";
+  sliderContainer.style.marginTop = "var(--space-md, 0.75rem)";
 
   // Scale labels (if provided)
   if (inputData.scale) {
-    const lowLabel = document.createElement('div');
-    lowLabel.className = 'slider-label slider-label--low';
-    lowLabel.textContent = inputData.scale.low || 'Low';
-
-    const highLabel = document.createElement('div');
-    highLabel.className = 'slider-label slider-label--high';
-    highLabel.textContent = inputData.scale.high || 'High';
-
+    var lowLabel = document.createElement("div");
+    lowLabel.className = "slider-label slider-label--low";
+    lowLabel.textContent = inputData.scale.low || "Low";
     sliderContainer.appendChild(lowLabel);
   }
 
   // Slider input (0-100 scale for semantic sliders)
-  const slider = document.createElement('input');
-  slider.type = 'range';
+  var slider = document.createElement("input");
+  slider.type = "range";
   slider.min = 0;
   slider.max = 100;
   slider.step = 1;
-  slider.value = 50; // Start at middle
-  slider.className = 'slider-input';
-  slider.dataset.semanticLabel = inputData.semantic_label || '';
+  slider.value = 50;
+  slider.className = "slider-input";
+  slider.dataset.semanticLabel = inputData.semantic_label || "";
 
   sliderContainer.appendChild(slider);
 
   if (inputData.scale) {
-    const highLabel = document.createElement('div');
-    highLabel.className = 'slider-label slider-label--high';
-    highLabel.textContent = inputData.scale.high || 'High';
+    var highLabel = document.createElement("div");
+    highLabel.className = "slider-label slider-label--high";
+    highLabel.textContent = inputData.scale.high || "High";
     sliderContainer.appendChild(highLabel);
   }
 
   container.appendChild(sliderContainer);
 
   // Submit button
-  const submitBtn = document.createElement('button');
-  submitBtn.className = 'btn btn--primary';
-  submitBtn.textContent = 'Submit';
-  submitBtn.style.marginTop = 'var(--space-md, 0.75rem)';
-  submitBtn.addEventListener('click', (e) => {
+  var submitBtn = document.createElement("button");
+  submitBtn.className = "btn btn--primary";
+  submitBtn.textContent = "Submit";
+  submitBtn.style.marginTop = "var(--space-md, 0.75rem)";
+  submitBtn.addEventListener("click", function(e) {
     e.stopPropagation();
-    handleSliderResponse(slider.value, slider, submitBtn, inputData.semantic_label, inputData.question);
+    var thermal = container.dataset.thermal ? JSON.parse(container.dataset.thermal) : null;
+    handleSliderResponse(slider.value, slider, submitBtn, inputData.semantic_label, inputData.question, thermal);
   });
 
   container.appendChild(submitBtn);
+  container.appendChild(createPinIcon());
 
   // Block other input when question is pending
   setPendingInput(true);
@@ -561,79 +665,96 @@ function createSemanticSlider(inputData) {
 }
 
 // Handle slider response
-function handleSliderResponse(value, slider, submitBtn, semanticLabel, question) {
-  console.log('Slider response:', value, 'Label:', semanticLabel);
+function handleSliderResponse(value, slider, submitBtn, semanticLabel, question, thermal) {
+  console.log("Slider response:", value, "Label:", semanticLabel);
 
   // Send the response with context
-  let response;
+  var response;
   if (semanticLabel) {
-    response = `${semanticLabel}: ${value}`;
+    response = semanticLabel + ": " + value;
   } else if (question) {
-    response = `[Response to "${question}"]: ${value}`;
+    response = "[Response to \"" + question + "\"]: " + value;
   } else {
     response = String(value);
   }
-  console.log('Sending response:', response);
 
-  socket.emit('text_message', { text: response });
+  // Emit as input_response so backend creates a token
+  var inputPayload = {
+    input: {
+      slider_value: parseInt(value, 10),
+      semantic_label: semanticLabel || "parameter",
+      question: question || ""
+    }
+  };
+  if (thermal) {
+    inputPayload.input.thermal = thermal;
+  }
+  socket.emit("input_response", inputPayload);
 
   // Disable slider
   slider.disabled = true;
-  slider.classList.add('disabled');
+  slider.classList.add("disabled");
 
   // Remove submit button
   submitBtn.remove();
 
   // Add choice indicator
-  const choiceIndicator = document.createElement('div');
-  choiceIndicator.className = 'choice-indicator';
-  choiceIndicator.textContent = `Selected: ${value}%`;
+  var choiceIndicator = document.createElement("div");
+  choiceIndicator.className = "choice-indicator";
+  choiceIndicator.textContent = "Selected: " + value + "%";
 
   slider.parentNode.parentNode.appendChild(choiceIndicator);
 
   // Unblock input
   setPendingInput(false);
 
-  // Add user message immediately (backend doesn't echo slider responses)
-  addMessage('user', response);
+  // Add user message immediately
+  addMessage("user", response);
 }
 
 // Create text input (from JSON INPUT)
 function createTextInput(inputData) {
-  const container = document.createElement('div');
-  container.className = 'structured-question';
+  var container = document.createElement("div");
+  container.className = "structured-question";
 
-  const question = document.createElement('p');
-  question.className = 'card__description';
+  // Store thermal data for passthrough
+  if (inputData.thermal) {
+    container.dataset.thermal = JSON.stringify(inputData.thermal);
+  }
+
+  var question = document.createElement("p");
+  question.className = "card__description";
   question.textContent = inputData.question;
   container.appendChild(question);
 
   // Textarea container
-  const textareaContainer = document.createElement('div');
-  textareaContainer.className = 'text-input-container';
-  textareaContainer.style.marginTop = 'var(--space-md, 0.75rem)';
+  var textareaContainer = document.createElement("div");
+  textareaContainer.className = "text-input-container";
+  textareaContainer.style.marginTop = "var(--space-md, 0.75rem)";
 
   // Textarea input
-  const textarea = document.createElement('textarea');
-  textarea.className = 'text-input';
-  textarea.placeholder = inputData.placeholder || 'Enter your response...';
+  var textarea = document.createElement("textarea");
+  textarea.className = "text-input";
+  textarea.placeholder = inputData.placeholder || "Enter your response...";
   textarea.rows = inputData.rows || 4;
-  textarea.dataset.semanticLabel = inputData.semantic_label || '';
+  textarea.dataset.semanticLabel = inputData.semantic_label || "";
 
   textareaContainer.appendChild(textarea);
   container.appendChild(textareaContainer);
 
   // Submit button
-  const submitBtn = document.createElement('button');
-  submitBtn.className = 'btn btn--primary';
-  submitBtn.textContent = 'Submit';
-  submitBtn.style.marginTop = 'var(--space-md, 0.75rem)';
-  submitBtn.addEventListener('click', (e) => {
+  var submitBtn = document.createElement("button");
+  submitBtn.className = "btn btn--primary";
+  submitBtn.textContent = "Submit";
+  submitBtn.style.marginTop = "var(--space-md, 0.75rem)";
+  submitBtn.addEventListener("click", function(e) {
     e.stopPropagation();
-    handleTextResponse(textarea.value, textarea, submitBtn, inputData.semantic_label, inputData.question);
+    var thermal = container.dataset.thermal ? JSON.parse(container.dataset.thermal) : null;
+    handleTextResponse(textarea.value, textarea, submitBtn, inputData.semantic_label, inputData.question, thermal);
   });
 
   container.appendChild(submitBtn);
+  container.appendChild(createPinIcon());
 
   // Block other input when question is pending
   setPendingInput(true);
@@ -642,39 +763,49 @@ function createTextInput(inputData) {
 }
 
 // Handle text input response
-function handleTextResponse(value, textarea, submitBtn, semanticLabel, question) {
-  console.log('Text input response:', value, 'Label:', semanticLabel);
+function handleTextResponse(value, textarea, submitBtn, semanticLabel, question, thermal) {
+  console.log("Text input response:", value, "Label:", semanticLabel);
 
-  // Send the response with question context for better AI understanding
-  let response;
+  // Send the response with question context
+  var response;
   if (semanticLabel) {
-    response = `${semanticLabel}: ${value}`;
+    response = semanticLabel + ": " + value;
   } else if (question) {
-    response = `[Response to "${question}"]: ${value}`;
+    response = "[Response to \"" + question + "\"]: " + value;
   } else {
     response = value;
   }
-  console.log('Sending response:', response);
 
-  socket.emit('text_message', { text: response });
+  // Emit as input_response so backend creates a token
+  var inputPayload = {
+    input: {
+      key: semanticLabel || question || "response",
+      value: value,
+      question: question || ""
+    }
+  };
+  if (thermal) {
+    inputPayload.input.thermal = thermal;
+  }
+  socket.emit("input_response", inputPayload);
 
   // Disable textarea
   textarea.disabled = true;
-  textarea.classList.add('disabled');
+  textarea.classList.add("disabled");
 
   // Remove submit button
   submitBtn.remove();
 
   // Add submitted text indicator (truncated at 2 lines)
-  const choiceIndicator = document.createElement('div');
-  choiceIndicator.className = 'choice-indicator choice-indicator--text';
+  var choiceIndicator = document.createElement("div");
+  choiceIndicator.className = "choice-indicator choice-indicator--text";
 
-  const label = document.createElement('strong');
-  label.textContent = 'Submitted: ';
-  choiceIndicator.appendChild(label);
+  var labelEl = document.createElement("strong");
+  labelEl.textContent = "Submitted: ";
+  choiceIndicator.appendChild(labelEl);
 
-  const textSpan = document.createElement('span');
-  textSpan.className = 'submitted-text';
+  var textSpan = document.createElement("span");
+  textSpan.className = "submitted-text";
   textSpan.textContent = value;
   choiceIndicator.appendChild(textSpan);
 
@@ -683,8 +814,8 @@ function handleTextResponse(value, textarea, submitBtn, semanticLabel, question)
   // Unblock input
   setPendingInput(false);
 
-  // Add user message immediately (backend doesn't echo text input responses)
-  addMessage('user', response);
+  // Add user message immediately
+  addMessage("user", response);
 }
 
 // Create approval gate
@@ -763,6 +894,8 @@ function createApprovalGate(approvalData) {
   buttonGroup.appendChild(rejectBtn);
   container.appendChild(buttonGroup);
 
+  container.appendChild(createPinIcon());
+
   // Block other input when approval is pending
   setPendingInput(true);
 
@@ -771,13 +904,13 @@ function createApprovalGate(approvalData) {
 
 // Handle approval response
 function handleApprovalResponse(decision, buttonGroup, approvalData) {
-  console.log('Approval response:', decision, 'Data:', approvalData);
+  console.log("Approval response:", decision, "Data:", approvalData);
 
-  // Send the response with context
-  const actionText = approvalData.action || 'Action';
-  const descText = approvalData.description || 'action';
-  const response = `[Response to "${actionText}: ${descText}"]: ${decision}`;
-  socket.emit('text_message', { text: response });
+  // Send as approval_response so backend handles token creation and context
+  socket.emit("approval_response", {
+    decision: decision,
+    approval_data: approvalData
+  });
 
   // Disable all buttons
   const buttons = buttonGroup.querySelectorAll('button');
@@ -804,7 +937,7 @@ function handleApprovalResponse(decision, buttonGroup, approvalData) {
   setPendingInput(false);
 
   // Add user message immediately
-  addMessage('user', response);
+  addMessage("user", decision);
 }
 
 // Set pending input state
@@ -832,8 +965,245 @@ function setPendingInput(pending) {
 
 // Send text response
 function sendTextResponse(text) {
-  addMessage('user', text);
-  socket.emit('text_message', { text: text });
+  addMessage("user", text);
+  socket.emit("text_message", { text: text });
+}
+
+// ============================================
+// Document Editor Widget (Phase 2B)
+// ============================================
+
+// Track open document editors by ID
+var openDocuments = {};
+
+function createDocumentEditor(docData) {
+  var docId = docData.id;
+  var action = docData.action || "open";
+
+  // Handle close action
+  if (action === "close" && openDocuments[docId]) {
+    var existing = openDocuments[docId];
+    existing.classList.add("document-editor--closed");
+    delete openDocuments[docId];
+    socket.emit("document_update", { id: docId, action: "close" });
+    return document.createComment("document closed: " + docId);
+  }
+
+  // Handle update action - update existing editor
+  if (action === "update" && openDocuments[docId]) {
+    var editor = openDocuments[docId];
+    var contentArea = editor.querySelector(".document-editor__content");
+    if (contentArea && docData.content) {
+      contentArea.value = docData.content;
+    }
+    var versionEl = editor.querySelector(".document-editor__version");
+    if (versionEl && docData.version) {
+      versionEl.textContent = "v" + docData.version;
+    }
+    return document.createComment("document updated: " + docId);
+  }
+
+  // Create new editor
+  var article = document.createElement("article");
+  article.className = "document-editor";
+  article.dataset.docId = docId;
+
+  // Header
+  var header = document.createElement("header");
+  header.className = "document-editor__header";
+
+  var title = document.createElement("h3");
+  title.className = "document-editor__title";
+  title.textContent = docData.title || "Untitled Document";
+
+  var version = document.createElement("span");
+  version.className = "document-editor__version";
+  version.textContent = "v" + (docData.version || 1);
+
+  header.appendChild(title);
+  header.appendChild(version);
+  article.appendChild(header);
+
+  // Content area (editable textarea)
+  var contentSection = document.createElement("section");
+  contentSection.className = "document-editor__body";
+
+  var textarea = document.createElement("textarea");
+  textarea.className = "document-editor__content";
+  textarea.value = docData.content || "";
+  textarea.rows = 12;
+  textarea.placeholder = "Document content...";
+
+  contentSection.appendChild(textarea);
+  article.appendChild(contentSection);
+
+  // Footer with actions
+  var footer = document.createElement("footer");
+  footer.className = "document-editor__footer";
+
+  var saveBtn = document.createElement("button");
+  saveBtn.className = "btn btn--primary";
+  saveBtn.textContent = "Save";
+  saveBtn.addEventListener("click", function(e) {
+    e.stopPropagation();
+    socket.emit("document_update", {
+      id: docId,
+      action: "update",
+      content: textarea.value,
+      editor: "user"
+    });
+    // Update version display optimistically
+    var currentV = parseInt(version.textContent.replace("v", "")) || 1;
+    version.textContent = "v" + (currentV + 1);
+  });
+
+  var closeBtn = document.createElement("button");
+  closeBtn.className = "btn btn--secondary";
+  closeBtn.textContent = "Close";
+  closeBtn.addEventListener("click", function(e) {
+    e.stopPropagation();
+    socket.emit("document_update", { id: docId, action: "close" });
+    article.classList.add("document-editor--closed");
+    delete openDocuments[docId];
+  });
+
+  footer.appendChild(saveBtn);
+  footer.appendChild(closeBtn);
+  article.appendChild(footer);
+
+  // Track open editor
+  openDocuments[docId] = article;
+
+  return article;
+}
+
+// Listen for server-side document updates
+socket.on("document_update", function(data) {
+  var docId = data.id;
+  if (openDocuments[docId]) {
+    var editor = openDocuments[docId];
+    if (data.content !== undefined) {
+      var contentArea = editor.querySelector(".document-editor__content");
+      if (contentArea) {
+        contentArea.value = data.content;
+      }
+    }
+    if (data.version !== undefined) {
+      var versionEl = editor.querySelector(".document-editor__version");
+      if (versionEl) {
+        versionEl.textContent = "v" + data.version;
+      }
+    }
+    if (data.action === "close") {
+      editor.classList.add("document-editor--closed");
+      delete openDocuments[docId];
+    }
+  }
+});
+
+// ============================================
+// CUE Card Widget (Phase 3B)
+// ============================================
+
+function createCueCard(cueData) {
+  var container = document.createElement("div");
+  container.className = "structured-question cue-card";
+
+  // Tool name header
+  var title = document.createElement("p");
+  title.className = "card__description cue-card__title";
+  title.innerHTML = "<strong>CUE:</strong> " + (cueData.tool || "unknown");
+  container.appendChild(title);
+
+  // Cue ID
+  if (cueData.cue_id) {
+    var cueId = document.createElement("p");
+    cueId.className = "card__description cue-card__id";
+    cueId.textContent = cueData.cue_id;
+    cueId.style.fontSize = "var(--font-size-sm, 0.875rem)";
+    cueId.style.color = "var(--text-secondary, #888)";
+    container.appendChild(cueId);
+  }
+
+  // Payload preview
+  if (cueData.payload) {
+    var previewContainer = document.createElement("div");
+    previewContainer.className = "cue-card__preview";
+
+    var preview = document.createElement("pre");
+    preview.className = "cue-card__preview-text";
+    preview.textContent = JSON.stringify(cueData.payload, null, 2);
+    previewContainer.appendChild(preview);
+
+    container.appendChild(previewContainer);
+  }
+
+  // Approve/Reject buttons
+  var buttonGroup = document.createElement("div");
+  buttonGroup.className = "button-group";
+  buttonGroup.style.marginTop = "var(--space-md, 0.75rem)";
+  buttonGroup.style.display = "flex";
+  buttonGroup.style.gap = "var(--space-sm, 0.5rem)";
+
+  var approveBtn = document.createElement("button");
+  approveBtn.className = "btn btn--primary";
+  approveBtn.textContent = "Approve";
+  approveBtn.addEventListener("click", function(e) {
+    e.stopPropagation();
+    socket.emit("cue_dispatch", {
+      cue_id: cueData.cue_id,
+      tool: cueData.tool,
+      payload: cueData.payload,
+      decision: "approved"
+    });
+    handleCueResponse("Approved", buttonGroup, cueData);
+  });
+
+  var rejectBtn = document.createElement("button");
+  rejectBtn.className = "btn btn--secondary";
+  rejectBtn.textContent = "Reject";
+  rejectBtn.addEventListener("click", function(e) {
+    e.stopPropagation();
+    handleCueResponse("Rejected", buttonGroup, cueData);
+  });
+
+  buttonGroup.appendChild(approveBtn);
+  buttonGroup.appendChild(rejectBtn);
+  container.appendChild(buttonGroup);
+
+  container.appendChild(createPinIcon());
+
+  setPendingInput(true);
+
+  return container;
+}
+
+function handleCueResponse(decision, buttonGroup, cueData) {
+  var buttons = buttonGroup.querySelectorAll("button");
+  buttons.forEach(function(btn) {
+    btn.disabled = true;
+    btn.style.opacity = "0.5";
+  });
+
+  var selectedBtn = Array.from(buttons).find(function(btn) {
+    return btn.textContent === decision || btn.textContent === "Approve" && decision === "Approved"
+           || btn.textContent === "Reject" && decision === "Rejected";
+  });
+  if (selectedBtn) {
+    selectedBtn.style.opacity = "1";
+    selectedBtn.style.fontWeight = "bold";
+  }
+
+  var indicator = document.createElement("div");
+  indicator.className = "choice-indicator";
+  indicator.innerHTML = "<strong>Decision:</strong> " + decision;
+  buttonGroup.parentNode.appendChild(indicator);
+
+  setPendingInput(false);
+
+  var response = "[CUE " + decision + ": " + (cueData.tool || "") + " " + (cueData.cue_id || "") + "]";
+  addMessage("user", response);
+  socket.emit("text_message", { text: response });
 }
 
 // Update relative timestamps
@@ -884,6 +1254,485 @@ function addSystemMessage(text) {
   conversation.appendChild(messageCard);
   conversation.scrollTop = conversation.scrollHeight;
 }
+
+// ============================================
+// Pinnable Tokens - Token Created Listener
+// ============================================
+
+socket.on("token_created", function(data) {
+  console.log("Token created:", data.token_id, data.type);
+
+  // Store in registry
+  tokenRegistry[data.token_id] = {
+    token_id: data.token_id,
+    type: data.type,
+    label: data.label,
+    value: data.value,
+    question: data.question || "",
+    slider_value: data.slider_value,
+    key: data.key
+  };
+
+  // Find the most recent untagged structured-question in the conversation
+  var questions = conversation.querySelectorAll(".structured-question:not([data-token-id])");
+  if (questions.length > 0) {
+    var lastQuestion = questions[questions.length - 1];
+    lastQuestion.setAttribute("data-token-id", data.token_id);
+    lastQuestion.setAttribute("data-token-type", data.type);
+    lastQuestion.setAttribute("data-token-label", data.label);
+    lastQuestion.setAttribute("data-token-value", data.value);
+
+    // Show and wire up the pin icon
+    var pinIcon = lastQuestion.querySelector(".pin-icon");
+    if (pinIcon) {
+      pinIcon.dataset.tokenId = data.token_id;
+      pinIcon.setAttribute("data-state", "inactive");
+      pinIcon.style.display = "flex";
+    }
+  }
+});
+
+// ============================================
+// Pinnable Tokens - Thumbnail Management
+// ============================================
+
+function createPinnedThumbnail(tokenId, sourceCard) {
+  var container = document.getElementById("pinnedTokens");
+  if (!container) return;
+
+  // Avoid duplicates
+  if (container.querySelector("[data-token-id=\"" + tokenId + "\"]")) return;
+
+  var data = tokenRegistry[tokenId];
+  if (!data) return;
+
+  var thumb = document.createElement("div");
+  thumb.className = "pinned-thumbnail";
+  thumb.setAttribute("data-token-id", tokenId);
+
+  var dot = document.createElement("span");
+  dot.className = "pinned-thumbnail__dot";
+  dot.setAttribute("data-type", data.type);
+  thumb.appendChild(dot);
+
+  var info = document.createElement("div");
+  info.className = "pinned-thumbnail__info";
+
+  var label = document.createElement("p");
+  label.className = "pinned-thumbnail__label";
+  label.textContent = data.label || data.key || "token";
+  info.appendChild(label);
+
+  var value = document.createElement("p");
+  value.className = "pinned-thumbnail__value";
+  value.textContent = data.value || "";
+  info.appendChild(value);
+
+  // Countdown timer
+  var countdown = document.createElement("p");
+  countdown.className = "pinned-thumbnail__countdown";
+  countdown.textContent = "";
+  info.appendChild(countdown);
+
+  thumb.appendChild(info);
+
+  // Single tap = renew pin, long press or double-tap would open lightbox
+  // Using click for lightbox, dedicated renew button area
+  thumb.addEventListener("click", function(e) {
+    // If clicking the countdown area, renew the pin
+    if (e.target === countdown || e.target.classList.contains("pinned-thumbnail__countdown")) {
+      e.stopPropagation();
+      socket.emit("renew_pin", { token_id: tokenId });
+      return;
+    }
+    openLightbox(tokenId);
+  });
+
+  container.appendChild(thumb);
+  pinnedTokens[tokenId] = thumb;
+
+  // Start countdown if we have pinned_at
+  if (data.pinned_at) {
+    startPinCountdown(tokenId, data.pinned_at);
+  }
+}
+
+// Pin countdown tracking
+var pinCountdownIntervals = {};
+
+function startPinCountdown(tokenId, pinnedAt) {
+  // Clear any existing interval
+  if (pinCountdownIntervals[tokenId]) {
+    clearInterval(pinCountdownIntervals[tokenId]);
+  }
+
+  var pinnedTime = new Date(pinnedAt + "Z").getTime();
+  var ttlMs = 2 * 60 * 60 * 1000; // 2 hours
+
+  function updateCountdown() {
+    var now = Date.now();
+    var elapsed = now - pinnedTime;
+    var remaining = ttlMs - elapsed;
+
+    var thumb = pinnedTokens[tokenId];
+    if (!thumb) {
+      clearInterval(pinCountdownIntervals[tokenId]);
+      delete pinCountdownIntervals[tokenId];
+      return;
+    }
+
+    var countdownEl = thumb.querySelector(".pinned-thumbnail__countdown");
+    if (!countdownEl) return;
+
+    if (remaining <= 0) {
+      // Pin expired — remove thumbnail
+      removePinnedThumbnail(tokenId);
+      clearInterval(pinCountdownIntervals[tokenId]);
+      delete pinCountdownIntervals[tokenId];
+      // Reset pin icon on source card
+      var card = conversation.querySelector("[data-token-id=\"" + tokenId + "\"]");
+      if (card) {
+        var pinIcon = card.querySelector(".pin-icon");
+        if (pinIcon) pinIcon.setAttribute("data-state", "inactive");
+      }
+      return;
+    }
+
+    var mins = Math.floor(remaining / 60000);
+    var hours = Math.floor(mins / 60);
+    mins = mins % 60;
+
+    if (hours > 0) {
+      countdownEl.textContent = hours + "h " + mins + "m";
+    } else {
+      countdownEl.textContent = mins + "m";
+    }
+
+    // Visual fade as time runs low (last 15 minutes)
+    if (remaining < 15 * 60 * 1000) {
+      thumb.style.opacity = "0.5";
+      countdownEl.style.color = "var(--state-recording, #ff4444)";
+    } else {
+      thumb.style.opacity = "";
+      countdownEl.style.color = "";
+    }
+  }
+
+  updateCountdown();
+  pinCountdownIntervals[tokenId] = setInterval(updateCountdown, 30000); // Update every 30s
+}
+
+function removePinnedThumbnail(tokenId) {
+  var thumb = pinnedTokens[tokenId];
+  if (thumb && thumb.parentNode) {
+    thumb.parentNode.removeChild(thumb);
+  }
+  delete pinnedTokens[tokenId];
+  // Clean up countdown interval
+  if (pinCountdownIntervals[tokenId]) {
+    clearInterval(pinCountdownIntervals[tokenId]);
+    delete pinCountdownIntervals[tokenId];
+  }
+}
+
+// ============================================
+// Pinnable Tokens - Lightbox Modal
+// ============================================
+
+function openLightbox(tokenId) {
+  var data = tokenRegistry[tokenId];
+  if (!data) return;
+
+  currentLightboxTokenId = tokenId;
+
+  var lightbox = document.getElementById("lightbox");
+  var title = document.getElementById("lightboxTitle");
+  var body = document.getElementById("lightboxBody");
+
+  title.textContent = data.label || data.key || "Token";
+  renderLightboxBody(body, data, false);
+
+  // Show view mode buttons, hide edit mode buttons
+  document.getElementById("lightboxEditBtn").style.display = "";
+  document.getElementById("lightboxDeleteBtn").style.display = "";
+  document.getElementById("lightboxUnpinBtn").style.display = "";
+  document.getElementById("lightboxSaveBtn").style.display = "none";
+  document.getElementById("lightboxCancelBtn").style.display = "none";
+
+  lightbox.style.display = "flex";
+}
+
+function closeLightbox() {
+  var lightbox = document.getElementById("lightbox");
+  lightbox.style.display = "none";
+  currentLightboxTokenId = null;
+}
+
+function renderLightboxBody(container, data, editable) {
+  container.innerHTML = "";
+
+  // Question text
+  if (data.question) {
+    var questionEl = document.createElement("p");
+    questionEl.className = "card__description";
+    questionEl.textContent = data.question;
+    questionEl.style.marginBottom = "var(--space-md, 0.75rem)";
+    container.appendChild(questionEl);
+  }
+
+  if (data.type === "yes_no_response" || data.type === "approval_response" || data.type === "cue_dispatch") {
+    // Pick labels based on token type
+    var isApprovalType = (data.type === "approval_response" || data.type === "cue_dispatch");
+    var positiveLabel = isApprovalType ? "Approve" : "Yes";
+    var negativeLabel = isApprovalType ? "Reject" : "No";
+    var positiveValue = isApprovalType ? "Approve" : "Yes";
+    var negativeValue = isApprovalType ? "Reject" : "No";
+    // Normalize current value for matching
+    var isPositive = (data.value === "Yes" || data.value === "Approve" || data.value === "Approved");
+
+    if (editable) {
+      var btnGroup = document.createElement("div");
+      btnGroup.className = "button-group";
+      btnGroup.style.display = "flex";
+      btnGroup.style.gap = "var(--space-sm, 0.5rem)";
+
+      var yesBtn = document.createElement("button");
+      yesBtn.className = "btn " + (isPositive ? "btn--primary" : "btn--secondary");
+      yesBtn.textContent = positiveLabel;
+      yesBtn.addEventListener("click", function() {
+        container.dataset.newValue = positiveValue;
+        yesBtn.className = "btn btn--primary";
+        noBtn.className = "btn btn--secondary";
+      });
+
+      var noBtn = document.createElement("button");
+      noBtn.className = "btn " + (!isPositive ? "btn--primary" : "btn--secondary");
+      noBtn.textContent = negativeLabel;
+      noBtn.addEventListener("click", function() {
+        container.dataset.newValue = negativeValue;
+        noBtn.className = "btn btn--primary";
+        yesBtn.className = "btn btn--secondary";
+      });
+
+      btnGroup.appendChild(yesBtn);
+      btnGroup.appendChild(noBtn);
+      container.appendChild(btnGroup);
+      container.dataset.newValue = data.value;
+    } else {
+      var valueEl = document.createElement("p");
+      valueEl.className = "card__description";
+      valueEl.style.fontWeight = "var(--font-weight-bold, 700)";
+      var answerPrefix = isApprovalType ? "Decision" : "Answer";
+      valueEl.textContent = answerPrefix + ": " + data.value;
+      container.appendChild(valueEl);
+    }
+  } else if (data.type === "scalar_param") {
+    if (editable) {
+      var sliderEl = document.createElement("input");
+      sliderEl.type = "range";
+      sliderEl.min = 0;
+      sliderEl.max = 100;
+      sliderEl.step = 1;
+      sliderEl.value = data.slider_value || 50;
+      sliderEl.className = "slider-input";
+      sliderEl.style.width = "100%";
+
+      var sliderValDisplay = document.createElement("div");
+      sliderValDisplay.className = "slider-value";
+      sliderValDisplay.textContent = sliderEl.value + "%";
+
+      sliderEl.addEventListener("input", function() {
+        sliderValDisplay.textContent = sliderEl.value + "%";
+        container.dataset.newValue = sliderEl.value;
+      });
+
+      container.appendChild(sliderEl);
+      container.appendChild(sliderValDisplay);
+      container.dataset.newValue = String(data.slider_value || 50);
+    } else {
+      var valueEl = document.createElement("p");
+      valueEl.className = "card__description";
+      valueEl.style.fontWeight = "var(--font-weight-bold, 700)";
+      valueEl.textContent = "Value: " + data.value + " (" + (data.slider_value || "") + "%)";
+      container.appendChild(valueEl);
+    }
+  } else if (data.type === "text_input") {
+    if (editable) {
+      var textareaEl = document.createElement("textarea");
+      textareaEl.className = "text-input";
+      textareaEl.value = data.value || "";
+      textareaEl.rows = 4;
+      textareaEl.addEventListener("input", function() {
+        container.dataset.newValue = textareaEl.value;
+      });
+      container.appendChild(textareaEl);
+      container.dataset.newValue = data.value || "";
+    } else {
+      var valueEl = document.createElement("p");
+      valueEl.className = "card__description";
+      valueEl.style.fontWeight = "var(--font-weight-bold, 700)";
+      valueEl.textContent = "Value: " + data.value;
+      container.appendChild(valueEl);
+    }
+  }
+}
+
+// Lightbox button wiring
+(function() {
+  var editBtn = document.getElementById("lightboxEditBtn");
+  var deleteBtn = document.getElementById("lightboxDeleteBtn");
+  var unpinBtn = document.getElementById("lightboxUnpinBtn");
+  var saveBtn = document.getElementById("lightboxSaveBtn");
+  var cancelBtn = document.getElementById("lightboxCancelBtn");
+  var closeBtn = document.getElementById("lightboxClose");
+  var backdrop = document.getElementById("lightboxBackdrop");
+
+  unpinBtn.addEventListener("click", function() {
+    if (!currentLightboxTokenId) return;
+    var tokenId = currentLightboxTokenId;
+    socket.emit("unpin_token", { token_id: tokenId });
+    removePinnedThumbnail(tokenId);
+    // Reset pin icon on the source card
+    var card = conversation.querySelector("[data-token-id=\"" + tokenId + "\"]");
+    if (card) {
+      var pinIcon = card.querySelector(".pin-icon");
+      if (pinIcon) {
+        pinIcon.setAttribute("data-state", "inactive");
+      }
+    }
+    closeLightbox();
+  });
+
+  editBtn.addEventListener("click", function() {
+    if (!currentLightboxTokenId) return;
+    var data = tokenRegistry[currentLightboxTokenId];
+    if (!data) return;
+    var body = document.getElementById("lightboxBody");
+    renderLightboxBody(body, data, true);
+    editBtn.style.display = "none";
+    deleteBtn.style.display = "none";
+    unpinBtn.style.display = "none";
+    saveBtn.style.display = "";
+    cancelBtn.style.display = "";
+  });
+
+  cancelBtn.addEventListener("click", function() {
+    if (!currentLightboxTokenId) return;
+    var data = tokenRegistry[currentLightboxTokenId];
+    if (!data) return;
+    var body = document.getElementById("lightboxBody");
+    renderLightboxBody(body, data, false);
+    editBtn.style.display = "";
+    deleteBtn.style.display = "";
+    unpinBtn.style.display = "";
+    saveBtn.style.display = "none";
+    cancelBtn.style.display = "none";
+  });
+
+  saveBtn.addEventListener("click", function() {
+    if (!currentLightboxTokenId) return;
+    var body = document.getElementById("lightboxBody");
+    var newValue = body.dataset.newValue;
+    socket.emit("edit_token", { token_id: currentLightboxTokenId, new_value: newValue });
+    // Optimistic update
+    tokenRegistry[currentLightboxTokenId].value = newValue;
+    updateThumbnailValue(currentLightboxTokenId, newValue);
+    closeLightbox();
+  });
+
+  deleteBtn.addEventListener("click", function() {
+    if (!currentLightboxTokenId) return;
+    var tokenId = currentLightboxTokenId;
+    socket.emit("delete_token", { token_id: tokenId });
+    removePinnedThumbnail(tokenId);
+    // Reset pin icon on the source card
+    var card = conversation.querySelector("[data-token-id=\"" + tokenId + "\"]");
+    if (card) {
+      var pinIcon = card.querySelector(".pin-icon");
+      if (pinIcon) {
+        pinIcon.setAttribute("data-state", "sleeping");
+      }
+    }
+    delete tokenRegistry[tokenId];
+    closeLightbox();
+  });
+
+  closeBtn.addEventListener("click", closeLightbox);
+  backdrop.addEventListener("click", closeLightbox);
+})();
+
+function updateThumbnailValue(tokenId, newValue) {
+  var thumb = pinnedTokens[tokenId];
+  if (!thumb) return;
+  var valueEl = thumb.querySelector(".pinned-thumbnail__value");
+  if (valueEl) {
+    valueEl.textContent = newValue;
+  }
+}
+
+// ============================================
+// Pinnable Tokens - Socket Confirmations
+// ============================================
+
+socket.on("token_pinned", function(data) {
+  console.log("Token pinned confirmed:", data.token_id);
+  if (data.pinned_at && tokenRegistry[data.token_id]) {
+    tokenRegistry[data.token_id].pinned_at = data.pinned_at;
+    startPinCountdown(data.token_id, data.pinned_at);
+  }
+});
+
+socket.on("token_unpinned", function(data) {
+  console.log("Token unpinned confirmed:", data.token_id);
+  if (pinCountdownIntervals[data.token_id]) {
+    clearInterval(pinCountdownIntervals[data.token_id]);
+    delete pinCountdownIntervals[data.token_id];
+  }
+});
+
+socket.on("pin_renewed", function(data) {
+  console.log("Pin renewed:", data.token_id, data.pinned_at);
+  if (tokenRegistry[data.token_id]) {
+    tokenRegistry[data.token_id].pinned_at = data.pinned_at;
+  }
+  startPinCountdown(data.token_id, data.pinned_at);
+});
+
+// Hydrate pinned tokens on page load
+socket.on("hydrate_pins", function(data) {
+  var pins = data.pins || [];
+  console.log("Hydrating %d pinned tokens", pins.length);
+  for (var i = 0; i < pins.length; i++) {
+    var pin = pins[i];
+    // Register in tokenRegistry if not already there
+    if (!tokenRegistry[pin.token_id]) {
+      tokenRegistry[pin.token_id] = pin;
+    }
+    // Create thumbnail with countdown
+    createPinnedThumbnail(pin.token_id, null);
+  }
+});
+
+socket.on("token_updated", function(data) {
+  console.log("Token updated confirmed:", data.token_id, data.new_value);
+  if (tokenRegistry[data.token_id]) {
+    tokenRegistry[data.token_id].value = data.new_value;
+  }
+  updateThumbnailValue(data.token_id, data.new_value);
+});
+
+socket.on("token_deleted", function(data) {
+  console.log("Token deleted confirmed:", data.token_id);
+  removePinnedThumbnail(data.token_id);
+  var card = conversation.querySelector("[data-token-id=\"" + data.token_id + "\"]");
+  if (card) {
+    var pinIcon = card.querySelector(".pin-icon");
+    if (pinIcon) {
+      pinIcon.setAttribute("data-state", "sleeping");
+    }
+  }
+  delete tokenRegistry[data.token_id];
+});
 
 // ============================================
 // Initialize

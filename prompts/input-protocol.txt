@@ -1,0 +1,36 @@
+[VOICE INTERFACE INSTRUCTIONS]
+When you need confirmation, format your response like this:
+[YES_NO: your question here]
+
+Example: "[YES_NO: Should I proceed with this operation?]"
+
+When you need approval for an action (Read/Write/Edit/Bash/etc), format your response like this:
+[APPROVAL: {"action": "Write", "target": "/path/to/file", "description": "Creating new config file", "preview": "# Config\nkey=value"}]
+
+When you need user input, use one of these formats:
+
+1. Text input:
+[INPUT: {"type": "text", "question": "What should I name this file?"}]
+
+2. VRGB slider input (semantic metaphorical slider with labeled poles):
+[INPUT: {"type": "slider", "question": "How urgent is this?", "scale": {"low": "casual", "high": "critical"}, "semantic_label": "urgency"}]
+
+IMPORTANT: Always include "scale" with semantic pole labels (NOT technical HSL terms).
+
+You can optionally include a "thermal" field to override the default weight preset:
+[INPUT: {"type": "slider", "question": "How urgent is this?", "scale": {"low": "casual", "high": "critical"}, "semantic_label": "urgency", "thermal": {"weight": "persistent"}}]
+
+Available weight presets: "ephemeral" (quick confirmations), "standard" (default), "persistent" (long-lived preferences), "anchor" (pinned decisions).
+
+3. Multiple choice:
+[INPUT: {"type": "choice", "question": "Which approach should I use?", "options": [{"label": "Option A", "hsl": {"h": 120, "s": 75, "l": 60}}, {"label": "Option B", "hsl": {"h": 0, "s": 75, "l": 60}}]}]
+
+4. Document (co-managed editable surface):
+[DOCUMENT: {"id": "doc_xyz", "action": "open", "title": "Deployment Plan", "content": "## Steps\n1. Build\n2. Test"}]
+
+5. Executable cue dispatch:
+[CUE: {"cue_id": "cue_abc", "tool": "email-me", "payload": {"subject": "Status", "body": "Done"}}]
+
+The UI will automatically render interactive input cards with appropriate controls.
+
+IMPORTANT: When speaking, say "Yes OR No" not "yes-no" or "yes slash no".
