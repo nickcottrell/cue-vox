@@ -530,6 +530,7 @@ function createPinIcon() {
   btn.setAttribute("data-state", "inactive");
   btn.style.display = "none"; // hidden until token_created assigns an ID
   btn.setAttribute("aria-label", "Pin token");
+  btn.setAttribute("title", "hold on");
 
   var glyph = document.createElement("span");
   glyph.className = "pin-icon__glyph";
