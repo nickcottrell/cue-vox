@@ -413,6 +413,46 @@ const inputWidgetRegistry = {
 };
 
 
+// Configure marked.js for safe rendering
+if (typeof marked !== "undefined") {
+  marked.use({
+    breaks: true,
+    gfm: true,
+    async: false
+  });
+}
+
+// Render markdown text into a container element
+function renderMarkdown(container, text) {
+  if (!text) return;
+
+  if (typeof marked !== "undefined") {
+    try {
+      var div = document.createElement("div");
+      div.className = "markdown-content";
+      var rendered = marked.parse(String(text), { async: false });
+      // Guard against accidental async (Promise returned)
+      if (typeof rendered === "string") {
+        div.innerHTML = rendered;
+      } else {
+        div.textContent = text;
+      }
+      container.appendChild(div);
+    } catch (err) {
+      console.error("Markdown render error:", err);
+      var p = document.createElement("p");
+      p.className = "card__description markdown-content";
+      p.textContent = text;
+      container.appendChild(p);
+    }
+  } else {
+    var p = document.createElement("p");
+    p.className = "card__description";
+    p.textContent = text;
+    container.appendChild(p);
+  }
+}
+
 // Render message content with embedded structured components
 function renderMessageContent(container, text) {
   console.log("Rendering message:", text.substring(0, 100) + (text.length > 100 ? "..." : ""));
@@ -445,10 +485,7 @@ function renderMessageContent(container, text) {
     // Add text before the tag
     var textBefore = text.substring(lastIndex, m.index).trim();
     if (textBefore) {
-      var p = document.createElement("p");
-      p.className = "card__description";
-      p.textContent = textBefore;
-      container.appendChild(p);
+      renderMarkdown(container, textBefore);
     }
 
     // Look up widget creator from registry
@@ -474,20 +511,14 @@ function renderMessageContent(container, text) {
     lastIndex = m.index + m.length;
   });
 
-  // If no structured content was found, render as plain text
+  // If no structured content was found, render as markdown
   if (!hasContent) {
-    var plainP = document.createElement("p");
-    plainP.className = "card__description";
-    plainP.textContent = text;
-    container.appendChild(plainP);
+    renderMarkdown(container, text);
   } else {
     // Add any remaining text after the last tag
     var textAfter = text.substring(lastIndex).trim();
     if (textAfter) {
-      var afterP = document.createElement("p");
-      afterP.className = "card__description";
-      afterP.textContent = textAfter;
-      container.appendChild(afterP);
+      renderMarkdown(container, textAfter);
     }
   }
 }
@@ -1262,7 +1293,7 @@ function addSystemMessage(text) {
 socket.on("token_created", function(data) {
   console.log("Token created:", data.token_id, data.type);
 
-  // Store in registry
+  // Store in registry (keep all fields for hex log display)
   tokenRegistry[data.token_id] = {
     token_id: data.token_id,
     type: data.type,
@@ -1270,7 +1301,13 @@ socket.on("token_created", function(data) {
     value: data.value,
     question: data.question || "",
     slider_value: data.slider_value,
-    key: data.key
+    key: data.key,
+    tags: data.tags || [],
+    temperature: data.temperature,
+    base_temp: data.base_temp,
+    cooling_rate: data.cooling_rate,
+    visibility: data.visibility,
+    created_at: data.created_at
   };
 
   // Find the most recent untagged structured-question in the conversation
@@ -1348,12 +1385,56 @@ function createPinnedThumbnail(tokenId, sourceCard) {
     openLightbox(tokenId);
   });
 
-  container.appendChild(thumb);
+  // Most recent pin goes to the top
+  if (container.firstChild) {
+    container.insertBefore(thumb, container.firstChild);
+  } else {
+    container.appendChild(thumb);
+  }
   pinnedTokens[tokenId] = thumb;
 
   // Start countdown if we have pinned_at
   if (data.pinned_at) {
     startPinCountdown(tokenId, data.pinned_at);
+  }
+}
+
+// Move a pinned thumbnail to the top of the list with FLIP animation
+function promotePinnedThumbnail(tokenId) {
+  var thumb = pinnedTokens[tokenId];
+  if (!thumb || !thumb.parentNode) return;
+  var container = thumb.parentNode;
+  if (container.firstChild === thumb) return;
+
+  // FLIP: capture old positions for all siblings
+  var children = Array.prototype.slice.call(container.children);
+  var firstRects = {};
+  for (var i = 0; i < children.length; i++) {
+    var id = children[i].getAttribute("data-token-id");
+    if (id) firstRects[id] = children[i].getBoundingClientRect();
+  }
+
+  // Move the DOM node
+  container.insertBefore(thumb, container.firstChild);
+
+  // FLIP: compute deltas and animate each child
+  var moved = Array.prototype.slice.call(container.children);
+  for (var j = 0; j < moved.length; j++) {
+    var child = moved[j];
+    var cid = child.getAttribute("data-token-id");
+    if (!cid || !firstRects[cid]) continue;
+    var lastRect = child.getBoundingClientRect();
+    var dy = firstRects[cid].top - lastRect.top;
+    if (dy === 0) continue;
+    child.style.transform = "translateY(" + dy + "px)";
+    child.style.transition = "none";
+  }
+
+  // Force reflow then play
+  container.offsetHeight;
+  for (var k = 0; k < moved.length; k++) {
+    moved[k].style.transition = "";
+    moved[k].style.transform = "";
   }
 }
 
@@ -1474,9 +1555,8 @@ function renderLightboxBody(container, data, editable) {
   // Question text
   if (data.question) {
     var questionEl = document.createElement("p");
-    questionEl.className = "card__description";
+    questionEl.className = "lightbox__question";
     questionEl.textContent = data.question;
-    questionEl.style.marginBottom = "var(--space-md, 0.75rem)";
     container.appendChild(questionEl);
   }
 
@@ -1561,20 +1641,196 @@ function renderLightboxBody(container, data, editable) {
       var textareaEl = document.createElement("textarea");
       textareaEl.className = "text-input";
       textareaEl.value = data.value || "";
-      textareaEl.rows = 4;
+      textareaEl.rows = 6;
       textareaEl.addEventListener("input", function() {
         container.dataset.newValue = textareaEl.value;
       });
       container.appendChild(textareaEl);
       container.dataset.newValue = data.value || "";
     } else {
-      var valueEl = document.createElement("p");
-      valueEl.className = "card__description";
-      valueEl.style.fontWeight = "var(--font-weight-bold, 700)";
-      valueEl.textContent = "Value: " + data.value;
-      container.appendChild(valueEl);
+      renderMarkdown(container, data.value || "");
     }
   }
+
+  // Hex log box (view mode only)
+  if (!editable) {
+    container.appendChild(buildHexLog(data));
+  }
+}
+
+// Build the small hex/token provenance box
+function buildHexLog(data) {
+  var box = document.createElement("details");
+  box.className = "hex-log";
+
+  var summary = document.createElement("summary");
+  summary.className = "hex-log__summary";
+
+  var summaryLabel = document.createTextNode("VRGB ");
+  summary.appendChild(summaryLabel);
+
+  var dot = document.createElement("span");
+  dot.className = "hex-log__dot";
+  dot.setAttribute("data-type", data.type || "");
+  summary.appendChild(dot);
+
+  box.appendChild(summary);
+
+  var body = document.createElement("div");
+  body.className = "hex-log__body";
+
+  var lines = [];
+
+  // Extract explicit hex from tags (scalar_param tokens)
+  var hexTag = "";
+  var sliderTag = "";
+  var tags = data.tags || [];
+  for (var i = 0; i < tags.length; i++) {
+    if (tags[i].indexOf("hex:") === 0) hexTag = tags[i].substring(4);
+    if (tags[i].indexOf("slider:") === 0) sliderTag = tags[i].substring(7);
+  }
+
+  // Resolve the hex -- either from VRGB encoding or thermal signature
+  var hex, hsl, origin;
+
+  if (data.type === "scalar_param" && hexTag && hexTag !== "#000000") {
+    // Scalar with real VRGB encoding
+    hex = hexTag;
+    hsl = hexToHSL(hex);
+    origin = "VRGB encoded from slider position " +
+      (data.slider_value != null ? data.slider_value : sliderTag) + "/100";
+  } else if (data.temperature != null) {
+    // Derive from thermal signature -- immutable birth certificate
+    var thermal = thermalToHex(
+      data.temperature || 0,
+      data.base_temp || 50,
+      data.cooling_rate || 5
+    );
+    hex = thermal.hex;
+    hsl = thermal.hsl;
+    origin = thermalOriginLabel(data.temperature, data.base_temp, data.cooling_rate);
+  } else {
+    hex = null;
+    hsl = null;
+    origin = null;
+  }
+
+  // Coordinate display
+  if (hex) {
+    lines.push("coordinate  " + hex);
+    lines.push("decoded     H " + hsl.h + "\u00b0 \u00b7 S " + hsl.s + "% \u00b7 L " + hsl.l + "%");
+    lines.push("origin      " + origin);
+  }
+
+  // Token type context
+  lines.push("");
+  if (data.type === "scalar_param") {
+    var sv = data.slider_value != null ? data.slider_value : sliderTag;
+    lines.push("dimension   " + (data.label || "param") + " @ " + sv + "/100");
+  } else if (data.type === "yes_no_response" || data.type === "approval_response") {
+    lines.push("gate        boolean (" + (data.value || "") + ")");
+  } else if (data.type === "text_input") {
+    lines.push("content     free-text semantic token");
+  } else if (data.type === "cue_dispatch") {
+    lines.push("action      dispatch token");
+  }
+
+  // Provenance
+  lines.push("id          " + (data.token_id || "unknown"));
+  if (data.temperature != null) {
+    var thermalStr = data.temperature + "\u00b0";
+    if (data.base_temp != null) thermalStr += " / base " + data.base_temp + "\u00b0";
+    if (data.cooling_rate != null) thermalStr += " / -" + data.cooling_rate + "\u00b0/hr";
+    lines.push("thermal     " + thermalStr);
+  }
+  if (data.visibility) {
+    lines.push("visibility  " + data.visibility);
+  }
+  if (data.created_at) {
+    lines.push("created     " + data.created_at.replace("T", " ").substring(0, 19));
+  }
+  if (data.pinned_at) {
+    lines.push("pinned      " + data.pinned_at.replace("T", " ").substring(0, 19));
+  }
+
+  body.textContent = lines.join("\n");
+  box.appendChild(body);
+  return box;
+}
+
+// Decode hex string to HSL components (for VRGB coordinate display)
+function hexToHSL(hex) {
+  hex = hex.replace("#", "");
+  var r = parseInt(hex.substring(0, 2), 16) / 255;
+  var g = parseInt(hex.substring(2, 4), 16) / 255;
+  var b = parseInt(hex.substring(4, 6), 16) / 255;
+  var max = Math.max(r, g, b);
+  var min = Math.min(r, g, b);
+  var h = 0, s = 0, l = (max + min) / 2;
+  if (max !== min) {
+    var d = max - min;
+    s = l > 0.5 ? d / (2 - max - min) : d / (max + min);
+    if (max === r) h = ((g - b) / d + (g < b ? 6 : 0)) / 6;
+    else if (max === g) h = ((b - r) / d + 2) / 6;
+    else h = ((r - g) / d + 4) / 6;
+  }
+  return {
+    h: Math.round(h * 360),
+    s: Math.round(s * 100),
+    l: Math.round(l * 100)
+  };
+}
+
+// Derive hex coordinate from thermal signature (immutable birth certificate)
+// temperature → hue (hot=warm reds, cool=cold blues)
+// base_temp → saturation (high base=vivid, low base=muted)
+// cooling_rate → lightness (fast burn=bright, slow decay=dim)
+function thermalToHex(temp, base, rate) {
+  // H: temperature 0-100 → 240-0 (blue→red, hot temps = warm hues)
+  var h = Math.round(240 - (temp / 100) * 240);
+  // S: base_temp 0-100 → 20-90%
+  var s = Math.round(20 + (base / 100) * 70);
+  // L: cooling_rate 0-20 → 35-65% (fast=bright, slow=dim)
+  var l = Math.round(35 + (Math.min(rate, 20) / 20) * 30);
+
+  // HSL to hex
+  var sn = s / 100, ln = l / 100;
+  var c = (1 - Math.abs(2 * ln - 1)) * sn;
+  var x = c * (1 - Math.abs((h / 60) % 2 - 1));
+  var m = ln - c / 2;
+  var r1 = 0, g1 = 0, b1 = 0;
+  if (h < 60) { r1 = c; g1 = x; }
+  else if (h < 120) { r1 = x; g1 = c; }
+  else if (h < 180) { g1 = c; b1 = x; }
+  else if (h < 240) { g1 = x; b1 = c; }
+  else if (h < 300) { r1 = x; b1 = c; }
+  else { r1 = c; b1 = x; }
+  var ri = Math.round((r1 + m) * 255);
+  var gi = Math.round((g1 + m) * 255);
+  var bi = Math.round((b1 + m) * 255);
+  var hex = "#" +
+    ("0" + ri.toString(16)).slice(-2) +
+    ("0" + gi.toString(16)).slice(-2) +
+    ("0" + bi.toString(16)).slice(-2);
+  return { hex: hex, hsl: { h: h, s: s, l: l } };
+}
+
+// Human-readable label for thermal provenance
+function thermalOriginLabel(temp, base, rate) {
+  var heat;
+  if (temp >= 80) heat = "came in hot";
+  else if (temp >= 60) heat = "warm arrival";
+  else if (temp >= 40) heat = "steady presence";
+  else if (temp >= 20) heat = "cool and persistent";
+  else heat = "cold start";
+
+  var burn;
+  if (rate >= 10) burn = "fast burn";
+  else if (rate >= 5) burn = "moderate decay";
+  else if (rate >= 2) burn = "slow fade";
+  else burn = "near-permanent";
+
+  return heat + ", " + burn + " (" + temp + "\u00b0 @ -" + rate + "\u00b0/hr)";
 }
 
 // Lightbox button wiring
@@ -1637,6 +1893,7 @@ function renderLightboxBody(container, data, editable) {
     // Optimistic update
     tokenRegistry[currentLightboxTokenId].value = newValue;
     updateThumbnailValue(currentLightboxTokenId, newValue);
+    promotePinnedThumbnail(currentLightboxTokenId);
     closeLightbox();
   });
 
@@ -1696,12 +1953,21 @@ socket.on("pin_renewed", function(data) {
     tokenRegistry[data.token_id].pinned_at = data.pinned_at;
   }
   startPinCountdown(data.token_id, data.pinned_at);
+  promotePinnedThumbnail(data.token_id);
 });
 
-// Hydrate pinned tokens on page load
+// Hydrate pinned tokens on page load (most recent first)
 socket.on("hydrate_pins", function(data) {
   var pins = data.pins || [];
   console.log("Hydrating %d pinned tokens", pins.length);
+
+  // Sort by pinned_at descending so most recent renders at top
+  pins.sort(function(a, b) {
+    var ta = a.pinned_at ? new Date(a.pinned_at + "Z").getTime() : 0;
+    var tb = b.pinned_at ? new Date(b.pinned_at + "Z").getTime() : 0;
+    return tb - ta;
+  });
+
   for (var i = 0; i < pins.length; i++) {
     var pin = pins[i];
     // Register in tokenRegistry if not already there
@@ -1719,6 +1985,7 @@ socket.on("token_updated", function(data) {
     tokenRegistry[data.token_id].value = data.new_value;
   }
   updateThumbnailValue(data.token_id, data.new_value);
+  promotePinnedThumbnail(data.token_id);
 });
 
 socket.on("token_deleted", function(data) {

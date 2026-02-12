@@ -150,6 +150,7 @@ body {
   max-width: 80%;
   display: block;
   box-sizing: border-box;
+  overflow: hidden;
 }
 
 /* User messages - left aligned */
@@ -853,7 +854,7 @@ body {
   border-radius: var(--radius-sm, 4px);
   cursor: pointer;
   opacity: 0.85;
-  transition: all 0.2s ease;
+  transition: opacity 0.2s ease, border-color 0.2s ease, box-shadow 0.2s ease, transform 0.35s cubic-bezier(0.2, 0.9, 0.3, 1);
   display: flex;
   align-items: center;
   gap: var(--space-sm, 0.5rem);
@@ -960,11 +961,16 @@ body {
 
 .lightbox__content {
   position: relative;
-  width: 90%;
-  max-width: 480px;
+  width: 94%;
+  max-width: 960px;
+  height: 80vh;
+  max-height: 92vh;
+  min-height: 320px;
+  display: flex;
+  flex-direction: column;
   background: var(--surface, #1a1a1a);
   border: 1px solid var(--border, rgba(255, 255, 255, 0.1));
-  border-radius: var(--radius-md, 8px);
+  border-radius: var(--radius-lg, 12px);
   box-shadow: var(--shadow-lg, 0 10px 20px rgba(0, 0, 0, 0.3));
   overflow: hidden;
 }
@@ -973,15 +979,19 @@ body {
   display: flex;
   align-items: center;
   justify-content: space-between;
-  padding: var(--space-md, 0.75rem) var(--space-lg, 1rem);
+  padding: 3rem 1.5rem 1.75rem 1.5rem;
   border-bottom: 1px solid var(--border, rgba(255, 255, 255, 0.1));
+  flex-shrink: 0;
+  background: var(--surface, #1a1a1a);
+  z-index: 2;
 }
 
 .lightbox__title {
   margin: 0;
-  font-size: var(--font-size-md, 1rem);
+  font-size: var(--font-size-lg, 1.125rem);
   font-weight: var(--font-weight-bold, 700);
-  color: var(--text, #fff);
+  color: var(--text-heading, var(--text, #fff));
+  letter-spacing: var(--letter-spacing-tight, -0.01em);
 }
 
 .lightbox__close {
@@ -1000,13 +1010,319 @@ body {
 }
 
 .lightbox__body {
-  padding: var(--space-lg, 1rem);
+  padding: 1rem 6rem 1rem 1.5rem;
+  flex: 1 1 auto;
+  overflow-y: auto;
+  min-height: 120px;
+  font-size: var(--font-size-base, 1rem);
+  line-height: var(--line-height-relaxed, 1.7);
+  -webkit-overflow-scrolling: touch;
 }
 
 .lightbox__footer {
   display: flex;
   gap: var(--space-sm, 0.5rem);
   justify-content: flex-end;
-  padding: var(--space-md, 0.75rem) var(--space-lg, 1rem);
+  align-items: center;
+  flex-wrap: wrap;
+  padding: var(--space-md, 0.75rem) var(--space-xl, 1.5rem);
   border-top: 1px solid var(--border, rgba(255, 255, 255, 0.1));
+  flex-shrink: 0;
+  background: var(--surface, #1a1a1a);
+  z-index: 2;
+  min-height: 56px;
+}
+
+/* Lightbox edit textarea */
+.lightbox__body .text-input {
+  width: 100%;
+  min-height: 280px;
+  max-height: 60vh;
+  resize: vertical;
+  font-family: inherit;
+  font-size: var(--font-size-base, 1rem);
+  line-height: var(--line-height-normal, 1.6);
+  padding: var(--space-md, 0.75rem);
+  background: var(--input-bg, rgba(255, 255, 255, 0.05));
+  border: 1px solid var(--border, rgba(255, 255, 255, 0.1));
+  border-radius: var(--radius-md, 8px);
+  color: var(--text, #fff);
+  box-sizing: border-box;
+  transition: border-color var(--transition-fast, 0.15s) ease;
+}
+
+.lightbox__body .text-input:focus {
+  outline: none;
+  border-color: var(--primary, rgba(255, 255, 255, 0.3));
+}
+
+/* Responsive: full-screen modal on small viewports */
+@media (max-width: 640px) {
+  .lightbox__content {
+    width: 100%;
+    max-width: 100%;
+    height: 100vh;
+    height: 100dvh;
+    max-height: 100vh;
+    max-height: 100dvh;
+    border-radius: 0;
+  }
+
+  .lightbox__header {
+    padding: var(--space-md, 0.75rem) var(--space-lg, 1rem);
+  }
+
+  .lightbox__body {
+    padding: var(--space-md, 0.75rem) var(--space-lg, 1rem);
+  }
+
+  .lightbox__footer {
+    padding: var(--space-md, 0.75rem) var(--space-lg, 1rem);
+    padding-bottom: calc(var(--space-md, 0.75rem) + env(safe-area-inset-bottom, 0px));
+  }
+
+  .lightbox__body .text-input {
+    min-height: 200px;
+  }
+}
+
+/* ============================================
+   MARKDOWN TYPOGRAPHY
+   Styles for rendered markdown in chat messages
+   and lightbox body
+   ============================================ */
+
+.markdown-content {
+  font-size: var(--font-size-base, 1rem);
+  line-height: var(--line-height-relaxed, 1.7);
+  color: var(--text, #fff);
+  word-wrap: break-word;
+  overflow-wrap: break-word;
+}
+
+/* Tighter markdown in chat cards (not lightbox) */
+.conversation .card .markdown-content {
+  font-size: var(--font-size-sm, 0.875rem);
+  line-height: 1.6;
+  overflow-wrap: break-word;
+}
+
+.conversation .card .markdown-content pre {
+  max-width: 100%;
+  overflow-x: auto;
+}
+
+.markdown-content p {
+  margin: 0 0 var(--space-md, 0.75rem) 0;
+}
+
+.markdown-content p:last-child {
+  margin-bottom: 0;
+}
+
+.markdown-content p + p {
+  margin-top: 0;
+}
+
+.markdown-content h1,
+.markdown-content h2,
+.markdown-content h3,
+.markdown-content h4 {
+  margin: var(--space-lg, 1rem) 0 var(--space-sm, 0.5rem) 0;
+  font-weight: var(--font-weight-bold, 700);
+  color: var(--text-heading, var(--text, #fff));
+  line-height: var(--line-height-tight, 1.25);
+  letter-spacing: var(--letter-spacing-tight, -0.01em);
+}
+
+.markdown-content h1 { font-size: var(--font-size-xl, 1.25em); }
+.markdown-content h2 { font-size: var(--font-size-lg, 1.125em); }
+.markdown-content h3 { font-size: var(--font-size-base, 1em); }
+.markdown-content h4 { font-size: var(--font-size-sm, 0.9em); color: var(--text-secondary, #aaa); }
+
+.markdown-content h1:first-child,
+.markdown-content h2:first-child,
+.markdown-content h3:first-child,
+.markdown-content h4:first-child {
+  margin-top: 0;
+}
+
+.markdown-content strong {
+  font-weight: var(--font-weight-bold, 700);
+  color: var(--text, #fff);
+}
+
+.markdown-content em {
+  font-style: italic;
+}
+
+.markdown-content ul,
+.markdown-content ol {
+  margin: 0 0 var(--space-md, 0.75rem) 0;
+  padding-left: 1.75em;
+}
+
+.markdown-content li {
+  margin-bottom: var(--space-xs, 0.25rem);
+  line-height: var(--line-height-normal, 1.6);
+}
+
+.markdown-content li:last-child {
+  margin-bottom: 0;
+}
+
+.markdown-content li > ul,
+.markdown-content li > ol {
+  margin-top: var(--space-xs, 0.25rem);
+  margin-bottom: 0;
+}
+
+.markdown-content code {
+  font-family: "SF Mono", "Fira Code", "Consolas", monospace;
+  font-size: 0.85em;
+  padding: 0.2em 0.4em;
+  background: rgba(255, 255, 255, 0.08);
+  border-radius: var(--radius-sm, 4px);
+  color: var(--accent, #7ab8ff);
+  word-break: break-word;
+}
+
+.markdown-content pre {
+  margin: var(--space-md, 0.75rem) 0;
+  padding: var(--space-md, 0.75rem);
+  background: rgba(0, 0, 0, 0.35);
+  border: 1px solid var(--border, rgba(255, 255, 255, 0.06));
+  border-radius: var(--radius-md, 8px);
+  overflow-x: auto;
+}
+
+.markdown-content pre code {
+  padding: 0;
+  background: none;
+  font-size: 0.85em;
+  white-space: pre;
+}
+
+.markdown-content blockquote {
+  margin: var(--space-md, 0.75rem) 0;
+  padding: var(--space-sm, 0.5rem) var(--space-lg, 1rem);
+  border-left: 3px solid var(--accent, #7ab8ff);
+  color: var(--text-secondary, #aaa);
+  font-style: italic;
+}
+
+.markdown-content hr {
+  border: none;
+  border-top: 1px solid var(--border, rgba(255, 255, 255, 0.1));
+  margin: var(--space-md, 0.75rem) 0;
+}
+
+.markdown-content a {
+  color: var(--accent, #7ab8ff);
+  text-decoration: underline;
+}
+
+.markdown-content a:hover {
+  color: var(--text, #fff);
+}
+
+.markdown-content table {
+  width: 100%;
+  border-collapse: collapse;
+  margin: var(--space-sm, 0.5rem) 0;
+  font-size: 0.85em;
+}
+
+.markdown-content th,
+.markdown-content td {
+  padding: var(--space-xs, 0.25rem) var(--space-sm, 0.5rem);
+  border: 1px solid var(--border, rgba(255, 255, 255, 0.1));
+  text-align: left;
+}
+
+.markdown-content th {
+  font-weight: var(--font-weight-bold, 700);
+  background: rgba(255, 255, 255, 0.05);
+}
+
+/* Lightbox question label */
+.lightbox__question {
+  font-size: var(--font-size-sm, 0.875rem);
+  line-height: var(--line-height-normal, 1.6);
+  color: var(--text-secondary, #aaa);
+  font-weight: var(--font-weight-medium, 500);
+  letter-spacing: var(--letter-spacing-wide, 0.02em);
+  text-transform: uppercase;
+  margin-bottom: var(--space-md, 0.75rem);
+  padding-bottom: var(--space-sm, 0.5rem);
+  border-bottom: 1px solid var(--border, rgba(255, 255, 255, 0.08));
+}
+
+/* Lightbox-specific markdown gets more room to breathe */
+.lightbox__body .markdown-content {
+  font-size: var(--font-size-base, 1rem);
+  line-height: var(--line-height-relaxed, 1.7);
+}
+
+.lightbox__body .card__description {
+  font-size: var(--font-size-base, 1rem);
+  line-height: var(--line-height-relaxed, 1.7);
+  color: var(--text, #fff);
+}
+
+/* ============================================
+   HEX LOG - Token Provenance Box
+   ============================================ */
+
+.hex-log {
+  margin-top: 2.5rem;
+  max-width: 65%;
+  border: 1px solid var(--border, rgba(255, 255, 255, 0.06));
+  border-radius: var(--radius-sm, 4px);
+  background: rgba(0, 0, 0, 0.25);
+}
+
+.hex-log__summary {
+  padding: var(--space-xs, 0.25rem) var(--space-sm, 0.5rem);
+  font-size: 11px;
+  font-family: "SF Mono", "Fira Code", "Consolas", monospace;
+  color: var(--text-secondary, #666);
+  cursor: pointer;
+  user-select: none;
+  letter-spacing: 0.04em;
+  text-transform: lowercase;
+}
+
+.hex-log__dot {
+  display: inline-block;
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  vertical-align: middle;
+  margin-left: 2px;
+}
+
+.hex-log__dot[data-type="yes_no_response"]   { background: var(--state-speaking, #00ff00); }
+.hex-log__dot[data-type="scalar_param"]      { background: var(--state-transcribing, #ffd700); }
+.hex-log__dot[data-type="text_input"]        { background: var(--state-thinking, #4169e1); }
+.hex-log__dot[data-type="approval_response"] { background: var(--state-recording, #ff4444); }
+.hex-log__dot[data-type="cue_dispatch"]      { background: var(--accent, rgba(100, 200, 255, 0.8)); }
+
+.hex-log__summary:hover {
+  color: var(--text-secondary, #888);
+}
+
+.hex-log[open] .hex-log__summary {
+  border-bottom: 1px solid var(--border, rgba(255, 255, 255, 0.06));
+  color: var(--accent, #7ab8ff);
+}
+
+.hex-log__body {
+  padding: 0.5rem 1.5rem 0.5rem 0.5rem;
+  font-family: "SF Mono", "Fira Code", "Consolas", monospace;
+  font-size: 11px;
+  line-height: 1.65;
+  color: var(--text-secondary, #777);
+  white-space: pre;
+  overflow-x: auto;
 }
