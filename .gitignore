@@ -40,5 +40,6 @@ claude-init/
 
 # Runtime-generated paths (created when deployed in parent project)
 .claude/tokens/
+.claude/audit/
 .claude/cue-mem
 .claude/settings.local.json
