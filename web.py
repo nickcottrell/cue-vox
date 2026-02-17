@@ -51,6 +51,13 @@ def find_maestro_root():
 MAESTRO_ROOT = find_maestro_root()
 print(f"✓ Maestro root: {MAESTRO_ROOT}")
 
+# Build a clean env for Claude subprocesses.
+# Strips CLAUDECODE / CLAUDE_CODE_ENTRYPOINT so cue-vox can always
+# spawn independent Claude sessions even when launched from inside
+# a Claude Code terminal.
+_CLAUDE_ENV_BLACKLIST = {"CLAUDECODE", "CLAUDE_CODE_ENTRYPOINT"}
+CLEAN_CLAUDE_ENV = {k: v for k, v in os.environ.items() if k not in _CLAUDE_ENV_BLACKLIST}
+
 # Try to import CUE-MEM if available
 CUE_MEM_AVAILABLE = False
 try:
@@ -463,6 +470,13 @@ def create_text_input_token(key, value, question=None, thermal=None):
     if question:
         fields["question"] = question
 
+    # Merge human verification challenge fields if session is verified
+    try:
+        from flask import request as _freq
+        fields.update(get_challenge_fields(_freq.sid))
+    except Exception:
+        pass
+
     if token_factory is not None:
         return token_factory.create(
             token_type="text_input",
@@ -539,6 +553,13 @@ def create_yes_no_token(answer, question_context=None, thermal=None):
     if question_context:
         fields["question"] = question_context
 
+    # Merge human verification challenge fields if session is verified
+    try:
+        from flask import request as _freq
+        fields.update(get_challenge_fields(_freq.sid))
+    except Exception:
+        pass
+
     if token_factory is not None:
         return token_factory.create(
             token_type="yes_no_response",
@@ -612,6 +633,13 @@ def create_scalar_param_token(slider_value, semantic_label, hex_value, hsl_value
     if question:
         fields["question"] = question
 
+    # Merge human verification challenge fields if session is verified
+    try:
+        from flask import request as _freq
+        fields.update(get_challenge_fields(_freq.sid))
+    except Exception:
+        pass
+
     if token_factory is not None:
         return token_factory.create(
             token_type="scalar_param",
@@ -683,16 +711,112 @@ def maybe_create_structured_sum():
         return None
 
 
-# Register pin management handlers from cue-mem plugin (if available)
-_hydrate_pins = None
+# Register modifier management handlers from cue-mem plugin (if available)
+_hydrate_modifiers = None
 if CUE_MEM_AVAILABLE:
     try:
-        from pin_handlers import register_pin_handlers
+        from modifier_handlers import register_modifier_handlers
         _token_dir = MAESTRO_ROOT / ".claude" / "tokens"
-        _hydrate_pins = register_pin_handlers(socketio, _token_dir, input_history, maybe_create_structured_sum)
-        print("✓ Pin management enabled")
-    except ImportError:
-        pass
+        _hydrate_modifiers = register_modifier_handlers(
+            socketio, _token_dir, input_history, token_factory, maybe_create_structured_sum
+        )
+        print("Modifier management enabled")
+    except ImportError as e:
+        print("Modifier handlers not loaded: %s" % e)
+
+# On-demand hydration: client can request re-hydration at any time
+# (e.g. after buff-launch creates tokens externally via ?hydrate=1 URL param)
+@socketio.on("request_hydration")
+def handle_request_hydration(data=None):
+    if _hydrate_modifiers:
+        _hydrate_modifiers(MAESTRO_ROOT / ".claude" / "tokens")
+
+# Human verification challenge system
+# Session-level challenge: solve once per session, all tokens get signed
+_challenge_sessions = {}  # sid -> {proof, confidence, challenge_id, verified_at}
+_pending_challenges = {}  # sid -> challenge dict
+
+try:
+    import challenge as _challenge_mod
+    import signing as _signing_mod
+
+    @socketio.on("request_challenge")
+    def handle_request_challenge(data=None):
+        """Issue a human verification challenge for this session."""
+        from flask import request as flask_request
+        sid = flask_request.sid
+        challenge_type = (data or {}).get("type", "thermal")
+        ch = _challenge_mod.generate(challenge_type)
+        _pending_challenges[sid] = ch
+        from flask_socketio import emit
+        emit("challenge_issued", {
+            "challenge_id": ch["challenge_id"],
+            "type": ch["type"],
+            "prompt": ch["prompt"],
+        })
+
+    @socketio.on("verify_challenge")
+    def handle_verify_challenge(data):
+        """Verify challenge response, cache proof for session."""
+        from flask import request as flask_request
+        from flask_socketio import emit
+        sid = flask_request.sid
+        ch = _pending_challenges.pop(sid, None)
+        if not ch:
+            emit("challenge_result", {"valid": False, "reason": "no pending challenge"})
+            return
+
+        response = data.get("response")
+        response_time_ms = data.get("response_time_ms", 9999)
+        attention = data.get("attention")
+
+        valid, confidence, proof = _challenge_mod.verify(
+            ch, response, response_time_ms, attention=attention
+        )
+
+        if valid:
+            _challenge_sessions[sid] = {
+                "proof": proof,
+                "confidence": confidence,
+                "challenge_id": ch["challenge_id"],
+                "verified_at": __import__("time").time(),
+            }
+            fingerprint = _signing_mod.get_public_key_fingerprint() or "none"
+            emit("challenge_result", {
+                "valid": True,
+                "confidence": round(confidence, 3),
+                "fingerprint": fingerprint,
+            })
+            print("CHALLENGE VERIFIED: sid=%s confidence=%.3f proof=%s" % (
+                sid[:8], confidence, proof[:12]
+            ))
+        else:
+            emit("challenge_result", {
+                "valid": False,
+                "reason": "incorrect answer",
+            })
+
+    print("Human verification challenges enabled")
+except ImportError as e:
+    print("Challenge system not available: %s" % e)
+    _challenge_mod = None
+
+
+def get_challenge_fields(sid=None):
+    """Get cached challenge fields for the current session.
+
+    Returns dict to merge into first-class token extra_fields,
+    or empty dict if session not verified.
+    """
+    if not sid or sid not in _challenge_sessions:
+        return {}
+    session = _challenge_sessions[sid]
+    return _challenge_mod.to_token_fields(
+        valid=True,
+        confidence=session["confidence"],
+        proof=session["proof"],
+        challenge_id=session["challenge_id"],
+    )
 
 
 def check_and_expire_tokens():
@@ -1575,6 +1699,57 @@ def get_conversation_summary_context():
         return ""
 
 
+def assemble_prompt_with_budget(context_sections, user_text, max_chars=80000):
+    """
+    Assemble prompt from context sections + user input, enforcing a character budget.
+
+    Trims lowest-priority sections first (summary, flux, input_history) if the
+    total exceeds max_chars. This prevents 'Prompt is too long' errors from Claude.
+
+    Args:
+        context_sections: list of (name, content) tuples
+        user_text: the user input string
+        max_chars: max total prompt characters (~80K chars ~ 20K tokens)
+
+    Returns:
+        assembled prompt string
+    """
+    user_block = "\n\n[USER INPUT]\n%s" % user_text
+    essential_size = len(user_block)
+    total_context = sum(len(s) for _, s in context_sections)
+
+    if total_context + essential_size > max_chars:
+        budget_remaining = max_chars - essential_size
+        section_dict = {name: content for name, content in context_sections}
+
+        # Trim largest/least-critical sections first
+        trim_order = ["summary", "flux", "input_history"]
+        for trim_key in trim_order:
+            if total_context <= budget_remaining:
+                break
+            section_size = len(section_dict.get(trim_key, ""))
+            if section_size == 0:
+                continue
+
+            if total_context - (section_size // 2) <= budget_remaining:
+                trimmed = section_dict[trim_key][:section_size // 2]
+                last_nl = trimmed.rfind("\n")
+                if last_nl > 0:
+                    trimmed = trimmed[:last_nl]
+                trimmed += "\n[... context trimmed for prompt budget ...]\n"
+                total_context -= (section_size - len(trimmed))
+                section_dict[trim_key] = trimmed
+            else:
+                total_context -= section_size
+                section_dict[trim_key] = "[%s context omitted - prompt budget]\n" % trim_key
+
+            print("[PROMPT BUDGET] Trimmed '%s' (%d chars saved)" % (trim_key, section_size - len(section_dict[trim_key])))
+
+        context_sections = [(name, section_dict.get(name, "")) for name, _ in context_sections]
+
+    return "%s%s" % ("".join(s for _, s in context_sections), user_block)
+
+
 def get_input_word_count(text):
     """Calculate word count of user input"""
     return len(text.split())
@@ -1919,20 +2094,19 @@ def handle_audio(data):
         enhanced_text = inject_temporal_context(text)
 
         # Inject instance identity, speech consumption, variables, input history, and rolling summary context
-        identity_context = get_instance_identity()
-        speech_context = get_speech_consumption_context()
-        variables_context = get_variables_context()
-        input_history_context = get_input_history_context()
-        summary_context = get_conversation_summary_context()
-        flux_context = get_flux_capacitor_context()
+        context_sections = [
+            ("identity", get_instance_identity()),
+            ("flux", get_flux_capacitor_context()),
+            ("summary", get_conversation_summary_context()),
+            ("speech", get_speech_consumption_context()),
+            ("variables", get_variables_context()),
+            ("input_history", get_input_history_context()),
+            ("length_constraint", length_constraint),
+            ("prompt_template", load_prompt_template()),
+        ]
 
-        # Build prompt from template file
-        prompt_template = load_prompt_template()
-        enhanced_text = "%s%s%s%s%s%s%s%s\n\n[USER INPUT]\n%s" % (
-            identity_context, flux_context, summary_context, speech_context,
-            variables_context, input_history_context, length_constraint,
-            prompt_template, enhanced_text
-        )
+        # Assemble with budget enforcement to prevent "Prompt is too long" errors
+        enhanced_text = assemble_prompt_with_budget(context_sections, enhanced_text)
 
         # Send to Claude Code (run from parent maestro directory if exists)
         cwd = MAESTRO_ROOT
@@ -1943,10 +2117,16 @@ def handle_audio(data):
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
             text=True,
-            cwd=cwd
+            cwd=cwd,
+            env=CLEAN_CLAUDE_ENV
         )
         stdout, stderr = process.communicate(input=enhanced_text)
         response = stdout.strip()
+
+        if stderr and stderr.strip():
+            print("[CLAUDE STDERR] %s" % stderr.strip()[:500])
+        if not response:
+            print("[CLAUDE] Empty response. Exit code: %d. Prompt length: %d chars" % (process.returncode, len(enhanced_text)))
 
         # Log conversation with input length
         log_conversation(text, response, input_length=input_word_count)
@@ -1962,7 +2142,7 @@ def handle_audio(data):
         try:
             subprocess.run(['say', tts_text], check=False, timeout=30)
         except Exception as e:
-            print(f"[TTS ERROR] Failed to speak: {e}")
+            print("[TTS ERROR] Failed to speak: %s" % e)
 
         # Mark speech as completed
         finish_speech()
@@ -2061,7 +2241,8 @@ IMPORTANT: When speaking, say "Yes OR No" not "yes-no" or "yes slash no"."""
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
             text=True,
-            cwd=cwd
+            cwd=cwd,
+            env=CLEAN_CLAUDE_ENV
         )
         stdout, stderr = process.communicate(input=enhanced_text)
         response = stdout.strip()
@@ -2172,7 +2353,8 @@ IMPORTANT: When speaking, say "Yes OR No" not "yes-no" or "yes slash no"."""
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
             text=True,
-            cwd=cwd
+            cwd=cwd,
+            env=CLEAN_CLAUDE_ENV
         )
         stdout, stderr = process.communicate(input=enhanced_text)
         response = stdout.strip()
@@ -2396,7 +2578,8 @@ def handle_input_response(data):
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
             text=True,
-            cwd=cwd
+            cwd=cwd,
+            env=CLEAN_CLAUDE_ENV
         )
         stdout, stderr = process.communicate(input=enhanced_text)
         response = stdout.strip()
@@ -2451,20 +2634,19 @@ def handle_text_message(data):
         enhanced_text = inject_temporal_context(text)
 
         # Inject instance identity, speech consumption, variables, input history, and rolling summary context
-        identity_context = get_instance_identity()
-        speech_context = get_speech_consumption_context()
-        variables_context = get_variables_context()
-        input_history_context = get_input_history_context()
-        summary_context = get_conversation_summary_context()
-        flux_context = get_flux_capacitor_context()
+        context_sections = [
+            ("identity", get_instance_identity()),
+            ("flux", get_flux_capacitor_context()),
+            ("summary", get_conversation_summary_context()),
+            ("speech", get_speech_consumption_context()),
+            ("variables", get_variables_context()),
+            ("input_history", get_input_history_context()),
+            ("length_constraint", length_constraint),
+            ("prompt_template", load_prompt_template()),
+        ]
 
-        # Build prompt from template file
-        prompt_template = load_prompt_template()
-        enhanced_text = "%s%s%s%s%s%s%s%s\n\n[USER INPUT]\n%s" % (
-            identity_context, flux_context, summary_context, speech_context,
-            variables_context, input_history_context, length_constraint,
-            prompt_template, enhanced_text
-        )
+        # Assemble with budget enforcement to prevent "Prompt is too long" errors
+        enhanced_text = assemble_prompt_with_budget(context_sections, enhanced_text)
 
         # Send to Claude Code (run from parent maestro directory if exists)
         cwd = MAESTRO_ROOT
@@ -2475,7 +2657,8 @@ def handle_text_message(data):
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
             text=True,
-            cwd=cwd
+            cwd=cwd,
+            env=CLEAN_CLAUDE_ENV
         )
         stdout, stderr = process.communicate(input=enhanced_text)
         response = stdout.strip()
@@ -2764,9 +2947,9 @@ def handle_connect():
     if _audit_logger:
         _audit_logger.log("agent:session_start")
 
-    # Hydrate pinned tokens via cue-mem plugin (if loaded)
-    if _hydrate_pins:
-        _hydrate_pins(MAESTRO_ROOT / ".claude" / "tokens")
+    # Hydrate modifier tokens via cue-mem plugin (if loaded)
+    if _hydrate_modifiers:
+        _hydrate_modifiers(MAESTRO_ROOT / ".claude" / "tokens")
 
 
 @socketio.on('disconnect')
@@ -2789,6 +2972,11 @@ def handle_disconnect():
     print(f"🔌 Client disconnected at {timestamp.strftime('%Y-%m-%d %H:%M:%S')}")
     if _audit_logger:
         _audit_logger.log("agent:session_end")
+
+    # Clean up challenge session state
+    from flask import request as _freq
+    _challenge_sessions.pop(_freq.sid, None)
+    _pending_challenges.pop(_freq.sid, None)
 
 
 if __name__ == '__main__':

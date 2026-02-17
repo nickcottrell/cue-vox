@@ -28,8 +28,10 @@ let stateStartTime = Date.now();
 let recordingTimeout = null;
 var RECORDING_LIMIT_MS = 30000;
 
-// Pinnable token state
-var pinnedTokens = {};
+// Modifier token state
+var modifierTokens = {};          // target_id -> DOM thumbnail element
+var modifiersByTarget = {};       // target_id -> [modifier_ids]
+var modifierThermalData = {};     // target_id -> {temperature, base_temp, cooling_rate, created_at}
 var tokenRegistry = {};
 var currentLightboxTokenId = null;
 
@@ -409,6 +411,12 @@ const inputWidgetRegistry = {
   },
   text: function(inputData) {
     return createTextInput(inputData);
+  },
+  yes_no: function(inputData) {
+    return createYesNoInput(inputData);
+  },
+  choice: function(inputData) {
+    return createChoiceInput(inputData);
   }
 };
 
@@ -523,13 +531,13 @@ function renderMessageContent(container, text) {
   }
 }
 
-// Create pin icon for structured question cards
-function createPinIcon() {
+// Create modifier icon for structured question cards
+function createModifierIcon() {
   var btn = document.createElement("button");
   btn.className = "pin-icon";
   btn.setAttribute("data-state", "inactive");
   btn.style.display = "none"; // hidden until token_created assigns an ID
-  btn.setAttribute("aria-label", "Pin token");
+  btn.setAttribute("aria-label", "Hold token");
   btn.setAttribute("title", "hold on");
 
   var glyph = document.createElement("span");
@@ -543,14 +551,14 @@ function createPinIcon() {
 
     var state = btn.getAttribute("data-state");
     if (state === "inactive" || state === "sleeping") {
-      socket.emit("pin_token", { token_id: tokenId });
+      socket.emit("create_modifier", { token_id: tokenId });
       btn.setAttribute("data-state", "active");
       var card = btn.closest(".structured-question");
-      createPinnedThumbnail(tokenId, card);
+      createModifierThumbnail(tokenId, card);
     } else {
-      socket.emit("unpin_token", { token_id: tokenId });
+      socket.emit("remove_modifier", { token_id: tokenId });
       btn.setAttribute("data-state", "inactive");
-      removePinnedThumbnail(tokenId);
+      removeModifierThumbnail(tokenId);
     }
   });
 
@@ -593,7 +601,7 @@ function createYesNoQuestion(questionText) {
   buttonGroup.appendChild(noBtn);
   container.appendChild(buttonGroup);
 
-  container.appendChild(createPinIcon());
+  container.appendChild(createModifierIcon());
 
   // Block other input when question is pending
   setPendingInput(true);
@@ -625,6 +633,78 @@ function handleQuestionResponse(answer, buttonGroup, questionText) {
 
   // Add user message immediately (backend doesn't echo button responses)
   addMessage("user", answer);
+}
+
+// Create yes/no input from INPUT JSON (type: "yes_no")
+function createYesNoInput(inputData) {
+  var container = document.createElement("div");
+  container.className = "structured-question";
+
+  var question = document.createElement("p");
+  question.className = "card__description";
+  question.textContent = inputData.question;
+  container.appendChild(question);
+
+  var buttonGroup = document.createElement("div");
+  buttonGroup.className = "button-group";
+
+  var yesBtn = document.createElement("button");
+  yesBtn.className = "btn btn--primary";
+  yesBtn.textContent = "Yes";
+  yesBtn.addEventListener("click", function(e) {
+    e.stopPropagation();
+    handleQuestionResponse("Yes", buttonGroup, inputData.question);
+  });
+
+  var noBtn = document.createElement("button");
+  noBtn.className = "btn btn--secondary";
+  noBtn.textContent = "No";
+  noBtn.addEventListener("click", function(e) {
+    e.stopPropagation();
+    handleQuestionResponse("No", buttonGroup, inputData.question);
+  });
+
+  buttonGroup.appendChild(yesBtn);
+  buttonGroup.appendChild(noBtn);
+  container.appendChild(buttonGroup);
+
+  container.appendChild(createModifierIcon());
+  setPendingInput(true);
+
+  return container;
+}
+
+// Create choice input from INPUT JSON (type: "choice")
+function createChoiceInput(inputData) {
+  var container = document.createElement("div");
+  container.className = "structured-question";
+
+  var question = document.createElement("p");
+  question.className = "card__description";
+  question.textContent = inputData.question;
+  container.appendChild(question);
+
+  var buttonGroup = document.createElement("div");
+  buttonGroup.className = "button-group";
+
+  var options = inputData.options || [];
+  options.forEach(function(option) {
+    var btn = document.createElement("button");
+    btn.className = "btn btn--secondary";
+    btn.textContent = option.label;
+    btn.addEventListener("click", function(e) {
+      e.stopPropagation();
+      handleQuestionResponse(option.label, buttonGroup, inputData.question);
+    });
+    buttonGroup.appendChild(btn);
+  });
+
+  container.appendChild(buttonGroup);
+
+  container.appendChild(createModifierIcon());
+  setPendingInput(true);
+
+  return container;
 }
 
 // Create semantic slider (from JSON INPUT)
@@ -688,7 +768,7 @@ function createSemanticSlider(inputData) {
   });
 
   container.appendChild(submitBtn);
-  container.appendChild(createPinIcon());
+  container.appendChild(createModifierIcon());
 
   // Block other input when question is pending
   setPendingInput(true);
@@ -786,7 +866,7 @@ function createTextInput(inputData) {
   });
 
   container.appendChild(submitBtn);
-  container.appendChild(createPinIcon());
+  container.appendChild(createModifierIcon());
 
   // Block other input when question is pending
   setPendingInput(true);
@@ -926,7 +1006,7 @@ function createApprovalGate(approvalData) {
   buttonGroup.appendChild(rejectBtn);
   container.appendChild(buttonGroup);
 
-  container.appendChild(createPinIcon());
+  container.appendChild(createModifierIcon());
 
   // Block other input when approval is pending
   setPendingInput(true);
@@ -1203,7 +1283,7 @@ function createCueCard(cueData) {
   buttonGroup.appendChild(rejectBtn);
   container.appendChild(buttonGroup);
 
-  container.appendChild(createPinIcon());
+  container.appendChild(createModifierIcon());
 
   setPendingInput(true);
 
@@ -1288,7 +1368,7 @@ function addSystemMessage(text) {
 }
 
 // ============================================
-// Pinnable Tokens - Token Created Listener
+// Modifier Tokens - Token Created Listener
 // ============================================
 
 socket.on("token_created", function(data) {
@@ -1308,7 +1388,8 @@ socket.on("token_created", function(data) {
     base_temp: data.base_temp,
     cooling_rate: data.cooling_rate,
     visibility: data.visibility,
-    created_at: data.created_at
+    created_at: data.created_at,
+    last_accessed: data.last_accessed || data.created_at
   };
 
   // Find the most recent untagged structured-question in the conversation
@@ -1320,21 +1401,21 @@ socket.on("token_created", function(data) {
     lastQuestion.setAttribute("data-token-label", data.label);
     lastQuestion.setAttribute("data-token-value", data.value);
 
-    // Show and wire up the pin icon
-    var pinIcon = lastQuestion.querySelector(".pin-icon");
-    if (pinIcon) {
-      pinIcon.dataset.tokenId = data.token_id;
-      pinIcon.setAttribute("data-state", "inactive");
-      pinIcon.style.display = "flex";
+    // Show and wire up the modifier icon
+    var modIcon = lastQuestion.querySelector(".pin-icon");
+    if (modIcon) {
+      modIcon.dataset.tokenId = data.token_id;
+      modIcon.setAttribute("data-state", "inactive");
+      modIcon.style.display = "flex";
     }
   }
 });
 
 // ============================================
-// Pinnable Tokens - Thumbnail Management
+// Modifier Tokens - Thumbnail Management
 // ============================================
 
-function createPinnedThumbnail(tokenId, sourceCard) {
+function createModifierThumbnail(tokenId, sourceCard) {
   var container = document.getElementById("pinnedTokens");
   if (!container) return;
 
@@ -1374,35 +1455,32 @@ function createPinnedThumbnail(tokenId, sourceCard) {
 
   thumb.appendChild(info);
 
-  // Single tap = renew pin, long press or double-tap would open lightbox
-  // Using click for lightbox, dedicated renew button area
+  // Click countdown = mint fresh modifier (renew), click elsewhere = lightbox
   thumb.addEventListener("click", function(e) {
-    // If clicking the countdown area, renew the pin
     if (e.target === countdown || e.target.classList.contains("pinned-thumbnail__countdown")) {
       e.stopPropagation();
-      socket.emit("renew_pin", { token_id: tokenId });
+      socket.emit("create_modifier", { token_id: tokenId });
       return;
     }
     openLightbox(tokenId);
   });
 
-  // Most recent pin goes to the top
+  // Most recent goes to the top
   if (container.firstChild) {
     container.insertBefore(thumb, container.firstChild);
   } else {
     container.appendChild(thumb);
   }
-  pinnedTokens[tokenId] = thumb;
+  modifierTokens[tokenId] = thumb;
 
-  // Start countdown if we have pinned_at
-  if (data.pinned_at) {
-    startPinCountdown(tokenId, data.pinned_at);
-  }
+  // Start thermal countdown based on modifier heat
+  startThermalCountdown(tokenId);
+  updateClearAllVisibility();
 }
 
-// Move a pinned thumbnail to the top of the list with FLIP animation
-function promotePinnedThumbnail(tokenId) {
-  var thumb = pinnedTokens[tokenId];
+// Move a modifier thumbnail to the top of the list with FLIP animation
+function promoteModifierThumbnail(tokenId) {
+  var thumb = modifierTokens[tokenId];
   if (!thumb || !thumb.parentNode) return;
   var container = thumb.parentNode;
   if (container.firstChild === thumb) return;
@@ -1439,50 +1517,79 @@ function promotePinnedThumbnail(tokenId) {
   }
 }
 
-// Pin countdown tracking
-var pinCountdownIntervals = {};
+// Thermal countdown tracking
+var modifierCountdownIntervals = {};
 
-function startPinCountdown(tokenId, pinnedAt) {
+// Visibility -> cooling modifier (mirrors cue-mem config.yaml)
+var COOLING_MODIFIERS = {
+  global: 0.5,
+  shared: 1.0,
+  private: 2.0,
+  local: 1.5
+};
+
+function startThermalCountdown(tokenId) {
   // Clear any existing interval
-  if (pinCountdownIntervals[tokenId]) {
-    clearInterval(pinCountdownIntervals[tokenId]);
+  if (modifierCountdownIntervals[tokenId]) {
+    clearInterval(modifierCountdownIntervals[tokenId]);
   }
 
-  var pinnedTime = new Date(pinnedAt + "Z").getTime();
-  var ttlMs = 2 * 60 * 60 * 1000; // 2 hours
+  // Use modifier thermal data if available (ephemeral profile: 60deg, 10deg/hr)
+  var thermal = modifierThermalData[tokenId];
+  var storedTemp, coolingRate, refStr;
+
+  if (thermal) {
+    storedTemp = thermal.temperature || thermal.base_temp || 60;
+    coolingRate = thermal.cooling_rate || 30.0;
+    refStr = thermal.created_at;
+  } else {
+    // Fallback to target token data
+    var data = tokenRegistry[tokenId];
+    if (!data) return;
+    storedTemp = data.temperature || data.base_temp || 75;
+    coolingRate = data.cooling_rate || 5.0;
+    refStr = data.last_accessed || data.created_at;
+  }
+
+  // Modifier tokens use shared visibility (cooling modifier = 1.0)
+  var effectiveRate = coolingRate * 1.0;
+
+  var refMs = refStr ? new Date(refStr).getTime() : Date.now();
 
   function updateCountdown() {
-    var now = Date.now();
-    var elapsed = now - pinnedTime;
-    var remaining = ttlMs - elapsed;
-
-    var thumb = pinnedTokens[tokenId];
+    var thumb = modifierTokens[tokenId];
     if (!thumb) {
-      clearInterval(pinCountdownIntervals[tokenId]);
-      delete pinCountdownIntervals[tokenId];
+      clearInterval(modifierCountdownIntervals[tokenId]);
+      delete modifierCountdownIntervals[tokenId];
       return;
     }
 
     var countdownEl = thumb.querySelector(".pinned-thumbnail__countdown");
     if (!countdownEl) return;
 
-    if (remaining <= 0) {
-      // Pin expired — remove thumbnail
-      removePinnedThumbnail(tokenId);
-      clearInterval(pinCountdownIntervals[tokenId]);
-      delete pinCountdownIntervals[tokenId];
-      // Reset pin icon on source card
+    // Calculate current temperature from thermal decay
+    var hoursElapsed = (Date.now() - refMs) / 3600000;
+    var currentTemp = storedTemp - (effectiveRate * hoursElapsed);
+    currentTemp = Math.max(0, Math.min(100, currentTemp));
+
+    if (currentTemp <= 0) {
+      // Frozen -- remove thumbnail
+      removeModifierThumbnail(tokenId);
+      clearInterval(modifierCountdownIntervals[tokenId]);
+      delete modifierCountdownIntervals[tokenId];
       var card = conversation.querySelector("[data-token-id=\"" + tokenId + "\"]");
       if (card) {
-        var pinIcon = card.querySelector(".pin-icon");
-        if (pinIcon) pinIcon.setAttribute("data-state", "inactive");
+        var modIcon = card.querySelector(".pin-icon");
+        if (modIcon) modIcon.setAttribute("data-state", "inactive");
       }
       return;
     }
 
-    var mins = Math.floor(remaining / 60000);
-    var hours = Math.floor(mins / 60);
-    mins = mins % 60;
+    // Time remaining until freeze (0 degrees)
+    var hoursRemaining = currentTemp / effectiveRate;
+    var totalMins = Math.floor(hoursRemaining * 60);
+    var hours = Math.floor(totalMins / 60);
+    var mins = totalMins % 60;
 
     if (hours > 0) {
       countdownEl.textContent = hours + "h " + mins + "m";
@@ -1490,8 +1597,8 @@ function startPinCountdown(tokenId, pinnedAt) {
       countdownEl.textContent = mins + "m";
     }
 
-    // Visual fade as time runs low (last 15 minutes)
-    if (remaining < 15 * 60 * 1000) {
+    // Visual warning when cold (below 25 degrees)
+    if (currentTemp < 25) {
       thumb.style.opacity = "0.5";
       countdownEl.style.color = "var(--state-recording, #ff4444)";
     } else {
@@ -1501,24 +1608,52 @@ function startPinCountdown(tokenId, pinnedAt) {
   }
 
   updateCountdown();
-  pinCountdownIntervals[tokenId] = setInterval(updateCountdown, 30000); // Update every 30s
+  modifierCountdownIntervals[tokenId] = setInterval(updateCountdown, 30000);
 }
 
-function removePinnedThumbnail(tokenId) {
-  var thumb = pinnedTokens[tokenId];
+function removeModifierThumbnail(tokenId) {
+  var thumb = modifierTokens[tokenId];
   if (thumb && thumb.parentNode) {
     thumb.parentNode.removeChild(thumb);
   }
-  delete pinnedTokens[tokenId];
+  delete modifierTokens[tokenId];
+  delete modifierThermalData[tokenId];
+  delete modifiersByTarget[tokenId];
   // Clean up countdown interval
-  if (pinCountdownIntervals[tokenId]) {
-    clearInterval(pinCountdownIntervals[tokenId]);
-    delete pinCountdownIntervals[tokenId];
+  if (modifierCountdownIntervals[tokenId]) {
+    clearInterval(modifierCountdownIntervals[tokenId]);
+    delete modifierCountdownIntervals[tokenId];
   }
+  updateClearAllVisibility();
 }
 
+function updateClearAllVisibility() {
+  var btn = document.getElementById("pinnedClearAll");
+  if (!btn) return;
+  var hasTokens = Object.keys(modifierTokens).length > 0;
+  btn.style.display = hasTokens ? "block" : "";
+}
+
+(function() {
+  var clearBtn = document.getElementById("pinnedClearAll");
+  if (!clearBtn) return;
+  clearBtn.addEventListener("click", function() {
+    var ids = Object.keys(modifierTokens);
+    for (var i = 0; i < ids.length; i++) {
+      socket.emit("remove_modifier", { token_id: ids[i] });
+      removeModifierThumbnail(ids[i]);
+      var card = conversation.querySelector("[data-token-id=\"" + ids[i] + "\"]");
+      if (card) {
+        var modIcon = card.querySelector(".pin-icon");
+        if (modIcon) modIcon.setAttribute("data-state", "inactive");
+      }
+    }
+    clearBtn.style.display = "none";
+  });
+})();
+
 // ============================================
-// Pinnable Tokens - Lightbox Modal
+// Modifier Tokens - Lightbox Modal
 // ============================================
 
 function openLightbox(tokenId) {
@@ -1750,8 +1885,8 @@ function buildHexLog(data) {
   if (data.created_at) {
     lines.push("created     " + data.created_at.replace("T", " ").substring(0, 19));
   }
-  if (data.pinned_at) {
-    lines.push("pinned      " + data.pinned_at.replace("T", " ").substring(0, 19));
+  if (modifiersByTarget[data.token_id] && modifiersByTarget[data.token_id].length > 0) {
+    lines.push("modifiers   " + modifiersByTarget[data.token_id].length + " active");
   }
 
   body.textContent = lines.join("\n");
@@ -1847,14 +1982,14 @@ function thermalOriginLabel(temp, base, rate) {
   unpinBtn.addEventListener("click", function() {
     if (!currentLightboxTokenId) return;
     var tokenId = currentLightboxTokenId;
-    socket.emit("unpin_token", { token_id: tokenId });
-    removePinnedThumbnail(tokenId);
-    // Reset pin icon on the source card
+    socket.emit("remove_modifier", { token_id: tokenId });
+    removeModifierThumbnail(tokenId);
+    // Reset modifier icon on the source card
     var card = conversation.querySelector("[data-token-id=\"" + tokenId + "\"]");
     if (card) {
-      var pinIcon = card.querySelector(".pin-icon");
-      if (pinIcon) {
-        pinIcon.setAttribute("data-state", "inactive");
+      var modIcon = card.querySelector(".pin-icon");
+      if (modIcon) {
+        modIcon.setAttribute("data-state", "inactive");
       }
     }
     closeLightbox();
@@ -1894,7 +2029,7 @@ function thermalOriginLabel(temp, base, rate) {
     // Optimistic update
     tokenRegistry[currentLightboxTokenId].value = newValue;
     updateThumbnailValue(currentLightboxTokenId, newValue);
-    promotePinnedThumbnail(currentLightboxTokenId);
+    promoteModifierThumbnail(currentLightboxTokenId);
     closeLightbox();
   });
 
@@ -1902,13 +2037,13 @@ function thermalOriginLabel(temp, base, rate) {
     if (!currentLightboxTokenId) return;
     var tokenId = currentLightboxTokenId;
     socket.emit("delete_token", { token_id: tokenId });
-    removePinnedThumbnail(tokenId);
-    // Reset pin icon on the source card
+    removeModifierThumbnail(tokenId);
+    // Reset modifier icon on the source card
     var card = conversation.querySelector("[data-token-id=\"" + tokenId + "\"]");
     if (card) {
-      var pinIcon = card.querySelector(".pin-icon");
-      if (pinIcon) {
-        pinIcon.setAttribute("data-state", "sleeping");
+      var modIcon = card.querySelector(".pin-icon");
+      if (modIcon) {
+        modIcon.setAttribute("data-state", "sleeping");
       }
     }
     delete tokenRegistry[tokenId];
@@ -1920,7 +2055,7 @@ function thermalOriginLabel(temp, base, rate) {
 })();
 
 function updateThumbnailValue(tokenId, newValue) {
-  var thumb = pinnedTokens[tokenId];
+  var thumb = modifierTokens[tokenId];
   if (!thumb) return;
   var valueEl = thumb.querySelector(".pinned-thumbnail__value");
   if (valueEl) {
@@ -1929,54 +2064,68 @@ function updateThumbnailValue(tokenId, newValue) {
 }
 
 // ============================================
-// Pinnable Tokens - Socket Confirmations
+// Modifier Tokens - Socket Confirmations
 // ============================================
 
-socket.on("token_pinned", function(data) {
-  console.log("Token pinned confirmed:", data.token_id);
-  if (data.pinned_at && tokenRegistry[data.token_id]) {
-    tokenRegistry[data.token_id].pinned_at = data.pinned_at;
-    startPinCountdown(data.token_id, data.pinned_at);
+socket.on("modifier_created", function(data) {
+  console.log("Modifier created for target:", data.token_id, "modifier:", data.modifier_id);
+  var targetId = data.token_id;
+
+  // Track modifier -> target mapping
+  if (!modifiersByTarget[targetId]) {
+    modifiersByTarget[targetId] = [];
+  }
+  modifiersByTarget[targetId].push(data.modifier_id);
+
+  // Store modifier thermal data for countdown (fresh modifier = fresh countdown)
+  modifierThermalData[targetId] = {
+    temperature: data.temperature || 60,
+    base_temp: data.base_temp || 60,
+    cooling_rate: data.cooling_rate || 30.0,
+    created_at: data.created_at || new Date().toISOString().replace("Z", "")
+  };
+
+  startThermalCountdown(targetId);
+  promoteModifierThumbnail(targetId);
+});
+
+socket.on("modifiers_removed", function(data) {
+  console.log("Modifiers removed for target:", data.token_id);
+  delete modifiersByTarget[data.token_id];
+  delete modifierThermalData[data.token_id];
+  if (modifierCountdownIntervals[data.token_id]) {
+    clearInterval(modifierCountdownIntervals[data.token_id]);
+    delete modifierCountdownIntervals[data.token_id];
   }
 });
 
-socket.on("token_unpinned", function(data) {
-  console.log("Token unpinned confirmed:", data.token_id);
-  if (pinCountdownIntervals[data.token_id]) {
-    clearInterval(pinCountdownIntervals[data.token_id]);
-    delete pinCountdownIntervals[data.token_id];
-  }
-});
+// Hydrate modifier targets on page load (most recent first)
+socket.on("hydrate_modifiers", function(data) {
+  var targets = data.modifiers || [];
+  console.log("Hydrating %d modifier targets", targets.length);
 
-socket.on("pin_renewed", function(data) {
-  console.log("Pin renewed:", data.token_id, data.pinned_at);
-  if (tokenRegistry[data.token_id]) {
-    tokenRegistry[data.token_id].pinned_at = data.pinned_at;
-  }
-  startPinCountdown(data.token_id, data.pinned_at);
-  promotePinnedThumbnail(data.token_id);
-});
-
-// Hydrate pinned tokens on page load (most recent first)
-socket.on("hydrate_pins", function(data) {
-  var pins = data.pins || [];
-  console.log("Hydrating %d pinned tokens", pins.length);
-
-  // Sort by pinned_at descending so most recent renders at top
-  pins.sort(function(a, b) {
-    var ta = a.pinned_at ? new Date(a.pinned_at + "Z").getTime() : 0;
-    var tb = b.pinned_at ? new Date(b.pinned_at + "Z").getTime() : 0;
+  // Sort by last_accessed descending so most recent renders at top
+  targets.sort(function(a, b) {
+    var ta = a.last_accessed ? new Date(a.last_accessed).getTime() : 0;
+    var tb = b.last_accessed ? new Date(b.last_accessed).getTime() : 0;
     return tb - ta;
   });
 
-  for (var i = 0; i < pins.length; i++) {
-    var pin = pins[i];
+  for (var i = 0; i < targets.length; i++) {
+    var target = targets[i];
     // Register in tokenRegistry if not already there
-    if (!tokenRegistry[pin.token_id]) {
-      tokenRegistry[pin.token_id] = pin;
+    if (!tokenRegistry[target.token_id]) {
+      tokenRegistry[target.token_id] = target;
     }
+    // Store modifier thermal data for countdown
+    modifierThermalData[target.token_id] = {
+      temperature: target.temperature,
+      base_temp: target.base_temp,
+      cooling_rate: target.cooling_rate,
+      created_at: target.last_accessed || target.created_at
+    };
     // Create thumbnail with countdown
-    createPinnedThumbnail(pin.token_id, null);
+    createModifierThumbnail(target.token_id, null);
   }
 });
 
@@ -1986,21 +2135,295 @@ socket.on("token_updated", function(data) {
     tokenRegistry[data.token_id].value = data.new_value;
   }
   updateThumbnailValue(data.token_id, data.new_value);
-  promotePinnedThumbnail(data.token_id);
+  promoteModifierThumbnail(data.token_id);
 });
 
 socket.on("token_deleted", function(data) {
   console.log("Token deleted confirmed:", data.token_id);
-  removePinnedThumbnail(data.token_id);
+  removeModifierThumbnail(data.token_id);
   var card = conversation.querySelector("[data-token-id=\"" + data.token_id + "\"]");
   if (card) {
-    var pinIcon = card.querySelector(".pin-icon");
-    if (pinIcon) {
-      pinIcon.setAttribute("data-state", "sleeping");
+    var modIcon = card.querySelector(".pin-icon");
+    if (modIcon) {
+      modIcon.setAttribute("data-state", "sleeping");
     }
   }
   delete tokenRegistry[data.token_id];
 });
+
+// ============================================
+// Attention Tracker (Page Visibility + Focus)
+// ============================================
+
+var AttentionTracker = (function() {
+  var _running = false;
+  var _startedAt = 0;
+  var _tabAways = 0;
+  var _hiddenStart = 0;
+  var _totalHiddenMs = 0;
+  var _focusLostCount = 0;
+  var _activityCount = 0;
+  var _lastActivity = 0;
+  var _idleSamples = 0;
+  var _idleTotal = 0;
+  var _idleInterval = null;
+  var _presenceDot = null;
+
+  function _onVisibilityChange() {
+    if (!_running) return;
+    if (document.hidden) {
+      _tabAways++;
+      _hiddenStart = Date.now();
+      _setPresence("away");
+    } else {
+      if (_hiddenStart > 0) {
+        _totalHiddenMs += Date.now() - _hiddenStart;
+        _hiddenStart = 0;
+      }
+      _setPresence("active");
+    }
+  }
+
+  function _onBlur() {
+    if (!_running) return;
+    _focusLostCount++;
+    _setPresence("away");
+  }
+
+  function _onFocus() {
+    if (!_running) return;
+    _setPresence("active");
+  }
+
+  function _onActivity() {
+    if (!_running) return;
+    _activityCount++;
+    _lastActivity = Date.now();
+  }
+
+  function _setPresence(state) {
+    if (_presenceDot) {
+      _presenceDot.setAttribute("data-attention", state);
+    }
+  }
+
+  function _sampleIdle() {
+    if (!_running) return;
+    _idleSamples++;
+    var now = Date.now();
+    // idle if no activity in last 3 seconds
+    if (_lastActivity > 0 && (now - _lastActivity) > 3000) {
+      _idleTotal++;
+    }
+  }
+
+  return {
+    start: function() {
+      _running = true;
+      _startedAt = Date.now();
+      _tabAways = 0;
+      _hiddenStart = 0;
+      _totalHiddenMs = 0;
+      _focusLostCount = 0;
+      _activityCount = 0;
+      _lastActivity = Date.now();
+      _idleSamples = 0;
+      _idleTotal = 0;
+      _presenceDot = document.getElementById("challengePresence");
+
+      document.addEventListener("visibilitychange", _onVisibilityChange);
+      window.addEventListener("blur", _onBlur);
+      window.addEventListener("focus", _onFocus);
+      document.addEventListener("mousemove", _onActivity);
+      document.addEventListener("touchstart", _onActivity);
+      document.addEventListener("keydown", _onActivity);
+
+      _idleInterval = setInterval(_sampleIdle, 1000);
+      _setPresence(document.hidden ? "away" : "active");
+    },
+
+    stop: function() {
+      _running = false;
+      document.removeEventListener("visibilitychange", _onVisibilityChange);
+      window.removeEventListener("blur", _onBlur);
+      window.removeEventListener("focus", _onFocus);
+      document.removeEventListener("mousemove", _onActivity);
+      document.removeEventListener("touchstart", _onActivity);
+      document.removeEventListener("keydown", _onActivity);
+      if (_idleInterval) {
+        clearInterval(_idleInterval);
+        _idleInterval = null;
+      }
+      // close out any open hidden window
+      if (_hiddenStart > 0) {
+        _totalHiddenMs += Date.now() - _hiddenStart;
+        _hiddenStart = 0;
+      }
+    },
+
+    summary: function() {
+      var totalMs = Date.now() - _startedAt;
+      var idleRatio = _idleSamples > 0 ? _idleTotal / _idleSamples : 0;
+      return {
+        tab_aways: _tabAways,
+        total_hidden_ms: _totalHiddenMs,
+        focus_lost_count: _focusLostCount,
+        idle_ratio: Math.round(idleRatio * 1000) / 1000,
+        activity_count: _activityCount,
+        total_ms: totalMs
+      };
+    }
+  };
+})();
+
+// ============================================
+// Human Verification Challenge
+// ============================================
+
+var challengeVerified = false;
+var challengeIssuedAt = 0;
+
+function requestChallenge() {
+  socket.emit("request_challenge", { type: "thermal" });
+}
+
+socket.on("challenge_issued", function(data) {
+  challengeIssuedAt = Date.now();
+  showChallengeLightbox(data);
+});
+
+socket.on("challenge_result", function(data) {
+  var lightbox = document.getElementById("challengeLightbox");
+  var content = lightbox ? lightbox.querySelector(".challenge-lightbox__content") : null;
+  var body = document.getElementById("challengeBody");
+  if (!lightbox || !body) return;
+
+  if (data.valid) {
+    challengeVerified = true;
+    AttentionTracker.stop();
+
+    if (content) content.setAttribute("data-state", "verified");
+    body.innerHTML = "";
+
+    var msg = document.createElement("p");
+    msg.className = "challenge-result";
+    msg.textContent = "calibrated.";
+    body.appendChild(msg);
+
+    if (data.fingerprint) {
+      var fp = document.createElement("span");
+      fp.className = "challenge-fingerprint";
+      fp.textContent = data.fingerprint;
+      body.appendChild(fp);
+    }
+
+    var hint = document.getElementById("challengeHint");
+    if (hint) hint.textContent = "";
+
+    setTimeout(function() {
+      lightbox.style.opacity = "0";
+      setTimeout(function() {
+        lightbox.style.display = "none";
+        lightbox.style.opacity = "";
+        if (content) content.removeAttribute("data-state");
+      }, 400);
+    }, 2000);
+  } else {
+    var btns = body.querySelectorAll(".challenge-option");
+    for (var i = 0; i < btns.length; i++) {
+      btns[i].disabled = false;
+    }
+    var inputEl = body.querySelector(".challenge-input");
+    if (inputEl) inputEl.disabled = false;
+
+    var err = body.querySelector(".challenge-error");
+    if (!err) {
+      err = document.createElement("p");
+      err.className = "challenge-error";
+      body.appendChild(err);
+    }
+    err.textContent = data.reason || "try again";
+
+    // restart attention tracking for retry
+    AttentionTracker.stop();
+    AttentionTracker.start();
+  }
+});
+
+function showChallengeLightbox(data) {
+  var lightbox = document.getElementById("challengeLightbox");
+  var body = document.getElementById("challengeBody");
+  var hint = document.getElementById("challengeHint");
+  if (!lightbox || !body) return;
+
+  body.innerHTML = "";
+  if (hint) hint.textContent = "";
+
+  if (data.type === "thermal") {
+    var parsed = JSON.parse(data.prompt);
+    var temps = parsed.temps;
+
+    var group = document.createElement("div");
+    group.className = "challenge-button-group";
+
+    for (var i = 0; i < temps.length; i++) {
+      (function(idx, temp) {
+        var btn = document.createElement("button");
+        btn.className = "btn challenge-option challenge-option--thermal";
+        btn.textContent = temp + "\u00b0";
+        var hue = Math.max(0, Math.min(240, 240 - (temp / 100) * 240));
+        btn.style.setProperty("--thermal-hue", hue);
+        btn.addEventListener("click", function(e) {
+          e.stopPropagation();
+          var allBtns = group.querySelectorAll(".challenge-option");
+          for (var j = 0; j < allBtns.length; j++) allBtns[j].disabled = true;
+          var elapsed = Date.now() - challengeIssuedAt;
+          var attention = AttentionTracker.summary();
+          AttentionTracker.stop();
+          socket.emit("verify_challenge", {
+            response: idx,
+            response_time_ms: elapsed,
+            attention: attention
+          });
+        });
+        group.appendChild(btn);
+      })(i, temps[i]);
+    }
+
+    body.appendChild(group);
+    if (hint) hint.textContent = "tap the warmer temperature";
+
+  } else {
+    // arithmetic
+    var prompt = document.createElement("p");
+    prompt.className = "challenge-prompt";
+    prompt.textContent = data.prompt + " = ?";
+    body.appendChild(prompt);
+
+    var input = document.createElement("input");
+    input.type = "number";
+    input.className = "challenge-input";
+    input.addEventListener("keydown", function(e) {
+      if (e.key === "Enter") {
+        var elapsed = Date.now() - challengeIssuedAt;
+        var attention = AttentionTracker.summary();
+        AttentionTracker.stop();
+        socket.emit("verify_challenge", {
+          response: parseInt(input.value, 10),
+          response_time_ms: elapsed,
+          attention: attention
+        });
+        input.disabled = true;
+      }
+    });
+    body.appendChild(input);
+    if (hint) hint.textContent = "type the answer and press enter";
+  }
+
+  // show lightbox and start attention tracking
+  lightbox.style.display = "";
+  AttentionTracker.start();
+}
 
 // ============================================
 // Initialize
@@ -2009,4 +2432,29 @@ socket.on("token_deleted", function(data) {
 setState('idle');
 initAudio();
 
-console.log('✅ CUE-VOX V2 initialized');
+// Request human verification challenge on load
+requestChallenge();
+
+// Query-string hydration: ?hydrate=1 triggers token re-hydration
+// Used by buff-launch to push tokens into an already-open session
+(function() {
+  var params = new URLSearchParams(window.location.search);
+  if (params.has("hydrate")) {
+    // Socket may already be connected (io() at top of file), so check state
+    if (socket.connected) {
+      socket.emit("request_hydration");
+    } else {
+      socket.on("connect", function onHydrate() {
+        socket.off("connect", onHydrate);
+        socket.emit("request_hydration");
+      });
+    }
+    // Clean the URL so refreshes don't re-trigger
+    params.delete("hydrate");
+    var clean = params.toString();
+    var newUrl = window.location.pathname + (clean ? "?" + clean : "");
+    window.history.replaceState({}, "", newUrl);
+  }
+})();
+
+console.log('CUE-VOX V2 initialized');
