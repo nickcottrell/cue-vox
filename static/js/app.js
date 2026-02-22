@@ -486,6 +486,11 @@ function renderMessageContent(container, text) {
   var lastIndex = 0;
   var hasContent = matches.length > 0;
 
+  // Detect batch mode: multiple input-type tags (INPUT or YES_NO) in one message
+  var inputTypes = { INPUT: true, YES_NO: true };
+  var inputCount = matches.filter(function(m) { return inputTypes[m.type]; }).length;
+  var batchMode = inputCount > 1;
+
   // Process each match in order
   matches.forEach(function(m) {
     console.log("Detected " + m.type + " tag at position " + m.index);
@@ -500,7 +505,19 @@ function renderMessageContent(container, text) {
     var creator = widgetRegistry[m.type];
     if (creator) {
       try {
-        var widget = creator(m.data);
+        var creatorData = m.data;
+        if (batchMode) {
+          if (m.type === "INPUT") {
+            // Inject batch flag into INPUT JSON
+            var parsed = JSON.parse(m.data);
+            parsed._batch = true;
+            creatorData = JSON.stringify(parsed);
+          } else if (m.type === "YES_NO") {
+            // Wrap YES_NO text with batch signal prefix
+            creatorData = "__BATCH__" + m.data;
+          }
+        }
+        var widget = creator(creatorData);
         if (widget) {
           container.appendChild(widget);
         }
@@ -528,6 +545,79 @@ function renderMessageContent(container, text) {
     if (textAfter) {
       renderMarkdown(container, textAfter);
     }
+  }
+
+  // In batch mode, add a single "Submit All" button
+  if (batchMode) {
+    setPendingInput(true);
+    var submitAllBtn = document.createElement("button");
+    submitAllBtn.className = "btn btn--primary";
+    submitAllBtn.textContent = "Submit All";
+    submitAllBtn.style.marginTop = "var(--space-lg, 1rem)";
+    submitAllBtn.addEventListener("click", function() {
+      var allFilled = true;
+      var combinedMessage = [];
+
+      // Collect from all batch widgets inside this message container
+      var batchWidgets = container.querySelectorAll(".structured-question");
+      batchWidgets.forEach(function(widget) {
+        var batchType = widget.dataset.batchType;
+        var question = widget.querySelector(".card__description").textContent;
+
+        if (batchType === "yes_no") {
+          // Yes/No toggle
+          var val = widget.dataset.batchValue;
+          if (!val) {
+            allFilled = false;
+            widget.classList.add("error");
+          } else {
+            widget.classList.remove("error");
+            combinedMessage.push(question + ": " + val);
+          }
+        } else if (batchType === "slider") {
+          // Slider -- always has a value (default 50)
+          var slider = widget.querySelector(".slider-input");
+          if (slider) {
+            combinedMessage.push(question + ": " + slider.value);
+          }
+        } else {
+          // Text input
+          var ta = widget.querySelector("textarea.text-input");
+          if (ta) {
+            if (!ta.value.trim()) {
+              allFilled = false;
+              ta.classList.add("error");
+            } else {
+              ta.classList.remove("error");
+              combinedMessage.push(question + ": " + ta.value.trim());
+            }
+          }
+        }
+      });
+      if (!allFilled) return;
+
+      var messageText = combinedMessage.join("\n");
+
+      // Disable all inputs
+      container.querySelectorAll("textarea.text-input").forEach(function(ta) {
+        ta.disabled = true;
+        ta.classList.add("disabled");
+      });
+      container.querySelectorAll(".slider-input").forEach(function(sl) {
+        sl.disabled = true;
+      });
+      container.querySelectorAll(".batch-toggle").forEach(function(btn) {
+        btn.disabled = true;
+        btn.classList.add("disabled");
+      });
+      submitAllBtn.remove();
+      setPendingInput(false);
+
+      // Send as single text_message -- one Claude call, one response
+      addMessage("user", messageText);
+      socket.emit("text_message", { text: messageText });
+    });
+    container.appendChild(submitAllBtn);
   }
 }
 
@@ -567,45 +657,88 @@ function createModifierIcon() {
 
 // Create YES/NO question UI
 function createYesNoQuestion(questionText) {
-  const container = document.createElement('div');
-  container.className = 'structured-question';
+  // Detect batch mode via prefix
+  var isBatch = questionText.indexOf("__BATCH__") === 0;
+  if (isBatch) {
+    questionText = questionText.replace("__BATCH__", "");
+  }
 
-  const question = document.createElement('p');
-  question.className = 'card__description';
+  var container = document.createElement("div");
+  container.className = "structured-question";
+
+  var question = document.createElement("p");
+  question.className = "card__description";
   question.textContent = questionText;
   container.appendChild(question);
 
-  const buttonGroup = document.createElement('div');
-  buttonGroup.className = 'button-group';
-  buttonGroup.style.display = 'flex';
-  buttonGroup.style.gap = 'var(--space-sm, 0.5rem)';
-  buttonGroup.style.marginTop = 'var(--space-md, 0.75rem)';
+  var buttonGroup = document.createElement("div");
+  buttonGroup.className = "button-group";
+  buttonGroup.style.display = "flex";
+  buttonGroup.style.gap = "var(--space-sm, 0.5rem)";
+  buttonGroup.style.marginTop = "var(--space-md, 0.75rem)";
 
-  const yesBtn = document.createElement('button');
-  yesBtn.className = 'btn btn--primary';
-  yesBtn.textContent = 'Yes';
-  yesBtn.addEventListener('click', (e) => {
-    e.stopPropagation();
-    handleQuestionResponse('Yes', buttonGroup, questionText);
-  });
+  if (isBatch) {
+    // Batch mode: toggle buttons, no immediate submit
+    var yesBtn = document.createElement("button");
+    yesBtn.className = "btn btn--secondary batch-toggle";
+    yesBtn.textContent = "Yes";
+    yesBtn.dataset.batchQuestion = questionText;
+    yesBtn.dataset.batchValue = "";
 
-  const noBtn = document.createElement('button');
-  noBtn.className = 'btn btn--secondary';
-  noBtn.textContent = 'No';
-  noBtn.addEventListener('click', (e) => {
-    e.stopPropagation();
-    handleQuestionResponse('No', buttonGroup, questionText);
-  });
+    var noBtn = document.createElement("button");
+    noBtn.className = "btn btn--secondary batch-toggle";
+    noBtn.textContent = "No";
+    noBtn.dataset.batchQuestion = questionText;
+    noBtn.dataset.batchValue = "";
 
-  buttonGroup.appendChild(yesBtn);
-  buttonGroup.appendChild(noBtn);
-  container.appendChild(buttonGroup);
+    yesBtn.addEventListener("click", function(e) {
+      e.stopPropagation();
+      yesBtn.className = "btn btn--primary batch-toggle";
+      noBtn.className = "btn btn--secondary batch-toggle";
+      yesBtn.dataset.batchValue = "Yes";
+      noBtn.dataset.batchValue = "";
+      container.dataset.batchValue = "Yes";
+    });
+    noBtn.addEventListener("click", function(e) {
+      e.stopPropagation();
+      noBtn.className = "btn btn--primary batch-toggle";
+      yesBtn.className = "btn btn--secondary batch-toggle";
+      noBtn.dataset.batchValue = "No";
+      yesBtn.dataset.batchValue = "";
+      container.dataset.batchValue = "No";
+    });
+
+    buttonGroup.appendChild(yesBtn);
+    buttonGroup.appendChild(noBtn);
+    container.appendChild(buttonGroup);
+    container.dataset.batchType = "yes_no";
+    container.dataset.batchQuestion = questionText;
+    container.dataset.batchValue = "";
+  } else {
+    // Normal mode: immediate submit
+    var yesBtn = document.createElement("button");
+    yesBtn.className = "btn btn--primary";
+    yesBtn.textContent = "Yes";
+    yesBtn.addEventListener("click", function(e) {
+      e.stopPropagation();
+      handleQuestionResponse("Yes", buttonGroup, questionText);
+    });
+
+    var noBtn = document.createElement("button");
+    noBtn.className = "btn btn--secondary";
+    noBtn.textContent = "No";
+    noBtn.addEventListener("click", function(e) {
+      e.stopPropagation();
+      handleQuestionResponse("No", buttonGroup, questionText);
+    });
+
+    buttonGroup.appendChild(yesBtn);
+    buttonGroup.appendChild(noBtn);
+    container.appendChild(buttonGroup);
+    setPendingInput(true);
+  }
 
   container.appendChild(createModifierIcon());
-
-  // Block other input when question is pending
-  setPendingInput(true);
-
   return container;
 }
 
@@ -756,23 +889,26 @@ function createSemanticSlider(inputData) {
 
   container.appendChild(sliderContainer);
 
-  // Submit button
-  var submitBtn = document.createElement("button");
-  submitBtn.className = "btn btn--primary";
-  submitBtn.textContent = "Submit";
-  submitBtn.style.marginTop = "var(--space-md, 0.75rem)";
-  submitBtn.addEventListener("click", function(e) {
-    e.stopPropagation();
-    var thermal = container.dataset.thermal ? JSON.parse(container.dataset.thermal) : null;
-    handleSliderResponse(slider.value, slider, submitBtn, inputData.semantic_label, inputData.question, thermal);
-  });
+  if (!inputData._batch) {
+    // Normal mode: individual submit
+    var submitBtn = document.createElement("button");
+    submitBtn.className = "btn btn--primary";
+    submitBtn.textContent = "Submit";
+    submitBtn.style.marginTop = "var(--space-md, 0.75rem)";
+    submitBtn.addEventListener("click", function(e) {
+      e.stopPropagation();
+      var thermal = container.dataset.thermal ? JSON.parse(container.dataset.thermal) : null;
+      handleSliderResponse(slider.value, slider, submitBtn, inputData.semantic_label, inputData.question, thermal);
+    });
+    container.appendChild(submitBtn);
+    setPendingInput(true);
+  } else {
+    // Batch mode: store metadata for Submit All collection
+    container.dataset.batchType = "slider";
+    container.dataset.batchQuestion = inputData.question;
+  }
 
-  container.appendChild(submitBtn);
   container.appendChild(createModifierIcon());
-
-  // Block other input when question is pending
-  setPendingInput(true);
-
   return container;
 }
 
@@ -854,22 +990,22 @@ function createTextInput(inputData) {
   textareaContainer.appendChild(textarea);
   container.appendChild(textareaContainer);
 
-  // Submit button
-  var submitBtn = document.createElement("button");
-  submitBtn.className = "btn btn--primary";
-  submitBtn.textContent = "Submit";
-  submitBtn.style.marginTop = "var(--space-md, 0.75rem)";
-  submitBtn.addEventListener("click", function(e) {
-    e.stopPropagation();
-    var thermal = container.dataset.thermal ? JSON.parse(container.dataset.thermal) : null;
-    handleTextResponse(textarea.value, textarea, submitBtn, inputData.semantic_label, inputData.question, thermal);
-  });
+  // In batch mode, skip individual submit button and pending lock
+  if (!inputData._batch) {
+    var submitBtn = document.createElement("button");
+    submitBtn.className = "btn btn--primary";
+    submitBtn.textContent = "Submit";
+    submitBtn.style.marginTop = "var(--space-md, 0.75rem)";
+    submitBtn.addEventListener("click", function(e) {
+      e.stopPropagation();
+      var thermal = container.dataset.thermal ? JSON.parse(container.dataset.thermal) : null;
+      handleTextResponse(textarea.value, textarea, submitBtn, inputData.semantic_label, inputData.question, thermal);
+    });
+    container.appendChild(submitBtn);
+    setPendingInput(true);
+  }
 
-  container.appendChild(submitBtn);
   container.appendChild(createModifierIcon());
-
-  // Block other input when question is pending
-  setPendingInput(true);
 
   return container;
 }
@@ -2442,10 +2578,12 @@ requestChallenge();
   if (params.has("hydrate")) {
     // Socket may already be connected (io() at top of file), so check state
     if (socket.connected) {
+      socket.emit("reset_session");
       socket.emit("request_hydration");
     } else {
       socket.on("connect", function onHydrate() {
         socket.off("connect", onHydrate);
+        socket.emit("reset_session");
         socket.emit("request_hydration");
       });
     }
@@ -2455,6 +2593,159 @@ requestChallenge();
     var newUrl = window.location.pathname + (clean ? "?" + clean : "");
     window.history.replaceState({}, "", newUrl);
   }
+})();
+
+// Query-string auto-prompt: ?prompt_file=1 fetches prompt from server, sends as message
+// Used by cue-sheet run to kick off the session -- agent speaks first
+(function() {
+  var params = new URLSearchParams(window.location.search);
+  if (params.has("prompt_file")) {
+    var doFetch = function() {
+      // Delay lets hydration settle when both params are present
+      setTimeout(function() {
+        socket.emit("request_prompt_file");
+      }, 800);
+    };
+    // Listen for the prompt content coming back
+    socket.on("prompt_file_ready", function(data) {
+      if (data.text) {
+        socket.emit("text_message", { text: data.text });
+      }
+    });
+    if (socket.connected) {
+      doFetch();
+    } else {
+      socket.on("connect", function onAutoPrompt() {
+        socket.off("connect", onAutoPrompt);
+        doFetch();
+      });
+    }
+    // Clean the URL so refreshes don't re-trigger
+    params.delete("prompt_file");
+    var clean = params.toString();
+    var newUrl = window.location.pathname + (clean ? "?" + clean : "");
+    window.history.replaceState({}, "", newUrl);
+  }
+})();
+
+// Query-string auto-launch: ?cuesheet=quick-task launches a sheet by filename
+(function() {
+  var params = new URLSearchParams(window.location.search);
+  var sheetName = params.get("cuesheet");
+  if (!sheetName) return;
+
+  var doLaunch = function() {
+    // First get the list to find the full path
+    socket.once("cuesheet_list_result", function(data) {
+      var sheets = data.sheets || [];
+      var match = null;
+      for (var i = 0; i < sheets.length; i++) {
+        var stem = sheets[i].filename.replace(".yaml", "");
+        if (stem === sheetName || sheets[i].name.toLowerCase() === sheetName.toLowerCase()) {
+          match = sheets[i];
+          break;
+        }
+      }
+      if (match) {
+        socket.emit("cuesheet_launch", { path: match.path });
+      }
+    });
+    socket.emit("cuesheet_list");
+  };
+
+  if (socket.connected) {
+    doLaunch();
+  } else {
+    socket.on("connect", function onAutoSheet() {
+      socket.off("connect", onAutoSheet);
+      // Delay to let hydration settle
+      setTimeout(doLaunch, 500);
+    });
+  }
+
+  params.delete("cuesheet");
+  var clean = params.toString();
+  var newUrl = window.location.pathname + (clean ? "?" + clean : "");
+  window.history.replaceState({}, "", newUrl);
+})();
+
+// ============================================
+// Cue-Sheet Launcher
+// ============================================
+
+(function() {
+  var toggleBtn = document.getElementById("cuesheetToggle");
+  var panel = document.getElementById("cuesheetPanel");
+  var closeBtn = document.getElementById("cuesheetPanelClose");
+  var listEl = document.getElementById("cuesheetList");
+
+  if (!toggleBtn || !panel) return;
+
+  toggleBtn.addEventListener("click", function() {
+    if (panel.style.display === "none") {
+      panel.style.display = "block";
+      socket.emit("cuesheet_list");
+    } else {
+      panel.style.display = "none";
+    }
+  });
+
+  closeBtn.addEventListener("click", function() {
+    panel.style.display = "none";
+  });
+
+  // Close panel when clicking outside
+  document.addEventListener("click", function(e) {
+    if (panel.style.display !== "none" &&
+        !panel.contains(e.target) &&
+        !toggleBtn.contains(e.target)) {
+      panel.style.display = "none";
+    }
+  });
+
+  socket.on("cuesheet_list_result", function(data) {
+    listEl.innerHTML = "";
+    var sheets = data.sheets || [];
+    if (sheets.length === 0) {
+      listEl.innerHTML = "<p class=\"cuesheet-panel__loading\">no cue-sheets found</p>";
+      return;
+    }
+    for (var i = 0; i < sheets.length; i++) {
+      (function(sheet) {
+        var item = document.createElement("button");
+        item.className = "cuesheet-item";
+
+        var name = document.createElement("p");
+        name.className = "cuesheet-item__name";
+        name.textContent = sheet.name;
+        item.appendChild(name);
+
+        var meta = document.createElement("p");
+        meta.className = "cuesheet-item__meta";
+        meta.textContent = sheet.description || (sheet.input_count + " inputs, " + sheet.cue_count + " cues");
+        item.appendChild(meta);
+
+        item.addEventListener("click", function() {
+          panel.style.display = "none";
+          socket.emit("cuesheet_launch", { path: sheet.path });
+        });
+
+        listEl.appendChild(item);
+      })(sheets[i]);
+    }
+  });
+
+  socket.on("cuesheet_launched", function(data) {
+    // Send launch message as text to kick off the conversation
+    var msg = "Cue-sheet launched: " + data.name + ". " + data.description +
+      " (" + data.tokens_created + " tokens created, tag: buff:" + data.slug + ")";
+    addSystemMessage(msg);
+
+    // Auto-send to Claude so it picks up the tokens and starts presenting inputs
+    socket.emit("text_message", {
+      text: "I just launched the " + data.name + " cue-sheet. The tokens are loaded. Let's go."
+    });
+  });
 })();
 
 console.log('CUE-VOX V2 initialized');

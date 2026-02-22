@@ -103,7 +103,9 @@
         </h1>
 
         <!-- Pinned Tokens -->
-        <nav class="pinned-tokens" id="pinnedTokens" aria-label="Pinned tokens"></nav>
+        <nav class="pinned-tokens" id="pinnedTokens" aria-label="Pinned tokens">
+            <a class="pinned-clear-all" id="pinnedClearAll" role="button" aria-label="Clear all pinned tokens">clear all</a>
+        </nav>
 
         <!-- State Indicator Dot -->
         <div class="state-dot" id="stateDot" role="status" aria-label="System state">
@@ -124,6 +126,20 @@
         <p class="canvas__instructions">
             Hold SPACE to talk • Release to process • Press SPACE mid-response to interrupt
         </p>
+
+        <!-- Cue-Sheet Launcher -->
+        <button class="cuesheet-toggle" id="cuesheetToggle" aria-label="Run cue-sheet">
+            run
+        </button>
+        <div class="cuesheet-panel" id="cuesheetPanel" style="display: none;">
+            <header class="cuesheet-panel__header">
+                <h3 class="cuesheet-panel__title">cue-sheets</h3>
+                <button class="cuesheet-panel__close" id="cuesheetPanelClose" aria-label="Close">&times;</button>
+            </header>
+            <div class="cuesheet-panel__list" id="cuesheetList">
+                <p class="cuesheet-panel__loading">loading...</p>
+            </div>
+        </div>
     </main>
 
     <!-- Lightbox Modal -->
@@ -141,6 +157,25 @@
                 <button class="btn btn--primary" id="lightboxEditBtn">Edit</button>
                 <button class="btn btn--secondary" id="lightboxCancelBtn" style="display:none;">Cancel</button>
                 <button class="btn btn--primary" id="lightboxSaveBtn" style="display:none;">Save</button>
+            </footer>
+        </article>
+    </div>
+
+    <!-- Human Verification Lightbox -->
+    <div class="challenge-lightbox" id="challengeLightbox" role="dialog"
+         aria-modal="true" aria-labelledby="challengeTitle" style="display: none;">
+        <div class="challenge-lightbox__backdrop"></div>
+        <article class="challenge-lightbox__content">
+            <header class="challenge-lightbox__header">
+                <h3 class="challenge-lightbox__title" id="challengeTitle">calibration</h3>
+                <div class="challenge-lightbox__presence" id="challengePresence"
+                     aria-label="Presence indicator">
+                    <span class="challenge-lightbox__presence-dot"></span>
+                </div>
+            </header>
+            <section class="challenge-lightbox__body" id="challengeBody"></section>
+            <footer class="challenge-lightbox__footer" id="challengeFooter">
+                <p class="challenge-lightbox__hint" id="challengeHint"></p>
             </footer>
         </article>
     </div>

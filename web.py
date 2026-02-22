@@ -731,6 +731,26 @@ def handle_request_hydration(data=None):
     if _hydrate_modifiers:
         _hydrate_modifiers(MAESTRO_ROOT / ".claude" / "tokens")
 
+# Reset session: clear conversation summary so fresh runs start clean
+@socketio.on("reset_session")
+def handle_reset_session(data=None):
+    global in_memory_summary_tokens
+    in_memory_summary_tokens = []
+    print("[SESSION] Conversation summary cleared")
+
+# Serve auto-prompt file written by maestro.sh
+@socketio.on("request_prompt_file")
+def handle_request_prompt_file(data=None):
+    prompt_path = MAESTRO_ROOT / ".claude" / "run_prompt.txt"
+    if prompt_path.exists():
+        text = prompt_path.read_text().strip()
+        prompt_path.unlink()  # one-shot: delete after reading
+        print("[SESSION] Serving prompt file (%d chars)" % len(text))
+        emit("prompt_file_ready", {"text": text})
+    else:
+        print("[SESSION] No prompt file found")
+        emit("prompt_file_ready", {"text": ""})
+
 # Human verification challenge system
 # Session-level challenge: solve once per session, all tokens get signed
 _challenge_sessions = {}  # sid -> {proof, confidence, challenge_id, verified_at}
@@ -922,9 +942,45 @@ def cleanup_expired_tokens():
         "message": f"Archived {archived_count} expired tokens"
     }
 
+def _get_current_run_floor():
+    """
+    Find the most recent cue-run session token and return its created_at.
+
+    This establishes a time boundary: only input tokens created AFTER the
+    most recent cue-sheet run started belong to the current session.
+
+    Returns:
+        str or None: ISO timestamp of the most recent cue-run token, or None
+    """
+    if not CUE_MEM_AVAILABLE:
+        return None
+
+    try:
+        all_tokens = cue_mem_list_tokens()
+        run_tokens = []
+        for token in all_tokens:
+            tags = token.get('tags', [])
+            if isinstance(tags, list) and 'cue-run' in tags:
+                created = token.get('created_at', '')
+                if created:
+                    run_tokens.append(created)
+        if run_tokens:
+            run_tokens.sort(reverse=True)
+            return run_tokens[0]
+    except Exception:
+        pass
+
+    return None
+
+
 def get_active_scalar_tokens():
     """
-    Get all active (non-expired) structured input tokens.
+    Get all active (non-expired) structured input tokens scoped to the
+    current cue-sheet run.
+
+    Session scoping: If a cue-run session token exists, only tokens created
+    AFTER that session started are returned. This prevents stale inputs from
+    previous runs from contaminating the current session.
 
     Includes: scalar_param (sliders), text_input, yes_no_response
 
@@ -932,6 +988,9 @@ def get_active_scalar_tokens():
         list: Active token objects with natural language values
     """
     active_tokens = []
+
+    # Establish session boundary from the most recent cue-run token
+    run_floor = _get_current_run_floor()
 
     if CUE_MEM_AVAILABLE:
         # Use CUE-MEM to get active tokens
@@ -941,6 +1000,13 @@ def get_active_scalar_tokens():
                 token_type = token.get('type')
                 # Include all structured input token types
                 if token_type in ['scalar_param', 'text_input', 'yes_no_response'] and token.get('status') == 'active':
+                    # Session scoping: skip tokens from before the current run
+                    if run_floor and token.get('created_at', '') < run_floor:
+                        continue
+                    # Skip the run session token itself (it's type text_input but tagged cue-run)
+                    tags = token.get('tags', [])
+                    if isinstance(tags, list) and 'cue-run' in tags:
+                        continue
                     active_tokens.append({
                         'label': token.get('label'),
                         'value': token.get('value'),
@@ -960,6 +1026,10 @@ def get_active_scalar_tokens():
         for token_id, token_data in input_history.items():
             token_type = token_data.get('type')
             if token_type in ['scalar_param', 'text_input', 'yes_no_response'] and token_data.get('status') == 'active':
+                # Session scoping: skip tokens from before the current run
+                if run_floor and token_data.get('created_at', '') < run_floor:
+                    continue
+
                 # Different token types have different field names
                 if token_type == 'scalar_param':
                     label = token_data.get('semantic_label')
@@ -1783,8 +1853,12 @@ def get_instance_identity():
 
     This ensures cue-vox Claude always knows its role in the maestro ecosystem.
     """
-    return """[INSTANCE IDENTITY]
-**You are: cue-vox Claude (Voice Interface)**
+    return """[INSTANCE IDENTITY -- AUTHORITATIVE]
+**You ARE cue-vox Claude (Voice Interface). This is not negotiable.**
+
+You are NOT ninja Claude. You are NOT the terminal instance. You are the VOICE
+interface. If CLAUDE.md describes multiple instance roles, YOUR role is cue-vox.
+The [INSTANCE IDENTITY] block in this prompt is the definitive source of truth.
 
 **Your Role: Writer - Active token contributor**
 
@@ -1794,20 +1868,18 @@ def get_instance_identity():
 - Write tokens to .claude/tokens/ with thermal metadata
 - Create scalar parameter tokens from slider inputs
 - Query hot tokens for context via flux-capacitor
+- Execute cue-sheet runs (gather inputs, assemble outputs, retry)
 
-**Your Boundaries (defer to ninja Claude):**
+**Your Boundaries (defer to ninja Claude for REPO OPERATIONS ONLY):**
 - Repository management (git submodule, commits, branches, .gitmodules)
 - File system restructuring
 - Multi-step debugging requiring multiple approvals
 - Build system operations
 
-**When to defer:**
-If a task involves repo operations or multi-step approval friction, respond:
+**When to defer (ONLY for repo/build operations):**
 "That's a repository operation - ninja Claude handles those better. Run: claude-code"
 
-**Related Policies:**
-- instance-roles.md (Writer vs Reader roles)
-- instance-operational-boundaries.md (Task routing logic)
+**NEVER defer cue-sheet execution, input gathering, story generation, or slider interactions.**
 
 ---
 
@@ -2923,6 +2995,205 @@ def default_error_handler(e):
 def catch_all(event, data=None):
     """Log all incoming socket events"""
     print("[DEBUG] catch_all event: %s data: %s" % (event, str(data)[:200] if data else "None"))
+
+
+@socketio.on('cuesheet_list')
+def handle_cuesheet_list(data=None):
+    """List available cue-sheets from the cue-sheets directory"""
+    try:
+        sheets_dir = MAESTRO_ROOT / "cue-sheets"
+        if not sheets_dir.is_dir():
+            emit("cuesheet_list_result", {"sheets": []})
+            return
+
+        import yaml as _yaml
+        sheets = []
+        for f in sorted(sheets_dir.iterdir()):
+            if f.suffix != ".yaml":
+                continue
+            try:
+                with open(f) as fh:
+                    doc = _yaml.safe_load(fh) or {}
+                sheets.append({
+                    "path": str(f),
+                    "filename": f.name,
+                    "name": doc.get("name", f.stem),
+                    "description": doc.get("description", ""),
+                    "input_count": len(doc.get("inputs", [])),
+                    "cue_count": len(doc.get("cues", []))
+                })
+            except Exception:
+                continue
+
+        emit("cuesheet_list_result", {"sheets": sheets})
+    except Exception as e:
+        print("cuesheet_list error: %s" % e)
+        emit("cuesheet_list_result", {"sheets": [], "error": str(e)})
+
+
+@socketio.on('cuesheet_launch')
+def handle_cuesheet_launch(data):
+    """Launch a cue-sheet: parse YAML, create token constellation, hydrate UI"""
+    try:
+        sheet_path = data.get("path")
+        if not sheet_path:
+            emit("error", {"message": "Missing path for cue-sheet launch"})
+            return
+
+        sheet_path = Path(sheet_path)
+        if not sheet_path.exists():
+            emit("error", {"message": "Cue-sheet not found: %s" % sheet_path})
+            return
+
+        import yaml as _yaml
+        with open(sheet_path) as fh:
+            doc = _yaml.safe_load(fh) or {}
+
+        sheet_name = doc.get("name", sheet_path.stem)
+        sheet_desc = doc.get("description", "")
+        inputs = doc.get("inputs", [])
+        cues = doc.get("cues", [])
+        slug = re.sub(r"[^a-z0-9-]", "", sheet_name.lower().replace(" ", "-"))
+
+        # Build cue list string
+        cue_ids = [c.get("id", "cue-%d" % i) for i, c in enumerate(cues)]
+        cue_list = ", ".join(cue_ids)
+
+        created_tokens = []
+
+        # Helper to create token via CLI (matches buff pipeline)
+        cue_mem_cli = MAESTRO_ROOT / "cue-mem" / "cli"
+
+        def _create_token(label, value, token_type="text_input", base_temp=85, cooling_rate=None, tags=None, references=None):
+            """Create token via createtoken CLI, return token_id"""
+            cmd = [str(cue_mem_cli / "createtoken"), label, value, "--type", token_type, "--base-temp", str(base_temp)]
+            if cooling_rate is not None:
+                cmd.extend(["--cooling-rate", str(cooling_rate)])
+            if tags:
+                cmd.extend(["--tags", ",".join(tags)])
+            if references:
+                cmd.extend(["--references", references])
+            try:
+                result = subprocess.run(cmd, capture_output=True, text=True, timeout=10)
+                for line in result.stdout.strip().split("\n"):
+                    if line.startswith("Created token:"):
+                        return line.replace("Created token: ", "").strip()
+            except Exception as e:
+                print("Token creation error: %s" % e)
+            return None
+
+        # 1. Session token
+        session_value = "CUESHEET-LAUNCH SESSION\ncue-sheet: %s\ndescription: %s\ninputs: %d\ncues: %s\ninstruction: Present each input to the user via the appropriate widget, then execute cues in order." % (
+            sheet_name, sheet_desc, len(inputs), cue_list
+        )
+        session_id = _create_token(
+            "cuesheet_session_%s" % slug, session_value,
+            base_temp=95, tags=["buff-launch", "buff:%s" % slug]
+        )
+        if session_id:
+            created_tokens.append(session_id)
+
+        # Hold-on modifier for session
+        if session_id:
+            _create_token(
+                "mod_holdon_session_%s" % slug,
+                "hold-on modifier for %s" % session_id,
+                token_type="modifier", base_temp=95,
+                tags=["modifier", "hold-on", "buff:%s" % slug],
+                references=session_id
+            )
+
+        # 2. Context modifier
+        context_value = "CUESHEET LAUNCH\ncue-sheet: %s\nAll tokens tagged buff:%s were created from a cue-sheet launch.\nPresent inputs to user, then execute cues in order.\ncues: %s" % (
+            sheet_name, slug, cue_list
+        )
+        _create_token(
+            "mod_cuesheet_context_%s" % slug, context_value,
+            token_type="modifier", base_temp=90, cooling_rate=4.0,
+            tags=["modifier", "buff-context", "buff:%s" % slug],
+            references=session_id
+        )
+
+        # 3. Cue tokens
+        for i, cue in enumerate(cues):
+            cue_id = cue.get("id", "cue-%d" % i)
+            cue_obj = cue.get("objective", "")
+            cue_token_id = _create_token(
+                "cue_%s_%s" % (cue_id, slug), cue_obj,
+                token_type="cue", base_temp=80, cooling_rate=3.0,
+                tags=["cue", "buff-launch", "buff:%s" % slug],
+                references=session_id
+            )
+            if cue_token_id:
+                created_tokens.append(cue_token_id)
+                _create_token(
+                    "mod_holdon_cue_%s_%s" % (cue_id, slug),
+                    "hold-on modifier for %s" % cue_token_id,
+                    token_type="modifier", base_temp=85, cooling_rate=8.5,
+                    tags=["modifier", "hold-on", "buff:%s" % slug],
+                    references=cue_token_id
+                )
+
+        # 4. Cuesheet body token
+        with open(sheet_path) as fh:
+            yaml_body = fh.read()
+        cuesheet_token_id = _create_token(
+            "buff_cuesheet_%s" % slug, yaml_body,
+            base_temp=95, tags=["buff-launch", "buff:%s" % slug]
+        )
+        if cuesheet_token_id:
+            created_tokens.append(cuesheet_token_id)
+            _create_token(
+                "mod_holdon_cuesheet_%s" % slug,
+                "hold-on modifier for %s" % cuesheet_token_id,
+                token_type="modifier", base_temp=95,
+                tags=["modifier", "hold-on", "buff:%s" % slug],
+                references=cuesheet_token_id
+            )
+
+        # 5. Refresh context
+        try:
+            refresh_script = MAESTRO_ROOT / "tools" / "refresh-memory.py"
+            if refresh_script.exists():
+                subprocess.run(["python3", str(refresh_script)], capture_output=True, timeout=15)
+        except Exception:
+            pass
+
+        # 6. Hydrate modifier tokens so they appear in pinned nav
+        if _hydrate_modifiers:
+            _hydrate_modifiers(MAESTRO_ROOT / ".claude" / "tokens")
+
+        # Build input definitions for frontend
+        input_defs = []
+        for inp in inputs:
+            input_def = {
+                "id": inp.get("id", ""),
+                "prompt": inp.get("prompt", ""),
+                "type": inp.get("type", "text"),
+                "required": inp.get("required", False)
+            }
+            if inp.get("scale"):
+                input_def["scale"] = inp["scale"]
+            if inp.get("semantic_label"):
+                input_def["semantic_label"] = inp["semantic_label"]
+            input_defs.append(input_def)
+
+        emit("cuesheet_launched", {
+            "name": sheet_name,
+            "description": sheet_desc,
+            "slug": slug,
+            "inputs": input_defs,
+            "cues": [{"id": c.get("id", ""), "objective": c.get("objective", "")} for c in cues],
+            "tokens_created": len(created_tokens)
+        })
+
+        print("[CUESHEET] Launched: %s (%d tokens created)" % (sheet_name, len(created_tokens)))
+
+    except Exception as e:
+        print("cuesheet_launch error: %s" % e)
+        import traceback
+        traceback.print_exc()
+        emit("error", {"message": "Cue-sheet launch failed: %s" % str(e)})
 
 
 @socketio.on('connect')
