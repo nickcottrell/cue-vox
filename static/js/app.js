@@ -465,19 +465,33 @@ function renderMarkdown(container, text) {
 function renderMessageContent(container, text) {
   console.log("Rendering message:", text.substring(0, 100) + (text.length > 100 ? "..." : ""));
 
-  // Single master regex matches all structured tags
-  var tagRegex = /\[(YES_NO|INPUT|APPROVAL|DOCUMENT|CUE):\s*([\s\S]+?)\]/g;
+  // Find structured tags with bracket-balanced matching
+  // Simple regex fails when JSON payload contains ] (e.g. arrays in choice options)
+  var tagStartRegex = /\[(YES_NO|INPUT|APPROVAL|DOCUMENT|CUE):\s*/g;
 
   var matches = [];
   var match;
 
-  while ((match = tagRegex.exec(text)) !== null) {
-    matches.push({
-      type: match[1],
-      index: match.index,
-      length: match[0].length,
-      data: match[2]
-    });
+  while ((match = tagStartRegex.exec(text)) !== null) {
+    var tagType = match[1];
+    var dataStart = match.index + match[0].length;
+    // Walk forward counting brackets to find the balanced closing ]
+    var depth = 1;  // We are inside the opening [
+    var pos = dataStart;
+    while (pos < text.length && depth > 0) {
+      if (text[pos] === "[") depth++;
+      else if (text[pos] === "]") depth--;
+      if (depth > 0) pos++;
+    }
+    if (depth === 0) {
+      var data = text.substring(dataStart, pos);
+      matches.push({
+        type: tagType,
+        index: match.index,
+        length: pos - match.index + 1,
+        data: data
+      });
+    }
   }
 
   // Sort by position
