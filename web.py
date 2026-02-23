@@ -3,7 +3,7 @@
 cue-vox web interface - localhost voice UI for Claude Code
 """
 
-from flask import Flask, render_template, request, jsonify
+from flask import Flask, render_template, request, jsonify, send_from_directory
 from flask_socketio import SocketIO, emit
 import whisper
 import subprocess
@@ -110,6 +110,15 @@ try:
         print("✓ AuditLogger enabled")
 except ImportError as e:
     print("⚠️  AuditLogger not available: %s" % e)
+
+# Import CitationResolver for verifying source references
+_citation_resolver = None
+try:
+    from citation_resolver import CitationResolver
+    _citation_resolver = CitationResolver(project_root=MAESTRO_ROOT)
+    print("✓ CitationResolver enabled")
+except ImportError as e:
+    print("⚠️  CitationResolver not available: %s" % e)
 
 app = Flask(__name__)
 app.config['SECRET_KEY'] = 'cue-vox-secret'
@@ -266,11 +275,34 @@ if TokenFactory is not None:
 else:
     token_factory = None
 
+def extract_citations(text):
+    """
+    Extract [CITATIONS: {...}] block from end of response.
+
+    Returns:
+        (clean_text, citations_data) -- clean_text has the block removed,
+        citations_data is the parsed dict or None if not found.
+    """
+    pattern = r'\[CITATIONS:\s*(\{[\s\S]*?\})\]\s*$'
+    match = re.search(pattern, text)
+    if not match:
+        return (text, None)
+    try:
+        data = json.loads(match.group(1))
+        clean = text[:match.start()].rstrip()
+        return (clean, data)
+    except (json.JSONDecodeError, ValueError):
+        return (text, None)
+
+
 def sanitize_for_tts(text):
     """
     Sanitize text for TTS by extracting question text from structured input tags.
     Prevents TTS from trying to speak raw tags like [YES_NO: ...] or [INPUT: {...}]
     """
+    # Strip citation block first (metadata only, never spoken)
+    text, _ = extract_citations(text)
+
     print(f"[TTS DEBUG] Input text: {text[:200]}")  # Log first 200 chars
 
     # Check if entire message is a YES_NO question - extract the question text
@@ -1194,12 +1226,15 @@ def log_conversation(user_text, assistant_text, speech_metadata=None, input_leng
     timestamp = datetime.now()
     log_file = LOG_DIR / f"{timestamp.strftime('%Y-%m-%d')}.jsonl"
 
+    # Extract and resolve citations from assistant response
+    clean_text, citations_data = extract_citations(assistant_text)
+
     entry = {
         'timestamp': timestamp.strftime('%Y-%m-%dT%H:%M'),  # No seconds
         't_relative': get_relative_time(timestamp),
         't_period': get_time_period(timestamp),
         'user': user_text,
-        'assistant': assistant_text
+        'assistant': clean_text
     }
 
     if speech_metadata:
@@ -1216,6 +1251,25 @@ def log_conversation(user_text, assistant_text, speech_metadata=None, input_leng
             'interpretation': interpret_confidence(h, s, l)
         }
 
+    # Resolve citations and add to log entry
+    if citations_data and citations_data.get("refs"):
+        refs = citations_data["refs"]
+        if _citation_resolver:
+            resolved = _citation_resolver.resolve(refs)
+            entry['citations'] = resolved
+            # Audit log citation resolution
+            passed = sum(1 for r in resolved if r.get("resolved"))
+            failed = len(resolved) - passed
+            if _audit_logger:
+                _audit_logger.log("citation:resolved", details={
+                    "passed": passed,
+                    "failed": failed,
+                    "refs": resolved,
+                })
+        else:
+            # No resolver available -- store raw refs unresolved
+            entry['citations'] = refs
+
     with open(log_file, 'a') as f:
         f.write(json.dumps(entry) + '\n')
 
@@ -1227,7 +1281,7 @@ def log_conversation(user_text, assistant_text, speech_metadata=None, input_leng
     # Creates recursive awareness where tokens become aware of tokens around them
     create_token_echo()
 
-    return log_file
+    return (log_file, clean_text)
 
 def cleanup_old_logs():
     ensure_log_dir()
@@ -2106,6 +2160,29 @@ def index():
     return render_template('index.html', cache_bust=int(_time.time()))
 
 
+def _resolve_vault_image(slug, filename):
+    """Resolve vault image path, checking central then project folder layouts."""
+    vault_images = MAESTRO_ROOT / "docs" / "vault" / "images"
+    # Layout 1: docs/vault/images/{slug}/{filename}
+    central = vault_images / slug / filename
+    if central.is_file():
+        return str(vault_images / slug), filename
+    # Layout 2: docs/vault/{slug}/images/{filename}
+    project = MAESTRO_ROOT / "docs" / "vault" / slug / "images"
+    if (project / filename).is_file():
+        return str(project), filename
+    return None, None
+
+
+@app.route("/vault-images/<slug>/<path:filename>")
+def serve_vault_image(slug, filename):
+    """Serve vault images over HTTP for gallery rendering."""
+    directory, fname = _resolve_vault_image(slug, filename)
+    if directory is None:
+        return "Not found", 404
+    return send_from_directory(directory, fname)
+
+
 @socketio.on('audio_data')
 def handle_audio(data):
     """Receive audio from browser, transcribe, send to Claude, speak response"""
@@ -2201,16 +2278,16 @@ def handle_audio(data):
             print("[CLAUDE] Empty response. Exit code: %d. Prompt length: %d chars" % (process.returncode, len(enhanced_text)))
 
         # Log conversation with input length
-        log_conversation(text, response, input_length=input_word_count)
+        _, clean_response = log_conversation(text, response, input_length=input_word_count)
 
-        emit('response', {'text': response})
+        emit('response', {'text': clean_response})
         emit('state_change', {'state': 'speaking'})
 
         # Start tracking speech playback
-        start_speech_tracking(response)
+        start_speech_tracking(clean_response)
 
         # Speak response (sanitize for TTS)
-        tts_text = sanitize_for_tts(response)
+        tts_text = sanitize_for_tts(clean_response)
         try:
             subprocess.run(['say', tts_text], check=False, timeout=30)
         except Exception as e:
@@ -2320,16 +2397,16 @@ IMPORTANT: When speaking, say "Yes OR No" not "yes-no" or "yes slash no"."""
         response = stdout.strip()
 
         # Log conversation (button answer as user input) with input length
-        log_conversation(answer, response, input_length=input_word_count)
+        _, clean_response = log_conversation(answer, response, input_length=input_word_count)
 
-        emit('response', {'text': response})
+        emit('response', {'text': clean_response})
         emit('state_change', {'state': 'speaking'})
 
         # Start tracking speech playback
-        start_speech_tracking(response)
+        start_speech_tracking(clean_response)
 
         # Speak response (sanitize for TTS)
-        tts_text = sanitize_for_tts(response)
+        tts_text = sanitize_for_tts(clean_response)
         try:
             subprocess.run(['say', tts_text], check=False, timeout=30)
         except Exception as e:
@@ -2345,9 +2422,28 @@ IMPORTANT: When speaking, say "Yes OR No" not "yes-no" or "yes slash no"."""
         emit('state_change', {'state': 'idle'})
 
 
+def _respond_and_speak(user_log_text, response_text, confidence=None):
+    """Log, emit, speak, and return to idle. DRY helper for approval handler."""
+    _, clean_response = log_conversation(
+        user_log_text, response_text,
+        input_length=get_input_word_count(user_log_text),
+        confidence=confidence,
+    )
+    emit('response', {'text': clean_response})
+    emit('state_change', {'state': 'speaking'})
+    start_speech_tracking(clean_response)
+    tts_text = sanitize_for_tts(clean_response)
+    try:
+        subprocess.run(['say', tts_text], check=False, timeout=30)
+    except Exception as e:
+        print("[TTS ERROR] Failed to speak: %s" % e)
+    finish_speech()
+    emit('state_change', {'state': 'idle'})
+
+
 @socketio.on('approval_response')
 def handle_approval_response(data):
-    """Handle approval gate response - similar to button_response"""
+    """Handle approval gate response with direct file execution (no subprocess)."""
     try:
         # Handle any speech interruption and stop current speech
         handle_speech_interruption()
@@ -2357,9 +2453,13 @@ def handle_approval_response(data):
         approval_data = data.get('approval_data', {})
         confidence = data.get('confidence')  # HSL confidence values
 
+        action = approval_data.get('action', 'action')
+        target = approval_data.get('target', '')
+        description = approval_data.get('description', '')
+        preview = approval_data.get('preview', '')
+
         # Create persistent token for the approval decision
-        action_label = approval_data.get('action', 'action')
-        question_ctx = "%s: %s" % (action_label, approval_data.get('description', ''))
+        question_ctx = "%s: %s" % (action, description)
         token_id = create_yes_no_token(
             answer=decision,
             question_context=question_ctx
@@ -2368,89 +2468,96 @@ def handle_approval_response(data):
         emit("token_created", {
             "token_id": token_id,
             "type": "approval_response",
-            "label": action_label,
+            "label": action,
             "value": decision,
             "question": question_ctx
         })
 
-        emit('state_change', {'state': 'thinking'})
+        action_summary = "%s on %s" % (action, target or 'target')
+        user_log = "%s (%s)" % (decision, action_summary)
 
-        # Calculate input length for response matching
-        input_word_count = get_input_word_count(decision)
-        length_constraint = get_response_length_constraint(input_word_count)
+        # --- Deny decision: acknowledge and done ---
+        if decision != "Approve":
+            _respond_and_speak(
+                user_log,
+                "Got it, cancelled %s." % action.lower(),
+                confidence=confidence,
+            )
+            return
 
-        # Load recent conversation for context
-        recent_logs = load_recent_logs(limit=5)
-        context = ""
-        if recent_logs:
-            context = "[RECENT CONVERSATION]\n"
-            for entry in recent_logs:
-                context += f"User: {entry.get('user', '')}\n"
-                context += f"Assistant: {entry.get('assistant', '')}\n"
-            context += "\n"
+        # --- Approve: scope-guarded direct execution ---
 
-        # Inject instance identity, speech consumption, variables, and input history context
-        identity_context = get_instance_identity()
-        speech_context = get_speech_consumption_context()
-        variables_context = get_variables_context()
-        input_history_context = get_input_history_context()
-        summary_context = get_conversation_summary_context()
-        flux_context = get_flux_capacitor_context()
+        # Only Write (create new file) is allowed through voice
+        if action != "Write":
+            _respond_and_speak(
+                user_log,
+                "%s operations should go through ninja Claude in the terminal. "
+                "Run claude-code and ask there." % action,
+                confidence=confidence,
+            )
+            return
 
-        # Build prompt with approval context
-        action_summary = f"{approval_data.get('action', 'Action')} on {approval_data.get('target', 'target')}"
-        enhanced_text = f"""{identity_context}{flux_context}{summary_context}{speech_context}{variables_context}{input_history_context}{length_constraint}{context}[USER'S APPROVAL DECISION]
-Action requested: {action_summary}
-User decision: {decision}
+        # Must have content to write
+        if not preview or not preview.strip():
+            _respond_and_speak(
+                user_log,
+                "No file content was provided in the approval. "
+                "Ask Claude to regenerate with the full content.",
+                confidence=confidence,
+            )
+            return
 
-[VOICE INTERFACE INSTRUCTIONS]
-The user has responded to your approval request with "{decision}".
-- If Approve: Proceed with the action and confirm completion
-- If Deny: Acknowledge and ask what they'd like to do instead
+        # Path safety: must resolve within MAESTRO_ROOT
+        maestro_root = MAESTRO_ROOT.resolve()
+        target_path = Path(target).resolve() if target else None
 
-When you need confirmation, format your response like this:
-[YES_NO: your question here]
+        if target_path is None:
+            _respond_and_speak(
+                user_log,
+                "No target file path specified.",
+                confidence=confidence,
+            )
+            return
 
-When you need approval for an action, format your response like this:
-[APPROVAL: {{"action": "Write", "target": "/path/to/file", "description": "What you're doing", "preview": "content preview"}}]
-
-IMPORTANT: When speaking, say "Yes OR No" not "yes-no" or "yes slash no"."""
-
-        # Send to Claude Code
-        cwd = MAESTRO_ROOT
-
-        process = subprocess.Popen(
-            ['claude'],
-            stdin=subprocess.PIPE,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
-            text=True,
-            cwd=cwd,
-            env=CLEAN_CLAUDE_ENV
-        )
-        stdout, stderr = process.communicate(input=enhanced_text)
-        response = stdout.strip()
-
-        # Log conversation (approval decision as user input) with input length and confidence
-        log_conversation(f"{decision} ({action_summary})", response, input_length=input_word_count, confidence=confidence)
-
-        emit('response', {'text': response})
-        emit('state_change', {'state': 'speaking'})
-
-        # Start tracking speech playback
-        start_speech_tracking(response)
-
-        # Speak response (sanitize for TTS)
-        tts_text = sanitize_for_tts(response)
         try:
-            subprocess.run(['say', tts_text], check=False, timeout=30)
-        except Exception as e:
-            print(f"[TTS ERROR] Failed to speak: {e}")
+            target_path.relative_to(maestro_root)
+        except ValueError:
+            _respond_and_speak(
+                user_log,
+                "Path is outside the project. File creation blocked for safety.",
+                confidence=confidence,
+            )
+            return
 
-        # Mark speech as completed
-        finish_speech()
+        # Reject if file already exists (updates go through ninja Claude)
+        if target_path.exists():
+            _respond_and_speak(
+                user_log,
+                "That file already exists. Use ninja Claude to modify existing files. "
+                "Run claude-code and ask there.",
+                confidence=confidence,
+            )
+            return
 
-        emit('state_change', {'state': 'idle'})
+        # All checks passed -- create the file directly
+        emit('state_change', {'state': 'thinking'})
+        target_path.parent.mkdir(parents=True, exist_ok=True)
+        target_path.write_text(preview)
+
+        # Audit trail
+        if _audit_logger:
+            _audit_logger.log("file:created", details={
+                "path": str(target_path),
+                "description": description,
+                "size": len(preview),
+            })
+
+        filename = target_path.name
+        _respond_and_speak(
+            user_log,
+            "Created %s." % filename,
+            confidence=confidence,
+        )
 
     except Exception as e:
         emit('error', {'message': str(e)})
@@ -2657,16 +2764,16 @@ def handle_input_response(data):
         response = stdout.strip()
 
         # Log conversation with input length
-        log_conversation(user_message, response, input_length=input_word_count)
+        _, clean_response = log_conversation(user_message, response, input_length=input_word_count)
 
-        emit('response', {'text': response})
+        emit('response', {'text': clean_response})
         emit('state_change', {'state': 'speaking'})
 
         # Start tracking speech playback
-        start_speech_tracking(response)
+        start_speech_tracking(clean_response)
 
         # Speak response (sanitize for TTS)
-        tts_text = sanitize_for_tts(response)
+        tts_text = sanitize_for_tts(clean_response)
         try:
             subprocess.run(['say', tts_text], check=False, timeout=30)
         except Exception as e:
@@ -2736,16 +2843,16 @@ def handle_text_message(data):
         response = stdout.strip()
 
         # Log conversation with input length
-        log_conversation(text, response, input_length=input_word_count)
+        _, clean_response = log_conversation(text, response, input_length=input_word_count)
 
-        emit('response', {'text': response})
+        emit('response', {'text': clean_response})
         emit('state_change', {'state': 'speaking'})
 
         # Start tracking speech playback
-        start_speech_tracking(response)
+        start_speech_tracking(clean_response)
 
         # Speak response (sanitize for TTS)
-        tts_text = sanitize_for_tts(response)
+        tts_text = sanitize_for_tts(clean_response)
         try:
             subprocess.run(['say', tts_text], check=False, timeout=30)
         except Exception as e:

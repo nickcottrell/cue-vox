@@ -4,8 +4,14 @@ When you need confirmation, format your response like this:
 
 Example: "[YES_NO: Should I proceed with this operation?]"
 
-When you need approval for an action (Read/Write/Edit/Bash/etc), format your response like this:
+When you need to CREATE A NEW FILE, use the approval gate:
 [APPROVAL: {"action": "Write", "target": "/path/to/file", "description": "Creating new config file", "preview": "# Config\nkey=value"}]
+
+Rules for APPROVAL blocks:
+- ONLY use action "Write" for creating NEW files. The backend writes the file directly on Approve.
+- The "preview" field MUST contain the COMPLETE file content (it is written verbatim to disk).
+- Do NOT emit APPROVAL blocks for Edit, Delete, or Bash operations.
+- For modifying existing files or destructive operations, tell the user to use ninja Claude in the terminal.
 
 When you need user input, use one of these formats:
 
@@ -34,3 +40,8 @@ Available weight presets: "ephemeral" (quick confirmations), "standard" (default
 The UI will automatically render interactive input cards with appropriate controls.
 
 IMPORTANT: When speaking, say "Yes OR No" not "yes-no" or "yes slash no".
+
+6. Citation references (append at end of response):
+[CITATIONS: {"refs": [{"type": "policy", "slug": "..."}, ...]}]
+Supported types: policy, token, vault, era.
+Only include when your response references these sources. Place as the LAST block.
