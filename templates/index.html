@@ -107,6 +107,10 @@
             <a class="pinned-clear-all" id="pinnedClearAll" role="button" aria-label="Clear all pinned tokens">clear all</a>
         </nav>
 
+        <!-- Cue-Card Activity Stream -->
+        <section class="cue-stream" id="cueStream" aria-label="Cue-card activity stream">
+        </section>
+
         <!-- State Indicator Dot -->
         <div class="state-dot" id="stateDot" role="status" aria-label="System state">
             <div class="state-dot__inner" data-state="idle"></div>
@@ -178,6 +182,29 @@
                 <p class="challenge-lightbox__hint" id="challengeHint"></p>
             </footer>
         </article>
+    </div>
+
+    <!-- Gallery Lightbox -->
+    <div class="gallery-lightbox" id="galleryLightbox" role="dialog"
+         aria-modal="true" aria-label="Image gallery" style="display: none;">
+        <div class="gallery-lightbox__backdrop"></div>
+        <div class="gallery-lightbox__chrome">
+            <header class="gallery-lightbox__header">
+                <h3 class="gallery-lightbox__title" id="galleryLightboxTitle"></h3>
+                <span class="gallery-lightbox__counter" id="galleryLightboxCounter"></span>
+                <button class="gallery-lightbox__close" id="galleryLightboxClose" aria-label="Close gallery">&times;</button>
+            </header>
+            <figure class="gallery-lightbox__stage">
+                <button class="gallery-lightbox__nav gallery-lightbox__nav--prev"
+                        id="galleryPrev" aria-label="Previous image">&#8249;</button>
+                <img class="gallery-lightbox__image" id="galleryLightboxImage" alt="">
+                <button class="gallery-lightbox__nav gallery-lightbox__nav--next"
+                        id="galleryNext" aria-label="Next image">&#8250;</button>
+            </figure>
+            <footer class="gallery-lightbox__footer">
+                <p class="gallery-lightbox__caption" id="galleryLightboxCaption"></p>
+            </footer>
+        </div>
     </div>
 
     <!-- Application Script -->

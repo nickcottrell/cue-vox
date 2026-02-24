@@ -9,6 +9,7 @@ Callable from:
 - CLI (./hooks run <cuesheet.yaml>)
 """
 
+import hashlib
 import json
 import subprocess
 import sys
@@ -16,6 +17,12 @@ import time
 from datetime import datetime
 from pathlib import Path
 from typing import Dict, List, Optional, Callable
+
+
+def _compute_source_hash(yaml_path):
+    """SHA-256 of raw cue-sheet YAML bytes."""
+    with open(yaml_path, "rb") as f:
+        return hashlib.sha256(f.read()).hexdigest()
 
 
 class CuesheetExecutor:
@@ -29,18 +36,20 @@ class CuesheetExecutor:
     """
 
     def __init__(self, maestro_root=None, dispatcher_path=None,
-                 token_factory=None, emit_fn=None):
+                 token_factory=None, emit_fn=None, yaml_path=None):
         """
         Args:
             maestro_root: Path to maestro root directory
             dispatcher_path: Path to cue-dispatcher/dispatch.py
             token_factory: TokenFactory instance for creating result tokens
             emit_fn: Socket.IO emit function for progress events
+            yaml_path: Path to source YAML file (for source_hash computation)
         """
         self.maestro_root = Path(maestro_root) if maestro_root else Path.cwd()
         self.dispatcher_path = dispatcher_path
         self.token_factory = token_factory
         self.emit_fn = emit_fn
+        self.yaml_path = yaml_path
 
     def execute(self, cuesheet):
         """
@@ -115,12 +124,18 @@ class CuesheetExecutor:
 
         total_duration = int((time.time() - overall_start) * 1000)
 
+        # Compute source hash if yaml_path available
+        source_hash = ""
+        if self.yaml_path and Path(self.yaml_path).exists():
+            source_hash = _compute_source_hash(self.yaml_path)
+
         execution_result = {
             "title": title,
             "doc_id": doc_id,
             "status": overall_status,
             "operations": results,
-            "total_duration_ms": total_duration
+            "total_duration_ms": total_duration,
+            "source_hash": source_hash,
         }
 
         self._emit_progress("cuesheet_complete", {
@@ -130,8 +145,9 @@ class CuesheetExecutor:
         })
 
         # Create ephemeral result token
+        result_token_id = ""
         if self.token_factory:
-            self.token_factory.create(
+            result_token_id = self.token_factory.create(
                 token_type="cuesheet_result",
                 label="cuesheet_%s" % doc_id,
                 value="%s: %s (%dms)" % (title, overall_status, total_duration),
@@ -140,9 +156,21 @@ class CuesheetExecutor:
                     "doc_id": doc_id,
                     "status": overall_status,
                     "operation_count": len(results),
-                    "total_duration_ms": total_duration
+                    "total_duration_ms": total_duration,
+                    "source_hash": source_hash,
                 }
-            )
+            ) or ""
+
+        execution_result["result_token_id"] = result_token_id
+
+        # Emit signoff gate request
+        self._emit_progress("cuesheet_signoff", {
+            "title": title,
+            "doc_id": doc_id,
+            "source_hash": source_hash,
+            "result_token_id": result_token_id,
+            "status": overall_status,
+        })
 
         return execution_result
 

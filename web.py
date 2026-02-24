@@ -14,6 +14,7 @@ import io
 import wave
 import os
 import json
+import hashlib
 from datetime import datetime, timedelta
 import threading
 import time
@@ -755,6 +756,70 @@ if CUE_MEM_AVAILABLE:
         print("Modifier management enabled")
     except ImportError as e:
         print("Modifier handlers not loaded: %s" % e)
+
+# Pin gallery: create a gallery token from a pinned gallery strip
+@socketio.on("pin_gallery")
+def handle_pin_gallery(data):
+    """Create a persistent gallery token when user pins a gallery strip."""
+    try:
+        gallery_id = data.get("gallery_id")
+        title = data.get("title", "Gallery")
+        images = data.get("images", [])
+        if not images:
+            emit("error", {"message": "No images to pin"})
+            return
+
+        image_count = len(images)
+        label = "gallery_%s" % re.sub(r"[^a-z0-9_]", "", title.lower().replace(" ", "_"))
+
+        if token_factory is not None:
+            token_id = token_factory.create(
+                token_type="gallery",
+                label=label,
+                value="%s (%d images)" % (title, image_count),
+                tags=["gallery"],
+                extra_fields={
+                    "title": title,
+                    "image_count": image_count,
+                    "images": images,
+                }
+            )
+        else:
+            # Fallback: write token file directly
+            ensure_tokens_dir()
+            token_id = "ctx_gallery_%d" % int(time.time())
+            token = {
+                "token_id": token_id,
+                "type": "gallery",
+                "label": label,
+                "value": "%s (%d images)" % (title, image_count),
+                "title": title,
+                "image_count": image_count,
+                "images": images,
+                "tags": ["gallery"],
+                "created_at": datetime.now().isoformat(),
+                "temperature": 75,
+                "base_temp": 75,
+                "cooling_rate": 5.0,
+            }
+            token_path = TOKENS_DIR / ("%s.json" % token_id)
+            token_path.write_text(json.dumps(token, indent=2))
+            input_history[token_id] = token
+
+        emit("token_created", {
+            "token_id": token_id,
+            "type": "gallery",
+            "label": label,
+            "value": "%s (%d images)" % (title, image_count),
+            "title": title,
+            "image_count": image_count,
+            "images": images,
+            "gallery_id": gallery_id,
+        })
+        print("[GALLERY] Pinned gallery token: %s (%d images)" % (token_id, image_count))
+    except Exception as e:
+        print("pin_gallery error: %s" % e)
+        emit("error", {"message": str(e)})
 
 # On-demand hydration: client can request re-hydration at any time
 # (e.g. after buff-launch creates tokens externally via ?hydrate=1 URL param)
@@ -2160,26 +2225,96 @@ def index():
     return render_template('index.html', cache_bust=int(_time.time()))
 
 
-def _resolve_vault_image(slug, filename):
-    """Resolve vault image path, checking central then project folder layouts."""
-    vault_images = MAESTRO_ROOT / "docs" / "vault" / "images"
-    # Layout 1: docs/vault/images/{slug}/{filename}
-    central = vault_images / slug / filename
-    if central.is_file():
-        return str(vault_images / slug), filename
-    # Layout 2: docs/vault/{slug}/images/{filename}
-    project = MAESTRO_ROOT / "docs" / "vault" / slug / "images"
-    if (project / filename).is_file():
-        return str(project), filename
+def _normalize_macos_filename(filename):
+    """macOS screenshots use U+202F (narrow no-break space) before AM/PM.
+    URLs encode that as a regular space, so try the NNBSP variant as fallback."""
+    return re.sub(r" (AM|PM)\b", "\u202f\\1", filename)
+
+
+def _resolve_cold(slug, filename):
+    """Resolve file path within the cold port (docs/vault)."""
+    import json as _json
+    vault = MAESTRO_ROOT / "docs" / "vault"
+    for fname in (filename, _normalize_macos_filename(filename)):
+        # Direct match -- folder name == slug
+        direct = vault / slug / "images"
+        if (direct / fname).is_file():
+            print(f"[vault] COLD direct: {slug}/{fname}")
+            return str(direct), fname
+        # Scan folders for index.json with matching slug
+        if vault.is_dir():
+            for entry in sorted(vault.iterdir()):
+                if not entry.is_dir():
+                    continue
+                idx = entry / "index.json"
+                if idx.is_file():
+                    try:
+                        data = _json.loads(idx.read_text())
+                        if data.get("slug") == slug:
+                            img_dir = entry / "images"
+                            if (img_dir / fname).is_file():
+                                print(f"[vault] COLD index: {slug}/{fname} (folder: {entry.name})")
+                                return str(img_dir), fname
+                    except (ValueError, OSError):
+                        pass
+    print(f"[vault] COLD miss: {slug}/{filename}")
     return None, None
+
+
+def _resolve_hot(slug, filename):
+    """Resolve file path within the hot port (ACTIVE)."""
+    hot_root = MAESTRO_ROOT / "ACTIVE"
+    hot_folder = hot_root / slug
+    # Try original filename then macOS-normalized variant
+    for fname in (filename, _normalize_macos_filename(filename)):
+        # Flat layout: ACTIVE/<slug>/<filename>
+        if (hot_folder / fname).is_file():
+            print(f"[vault] HOT flat: {slug}/{fname}")
+            return str(hot_folder), fname
+        # Subdirectory layout: ACTIVE/<slug>/images/<filename>
+        hot_img = hot_folder / "images"
+        if (hot_img / fname).is_file():
+            print(f"[vault] HOT images/: {slug}/{fname}")
+            return str(hot_img), fname
+    print(f"[vault] HOT miss: {slug}/{filename}")
+    return None, None
+
+
+@app.route("/vault/cold/<slug>/<path:filename>")
+def serve_vault_cold(slug, filename):
+    """Serve data from the cold port."""
+    print(f"[vault] request: /vault/cold/{slug}/{filename}")
+    directory, fname = _resolve_cold(slug, filename)
+    if directory is None:
+        print(f"[vault] 404: /vault/cold/{slug}/{filename}")
+        return "Not found", 404
+    print(f"[vault] 200: /vault/cold/{slug}/{filename}")
+    return send_from_directory(directory, fname)
+
+
+@app.route("/vault/hot/<slug>/<path:filename>")
+def serve_vault_hot(slug, filename):
+    """Serve data from the hot port."""
+    print(f"[vault] request: /vault/hot/{slug}/{filename}")
+    directory, fname = _resolve_hot(slug, filename)
+    if directory is None:
+        print(f"[vault] 404: /vault/hot/{slug}/{filename}")
+        return "Not found", 404
+    print(f"[vault] 200: /vault/hot/{slug}/{filename}")
+    return send_from_directory(directory, fname)
 
 
 @app.route("/vault-images/<slug>/<path:filename>")
 def serve_vault_image(slug, filename):
-    """Serve vault images over HTTP for gallery rendering."""
-    directory, fname = _resolve_vault_image(slug, filename)
+    """Legacy fallback -- checks both ports, cold first."""
+    print(f"[vault] request (legacy): /vault-images/{slug}/{filename}")
+    directory, fname = _resolve_cold(slug, filename)
     if directory is None:
+        directory, fname = _resolve_hot(slug, filename)
+    if directory is None:
+        print(f"[vault] 404 (legacy): /vault-images/{slug}/{filename}")
         return "Not found", 404
+    print(f"[vault] 200 (legacy): /vault-images/{slug}/{filename}")
     return send_from_directory(directory, fname)
 
 
@@ -3074,9 +3209,125 @@ def handle_cuesheet_execute(data):
 
         emit("cuesheet_result", result)
 
+        # Emit sign-off gate to frontend
+        emit("cuesheet_signoff_request", {
+            "title": result.get("title", ""),
+            "source_hash": result.get("source_hash", ""),
+            "result_token_id": result.get("result_token_id", ""),
+            "doc_id": result.get("doc_id", ""),
+            "question": "Sign off on '%s'?" % result.get("title", "Untitled"),
+        })
+
     except Exception as e:
         print("Cue-sheet execution error: %s" % e)
         emit("error", {"message": str(e)})
+
+
+def _find_prior_receipt(source_hash):
+    """Find most recent receipt with matching source_hash (may be expired)."""
+    # Check in-memory history first
+    for tid, token in input_history.items():
+        if (token.get("type") == "cuesheet_receipt" and
+                token.get("source_hash") == source_hash):
+            return tid
+    # Scan token files on disk
+    for f in TOKENS_DIR.glob("*.json"):
+        try:
+            token = json.loads(f.read_text())
+            if (token.get("type") == "cuesheet_receipt" and
+                    token.get("source_hash") == source_hash):
+                return token.get("token_id")
+        except Exception:
+            continue
+    return None
+
+
+@socketio.on("cuesheet_signoff_response")
+def handle_cuesheet_signoff(data):
+    """Handle user sign-off on a completed cue-sheet, creating a receipt token."""
+    try:
+        answer = data.get("answer", "")
+        source_hash = data.get("source_hash", "")
+        cuesheet_name = data.get("cuesheet_name", "")
+        doc_id = data.get("doc_id", "")
+        result_token_id = data.get("result_token_id", "")
+
+        if not answer or not cuesheet_name:
+            emit("error", {"message": "Missing answer or cuesheet_name for sign-off"})
+            return
+
+        # Check for prior receipt (re-hydration)
+        prior_receipt = _find_prior_receipt(source_hash) if source_hash else None
+
+        question_text = "Sign off on '%s'?" % cuesheet_name
+
+        if token_factory is not None:
+            receipt_label = "receipt_%s" % re.sub(r"[^a-z0-9_]", "", cuesheet_name.lower().replace(" ", "_"))
+            token_id = token_factory.create(
+                token_type="cuesheet_receipt",
+                label=receipt_label,
+                value=answer,
+                tags=["receipt", "cuesheet", cuesheet_name],
+                extra_fields={
+                    "answer": answer,
+                    "source_hash": source_hash,
+                    "cuesheet_name": cuesheet_name,
+                    "doc_id": doc_id,
+                    "result_token_id": result_token_id,
+                    "prior_receipt": prior_receipt or "",
+                    "question": question_text,
+                    "references": [result_token_id] if result_token_id else [],
+                }
+            )
+        else:
+            # Fallback: create token file directly
+            ensure_tokens_dir()
+            now = datetime.now()
+            token_id = "receipt_%s_%d" % (
+                re.sub(r"[^a-z0-9]", "", cuesheet_name.lower().replace(" ", "")),
+                int(time.time())
+            )
+            token = {
+                "token_id": token_id,
+                "type": "cuesheet_receipt",
+                "label": "receipt_%s" % cuesheet_name.lower().replace(" ", "_"),
+                "value": answer,
+                "answer": answer,
+                "source_hash": source_hash,
+                "cuesheet_name": cuesheet_name,
+                "doc_id": doc_id,
+                "result_token_id": result_token_id,
+                "prior_receipt": prior_receipt or "",
+                "question": question_text,
+                "references": [result_token_id] if result_token_id else [],
+                "created_at": now.isoformat(),
+                "status": "active",
+            }
+            token_file = TOKENS_DIR / ("%s.json" % token_id)
+            with open(token_file, "w") as f:
+                json.dump(token, f, indent=2)
+            input_history[token_id] = token
+
+        emit("token_created", {
+            "token_id": token_id,
+            "type": "cuesheet_receipt",
+            "label": cuesheet_name,
+            "value": answer,
+            "question": question_text,
+            "source_hash": source_hash,
+        })
+
+        print("[RECEIPT] Created cuesheet_receipt for '%s': %s" % (cuesheet_name, answer))
+
+        # Hydrate modifiers so receipt appears in pinned nav
+        if _hydrate_modifiers:
+            _hydrate_modifiers(MAESTRO_ROOT / ".claude" / "tokens")
+
+    except Exception as e:
+        print("cuesheet_signoff error: %s" % e)
+        import traceback
+        traceback.print_exc()
+        emit("error", {"message": "Sign-off failed: %s" % str(e)})
 
 
 @socketio.on('interrupt')
