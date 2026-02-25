@@ -2231,53 +2231,52 @@ def _normalize_macos_filename(filename):
     return re.sub(r" (AM|PM)\b", "\u202f\\1", filename)
 
 
-def _resolve_cold(slug, filename):
-    """Resolve file path within the cold port (docs/vault)."""
-    import json as _json
-    vault = MAESTRO_ROOT / "docs" / "vault"
+def _resolve_vault_image(slug, filename, port):
+    """Resolve image path via the vault index (vault.db).
+
+    The index stores rel_path for every image -- no hardcoded directory
+    assumptions. Reindex picks up any file tree changes automatically.
+    """
+    import sqlite3
+
+    db_path = MAESTRO_ROOT / "cue-vault" / "vault.db"
+    if not db_path.is_file():
+        print(f"[vault] DB missing: {db_path}")
+        return None, None
+
+    vault_root = MAESTRO_ROOT / "cue-vault" / ("COLD" if port == "cold" else "HOT")
+
     for fname in (filename, _normalize_macos_filename(filename)):
-        # Direct match -- folder name == slug
-        direct = vault / slug / "images"
-        if (direct / fname).is_file():
-            print(f"[vault] COLD direct: {slug}/{fname}")
-            return str(direct), fname
-        # Scan folders for index.json with matching slug
-        if vault.is_dir():
-            for entry in sorted(vault.iterdir()):
-                if not entry.is_dir():
-                    continue
-                idx = entry / "index.json"
-                if idx.is_file():
-                    try:
-                        data = _json.loads(idx.read_text())
-                        if data.get("slug") == slug:
-                            img_dir = entry / "images"
-                            if (img_dir / fname).is_file():
-                                print(f"[vault] COLD index: {slug}/{fname} (folder: {entry.name})")
-                                return str(img_dir), fname
-                    except (ValueError, OSError):
-                        pass
-    print(f"[vault] COLD miss: {slug}/{filename}")
+        try:
+            conn = sqlite3.connect(str(db_path))
+            row = conn.execute(
+                "SELECT rel_path FROM vault_images "
+                "WHERE slug = ? AND filename = ? AND port = ?",
+                (slug, fname, port),
+            ).fetchone()
+            conn.close()
+        except sqlite3.Error as exc:
+            print(f"[vault] DB error: {exc}")
+            return None, None
+
+        if row and row[0]:
+            full_path = vault_root / row[0]
+            if full_path.is_file():
+                print(f"[vault] {port} resolved: {slug}/{fname} -> {row[0]}")
+                return str(full_path.parent), full_path.name
+
+    print(f"[vault] {port} miss: {slug}/{filename}")
     return None, None
+
+
+def _resolve_cold(slug, filename):
+    """Resolve file path within the cold port via vault index."""
+    return _resolve_vault_image(slug, filename, "cold")
 
 
 def _resolve_hot(slug, filename):
-    """Resolve file path within the hot port (ACTIVE)."""
-    hot_root = MAESTRO_ROOT / "ACTIVE"
-    hot_folder = hot_root / slug
-    # Try original filename then macOS-normalized variant
-    for fname in (filename, _normalize_macos_filename(filename)):
-        # Flat layout: ACTIVE/<slug>/<filename>
-        if (hot_folder / fname).is_file():
-            print(f"[vault] HOT flat: {slug}/{fname}")
-            return str(hot_folder), fname
-        # Subdirectory layout: ACTIVE/<slug>/images/<filename>
-        hot_img = hot_folder / "images"
-        if (hot_img / fname).is_file():
-            print(f"[vault] HOT images/: {slug}/{fname}")
-            return str(hot_img), fname
-    print(f"[vault] HOT miss: {slug}/{filename}")
-    return None, None
+    """Resolve file path within the hot port via vault index."""
+    return _resolve_vault_image(slug, filename, "hot")
 
 
 @app.route("/vault/cold/<slug>/<path:filename>")
