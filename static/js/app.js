@@ -212,13 +212,33 @@ socket.on('transcription', (data) => {
 
 socket.on('response', (data) => {
   console.log('🤖 Response received:', data.text.substring(0, 50) + '...');
-  addMessage('assistant', data.text);
+  addMessage('assistant', data.text, data.tts_chunks || null);
 });
 
 socket.on('error', (data) => {
   console.error('❌ Socket error:', data.message);
   addSystemMessage('Error: ' + data.message);
   setState('idle');
+});
+
+socket.on("tts_chunk_start", function(data) {
+  var prev = document.querySelector(".tts-speaking");
+  if (prev) prev.classList.remove("tts-speaking");
+
+  var cards = conversation.querySelectorAll(".card.assistant");
+  var lastCard = cards[cards.length - 1];
+  if (!lastCard) return;
+
+  var speakable = lastCard.querySelectorAll(".tts-speakable");
+  if (data.index < speakable.length) {
+    speakable[data.index].classList.add("tts-speaking");
+    speakable[data.index].scrollIntoView({ behavior: "smooth", block: "nearest" });
+  }
+});
+
+socket.on("tts_chunk_done", function() {
+  var active = document.querySelector(".tts-speaking");
+  if (active) active.classList.remove("tts-speaking");
 });
 
 // ============================================
@@ -312,7 +332,7 @@ function setState(state) {
 // Message Rendering (Haberdash Cards)
 // ============================================
 
-function addMessage(role, text) {
+function addMessage(role, text, ttsChunks) {
   // Create a simple hash for deduplication
   const messageKey = `${role}:${text.substring(0, 50)}`;
   const now = Date.now();
@@ -321,7 +341,7 @@ function addMessage(role, text) {
   if (lastMessageHash) {
     const [lastKey, lastTime] = lastMessageHash.split('|');
     if (lastKey === messageKey && (now - parseInt(lastTime)) < 1000) {
-      console.warn('⚠️ Duplicate message blocked:', text.substring(0, 50));
+      console.warn('Duplicate message blocked:', text.substring(0, 50));
       return;
     }
   }
@@ -330,6 +350,7 @@ function addMessage(role, text) {
   const messageCard = document.createElement('article');
   messageCard.className = `card ${role}`;
   messageCard.dataset.timestamp = Date.now();
+  messageCard.dataset.rawText = text;
 
   const header = document.createElement('header');
   header.className = 'card__header';
@@ -337,7 +358,7 @@ function addMessage(role, text) {
   const icon = document.createElement('span');
   icon.className = 'card__icon';
   icon.setAttribute('aria-hidden', 'true');
-  icon.textContent = role === 'user' ? '👤' : '🤖';
+  icon.textContent = role === 'user' ? '\u{1F464}' : '\u{1F916}';
 
   const title = document.createElement('h3');
   title.className = 'card__title';
@@ -350,7 +371,22 @@ function addMessage(role, text) {
   body.className = 'card__body';
 
   // Render message with embedded structured content
+  body.dataset.role = role;
   renderMessageContent(body, text);
+
+  // If backend sent TTS chunks, render each chunk as its own markdown block
+  // so index matching with backend tts_chunk_start events is guaranteed
+  if (role === "assistant" && ttsChunks && ttsChunks.length > 0) {
+    var mdContent = body.querySelector(".markdown-content");
+    if (mdContent) mdContent.remove();
+    for (var i = 0; i < ttsChunks.length; i++) {
+      var wrapper = document.createElement("div");
+      wrapper.className = "tts-speakable";
+      wrapper.addEventListener("click", handleTTSClick);
+      renderMarkdownInto(wrapper, ttsChunks[i]);
+      body.appendChild(wrapper);
+    }
+  }
 
   // Add timestamp
   const timestamp = document.createElement('div');
@@ -466,6 +502,7 @@ function renderMarkdown(container, text) {
         div.textContent = text;
       }
       container.appendChild(div);
+      wireUpTTSClicks(container, div);
     } catch (err) {
       console.error("Markdown render error:", err);
       var p = document.createElement("p");
@@ -479,6 +516,52 @@ function renderMarkdown(container, text) {
     p.textContent = text;
     container.appendChild(p);
   }
+}
+
+function renderMarkdownInto(el, text) {
+  if (!text) return;
+  if (typeof marked !== "undefined") {
+    try {
+      var rendered = marked.parse(String(text), { async: false });
+      if (typeof rendered === "string") {
+        el.innerHTML = rendered;
+      } else {
+        el.textContent = text;
+      }
+    } catch (err) {
+      el.textContent = text;
+    }
+  } else {
+    el.textContent = text;
+  }
+}
+
+function wireUpTTSClicks(container, markdownDiv) {
+  // Only wire clicks on assistant messages
+  if (container.dataset.role !== "assistant") return;
+
+  var speakable = markdownDiv.querySelectorAll("p, li, h1, h2, h3, h4, blockquote");
+  for (var i = 0; i < speakable.length; i++) {
+    var el = speakable[i];
+    el.classList.add("tts-speakable");
+    el.addEventListener("click", handleTTSClick);
+  }
+}
+
+function handleTTSClick(e) {
+  // Don't fire TTS if user is selecting text
+  var selection = window.getSelection();
+  if (selection && selection.toString().length > 0) return;
+
+  var text = e.currentTarget.textContent.trim();
+  if (!text) return;
+
+  // Visual feedback
+  var active = document.querySelector(".tts-speaking");
+  if (active) active.classList.remove("tts-speaking");
+  e.currentTarget.classList.add("tts-speaking");
+
+  socket.emit("narrate_caption", { text: text });
 }
 
 // Render message content with embedded structured components
@@ -3005,6 +3088,7 @@ var galleryRegistry = {};
 var galleryIdCounter = 0;
 var galleryLightboxOpen = false;
 var galleryLightboxState = { galleryId: null, index: 0 };
+var galleryNarrating = false;
 var pinnedGalleries = {};
 var galleryTokenMap = {};   // galleryId -> tokenId
 var tokenGalleryMap = {};   // tokenId -> galleryId
@@ -3145,6 +3229,23 @@ function createGalleryStrip(data) {
   });
   figure.appendChild(pinBtn);
 
+  // Case study icon
+  var caseBtn = document.createElement("button");
+  caseBtn.className = "case-study-icon";
+  caseBtn.setAttribute("aria-label", "Open as case study");
+  caseBtn.setAttribute("title", "open as case study");
+  caseBtn.setAttribute("data-gallery-id", id);
+
+  var caseGlyph = document.createElement("span");
+  caseGlyph.className = "case-study-icon__glyph";
+  caseBtn.appendChild(caseGlyph);
+
+  caseBtn.addEventListener("click", function(e) {
+    e.stopPropagation();
+    openCaseStudy(id, figure);
+  });
+  figure.appendChild(caseBtn);
+
   if (data.title) {
     var caption = document.createElement("figcaption");
     caption.className = "gallery-strip__title";
@@ -3202,6 +3303,38 @@ function createGalleryStrip(data) {
   return figure;
 }
 
+function openCaseStudy(galleryId, galleryFigure) {
+  // Walk up to find the parent message card
+  var card = galleryFigure.closest("article.card");
+  var rawText = card ? (card.dataset.rawText || "") : "";
+  var entry = galleryRegistry[galleryId];
+  if (!entry) return;
+
+  // Build payload
+  var payload = JSON.stringify({
+    text: rawText,
+    gallery: { images: entry.images, title: entry.title },
+    galleryId: galleryId
+  });
+
+  // Submit via hidden form (POST to new tab)
+  var form = document.createElement("form");
+  form.method = "POST";
+  form.action = "/case-study";
+  form.target = "_blank";
+  form.style.display = "none";
+
+  var input = document.createElement("input");
+  input.type = "hidden";
+  input.name = "json";
+  input.value = payload;
+  form.appendChild(input);
+
+  document.body.appendChild(form);
+  form.submit();
+  document.body.removeChild(form);
+}
+
 function openGalleryLightbox(galleryId, startIndex) {
   var entry = galleryRegistry[galleryId];
   if (!entry) return;
@@ -3214,6 +3347,12 @@ function openGalleryLightbox(galleryId, startIndex) {
 
   var lb = document.getElementById("galleryLightbox");
   lb.style.display = "";
+
+  // Show Let Go only for pinned galleries
+  var letGoBtn = document.getElementById("galleryLetGo");
+  if (letGoBtn) {
+    letGoBtn.style.display = galleryTokenMap[galleryId] ? "" : "none";
+  }
 
   renderGallerySlide();
 }
@@ -3270,6 +3409,12 @@ function navigateGallery(direction) {
 }
 
 function closeGalleryLightbox() {
+  if (galleryNarrating) {
+    socket.emit("interrupt");
+    galleryNarrating = false;
+    var narBtn = document.getElementById("galleryNarrate");
+    if (narBtn) narBtn.innerHTML = "&#9654;";
+  }
   galleryLightboxOpen = false;
   galleryLightboxState.galleryId = null;
   galleryLightboxState.index = 0;
@@ -3325,11 +3470,51 @@ function unpinGallery(galleryId) {
   var prevBtn = document.getElementById("galleryPrev");
   var nextBtn = document.getElementById("galleryNext");
   var backdrop = document.querySelector(".gallery-lightbox__backdrop");
+  var narrateBtn = document.getElementById("galleryNarrate");
+  var letGoBtn = document.getElementById("galleryLetGo");
 
   if (closeBtn) closeBtn.addEventListener("click", closeGalleryLightbox);
   if (prevBtn) prevBtn.addEventListener("click", function() { navigateGallery(-1); });
   if (nextBtn) nextBtn.addEventListener("click", function() { navigateGallery(1); });
   if (backdrop) backdrop.addEventListener("click", closeGalleryLightbox);
+
+  // Narrate button: play/stop caption TTS
+  if (narrateBtn) {
+    narrateBtn.addEventListener("click", function() {
+      if (galleryNarrating) {
+        socket.emit("interrupt");
+        galleryNarrating = false;
+        narrateBtn.innerHTML = "&#9654;";
+      } else {
+        var caption = document.getElementById("galleryLightboxCaption");
+        var text = caption ? caption.textContent : "";
+        if (!text) return;
+        socket.emit("narrate_caption", { text: text });
+        galleryNarrating = true;
+        narrateBtn.innerHTML = "&#9724;";
+      }
+    });
+  }
+
+  // Listen for narration_done from server
+  socket.on("narration_done", function() {
+    galleryNarrating = false;
+    var btn = document.getElementById("galleryNarrate");
+    if (btn) btn.innerHTML = "&#9654;";
+    // Clear paragraph-level TTS highlight
+    var active = document.querySelector(".tts-speaking");
+    if (active) active.classList.remove("tts-speaking");
+  });
+
+  // Let Go button: unpin gallery from lightbox
+  if (letGoBtn) {
+    letGoBtn.addEventListener("click", function() {
+      if (galleryLightboxState.galleryId) {
+        unpinGallery(galleryLightboxState.galleryId);
+        letGoBtn.style.display = "none";
+      }
+    });
+  }
 
   document.addEventListener("keydown", function(e) {
     if (!galleryLightboxOpen) return;

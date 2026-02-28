@@ -824,6 +824,58 @@ body {
   border-color: var(--primary, #fff);
 }
 
+/* -- Case Study Icon -- */
+.case-study-icon {
+  position: absolute;
+  top: 0;
+  right: 32px;
+  width: 28px;
+  height: 28px;
+  border: none;
+  background: transparent;
+  cursor: pointer;
+  padding: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: 50%;
+  transition: all 0.2s ease;
+  opacity: 0.4;
+}
+
+.case-study-icon:hover {
+  opacity: 0.9;
+  background: rgba(255, 255, 255, 0.08);
+}
+
+.case-study-icon__glyph {
+  width: 14px;
+  height: 16px;
+  border: 2px solid var(--text-secondary, #888);
+  border-radius: 2px;
+  position: relative;
+  transition: all 0.2s ease;
+}
+
+.case-study-icon__glyph::before,
+.case-study-icon__glyph::after {
+  content: "";
+  position: absolute;
+  left: 2px;
+  right: 2px;
+  height: 1.5px;
+  background: var(--text-secondary, #888);
+  border-radius: 1px;
+}
+
+.case-study-icon__glyph::before {
+  top: 3px;
+}
+
+.case-study-icon__glyph::after {
+  top: 7px;
+}
+
 /* ============================================
    PINNED TOKENS CONTAINER
    ============================================ */
@@ -1180,6 +1232,25 @@ body {
 
 .markdown-content p + p {
   margin-top: 0;
+}
+
+/* Paragraph-level TTS: clickable speakable elements */
+.tts-speakable {
+  cursor: pointer;
+  border-radius: var(--radius-sm, 4px);
+  padding: var(--space-xs, 0.25rem) var(--space-sm, 0.5rem);
+  margin-left: calc(-1 * var(--space-sm, 0.5rem));
+  margin-right: calc(-1 * var(--space-sm, 0.5rem));
+  transition: background 0.15s ease;
+}
+
+.tts-speakable:hover {
+  background: var(--surface-hover, rgba(255, 255, 255, 0.06));
+}
+
+.tts-speaking {
+  background: var(--surface-active, rgba(255, 255, 255, 0.1));
+  transition: background 0.6s ease;
 }
 
 .markdown-content h1,
@@ -1926,10 +1997,44 @@ body {
   right: var(--space-md, 0.75rem);
 }
 
+.gallery-lightbox__let-go {
+  background: none;
+  border: none;
+  color: var(--text-secondary, #888);
+  font-size: 12px;
+  cursor: pointer;
+  padding: 2px 8px;
+  transition: color 0.15s ease;
+}
+
+.gallery-lightbox__let-go:hover {
+  color: var(--text, #fff);
+}
+
 .gallery-lightbox__footer {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: var(--space-sm, 0.5rem);
   padding: var(--space-sm, 0.5rem) var(--space-lg, 1rem) var(--space-md, 0.75rem);
   text-align: center;
   flex-shrink: 0;
+}
+
+.gallery-lightbox__narrate {
+  background: none;
+  border: none;
+  color: var(--text-secondary, #888);
+  font-size: 16px;
+  cursor: pointer;
+  padding: 2px 4px;
+  line-height: 1;
+  transition: color 0.15s ease;
+  flex-shrink: 0;
+}
+
+.gallery-lightbox__narrate:hover {
+  color: var(--text, #fff);
 }
 
 .gallery-lightbox__caption {

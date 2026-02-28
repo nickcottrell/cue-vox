@@ -355,6 +355,39 @@ def sanitize_for_tts(text):
     print(f"[TTS DEBUG] No tags found, returning original")
     return text
 
+
+def tts_chunk_split(text):
+    """Split text into speakable chunks. Returns list of strings."""
+    if not text or not text.strip():
+        return []
+    paragraphs = re.split(r"\n\n+", text.strip())
+    chunks = []
+    for para in paragraphs:
+        stripped = para.strip()
+        if stripped:
+            chunks.append(stripped)
+    return chunks if chunks else [text.strip()]
+
+
+def speak_chunked(text):
+    """Speak text in paragraph-sized chunks. Each chunk gets its own
+    30s timeout so long responses don't get cut off mid-sentence.
+    Emits tts_chunk_start so the frontend can highlight the active chunk."""
+    chunks = tts_chunk_split(text)
+    if not chunks:
+        return
+    for i, chunk in enumerate(chunks):
+        emit("tts_chunk_start", {"index": i})
+        socketio.sleep(0.05)
+        try:
+            subprocess.run(["say", chunk], check=False, timeout=30)
+        except subprocess.TimeoutExpired:
+            print("[TTS] Chunk exceeded 30s, moving to next")
+        except Exception as e:
+            print("[TTS ERROR] %s" % e)
+    emit("tts_chunk_done")
+
+
 def ensure_log_dir():
     LOG_DIR.mkdir(exist_ok=True)
 
@@ -2317,6 +2350,120 @@ def serve_vault_image(slug, filename):
     return send_from_directory(directory, fname)
 
 
+def _parse_case_study_segments(text):
+    """Parse message text into narrative and gallery segments.
+
+    Returns list of dicts: {"type": "narrative", "content": "..."} or
+    {"type": "gallery", "data": {...}}.
+    Strips non-GALLERY structured tags from narrative text.
+    """
+    tag_re = re.compile(r"\[(YES_NO|INPUT|APPROVAL|DOCUMENT|CUE|GALLERY|CITATIONS):\s*")
+    segments = []
+    last_end = 0
+
+    pos = 0
+    while pos < len(text):
+        m = tag_re.search(text, pos)
+        if not m:
+            break
+
+        tag_type = m.group(1)
+        data_start = m.end()
+
+        # Bracket-balanced walk to find closing ]
+        depth = 1
+        cur = data_start
+        while cur < len(text) and depth > 0:
+            if text[cur] == "[":
+                depth += 1
+            elif text[cur] == "]":
+                depth -= 1
+            if depth > 0:
+                cur += 1
+
+        if depth != 0:
+            pos = m.end()
+            continue
+
+        tag_end = cur + 1
+        inner = text[data_start:cur]
+
+        # Narrative text before this tag
+        before = text[last_end:m.start()].strip()
+        if before:
+            segments.append({"type": "narrative", "content": before})
+
+        if tag_type == "GALLERY":
+            try:
+                gallery_data = json.loads(inner)
+                segments.append({"type": "gallery", "data": gallery_data})
+            except json.JSONDecodeError:
+                pass
+        # All other tag types are stripped (not added to segments)
+
+        last_end = tag_end
+        pos = tag_end
+
+    # Trailing narrative text
+    trailing = text[last_end:].strip()
+    if trailing:
+        segments.append({"type": "narrative", "content": trailing})
+
+    return segments
+
+
+@app.route("/case-study", methods=["POST"])
+def case_study():
+    """Render a print-ready case study from message text + gallery data."""
+    # Accept either JSON body or form-encoded JSON field
+    payload = request.get_json(silent=True)
+    if not payload:
+        form_json = request.form.get("json", "{}")
+        try:
+            payload = json.loads(form_json)
+        except json.JSONDecodeError:
+            payload = {}
+    raw_text = payload.get("text", "")
+    gallery_json = payload.get("gallery", {})
+    gallery_id = payload.get("galleryId", "")
+
+    segments = _parse_case_study_segments(raw_text)
+
+    # Resolve image URLs for all gallery segments
+    for seg in segments:
+        if seg["type"] == "gallery":
+            images = seg["data"].get("images", [])
+            for img in images:
+                if img.get("slug") and img.get("filename"):
+                    port = img.get("port", "cold")
+                    img["url"] = "/vault/{}/{}/{}".format(
+                        port, img["slug"], img["filename"]
+                    )
+                elif img.get("src"):
+                    img["url"] = img["src"]
+
+    # Also resolve the standalone gallery passed from the frontend
+    gallery_images = gallery_json.get("images", [])
+    for img in gallery_images:
+        if img.get("slug") and img.get("filename"):
+            port = img.get("port", "cold")
+            img["url"] = "/vault/{}/{}/{}".format(
+                port, img["slug"], img["filename"]
+            )
+        elif img.get("src"):
+            img["url"] = img["src"]
+
+    title = gallery_json.get("title", "Case Study")
+
+    return render_template(
+        "case-study.html",
+        title=title,
+        segments=segments,
+        gallery=gallery_json,
+        gallery_id=gallery_id,
+    )
+
+
 @socketio.on('audio_data')
 def handle_audio(data):
     """Receive audio from browser, transcribe, send to Claude, speak response"""
@@ -2414,18 +2561,16 @@ def handle_audio(data):
         # Log conversation with input length
         _, clean_response = log_conversation(text, response, input_length=input_word_count)
 
-        emit('response', {'text': clean_response})
+        tts_text = sanitize_for_tts(clean_response)
+        tts_chunks = tts_chunk_split(tts_text)
+        emit('response', {'text': clean_response, 'tts_chunks': tts_chunks})
         emit('state_change', {'state': 'speaking'})
 
         # Start tracking speech playback
         start_speech_tracking(clean_response)
 
-        # Speak response (sanitize for TTS)
-        tts_text = sanitize_for_tts(clean_response)
-        try:
-            subprocess.run(['say', tts_text], check=False, timeout=30)
-        except Exception as e:
-            print("[TTS ERROR] Failed to speak: %s" % e)
+        # Speak response (chunked by paragraph)
+        speak_chunked(tts_text)
 
         # Mark speech as completed
         finish_speech()
@@ -2533,18 +2678,16 @@ IMPORTANT: When speaking, say "Yes OR No" not "yes-no" or "yes slash no"."""
         # Log conversation (button answer as user input) with input length
         _, clean_response = log_conversation(answer, response, input_length=input_word_count)
 
-        emit('response', {'text': clean_response})
+        tts_text = sanitize_for_tts(clean_response)
+        tts_chunks = tts_chunk_split(tts_text)
+        emit('response', {'text': clean_response, 'tts_chunks': tts_chunks})
         emit('state_change', {'state': 'speaking'})
 
         # Start tracking speech playback
         start_speech_tracking(clean_response)
 
-        # Speak response (sanitize for TTS)
-        tts_text = sanitize_for_tts(clean_response)
-        try:
-            subprocess.run(['say', tts_text], check=False, timeout=30)
-        except Exception as e:
-            print(f"[TTS ERROR] Failed to speak: {e}")
+        # Speak response (chunked by paragraph)
+        speak_chunked(tts_text)
 
         # Mark speech as completed
         finish_speech()
@@ -2563,14 +2706,12 @@ def _respond_and_speak(user_log_text, response_text, confidence=None):
         input_length=get_input_word_count(user_log_text),
         confidence=confidence,
     )
-    emit('response', {'text': clean_response})
+    tts_text = sanitize_for_tts(clean_response)
+    tts_chunks = tts_chunk_split(tts_text)
+    emit('response', {'text': clean_response, 'tts_chunks': tts_chunks})
     emit('state_change', {'state': 'speaking'})
     start_speech_tracking(clean_response)
-    tts_text = sanitize_for_tts(clean_response)
-    try:
-        subprocess.run(['say', tts_text], check=False, timeout=30)
-    except Exception as e:
-        print("[TTS ERROR] Failed to speak: %s" % e)
+    speak_chunked(tts_text)
     finish_speech()
     emit('state_change', {'state': 'idle'})
 
@@ -2900,18 +3041,16 @@ def handle_input_response(data):
         # Log conversation with input length
         _, clean_response = log_conversation(user_message, response, input_length=input_word_count)
 
-        emit('response', {'text': clean_response})
+        tts_text = sanitize_for_tts(clean_response)
+        tts_chunks = tts_chunk_split(tts_text)
+        emit('response', {'text': clean_response, 'tts_chunks': tts_chunks})
         emit('state_change', {'state': 'speaking'})
 
         # Start tracking speech playback
         start_speech_tracking(clean_response)
 
-        # Speak response (sanitize for TTS)
-        tts_text = sanitize_for_tts(clean_response)
-        try:
-            subprocess.run(['say', tts_text], check=False, timeout=30)
-        except Exception as e:
-            print(f"[TTS ERROR] Failed to speak: {e}")
+        # Speak response (chunked by paragraph)
+        speak_chunked(tts_text)
 
         # Mark speech as completed
         finish_speech()
@@ -2979,18 +3118,16 @@ def handle_text_message(data):
         # Log conversation with input length
         _, clean_response = log_conversation(text, response, input_length=input_word_count)
 
-        emit('response', {'text': clean_response})
+        tts_text = sanitize_for_tts(clean_response)
+        tts_chunks = tts_chunk_split(tts_text)
+        emit('response', {'text': clean_response, 'tts_chunks': tts_chunks})
         emit('state_change', {'state': 'speaking'})
 
         # Start tracking speech playback
         start_speech_tracking(clean_response)
 
-        # Speak response (sanitize for TTS)
-        tts_text = sanitize_for_tts(clean_response)
-        try:
-            subprocess.run(['say', tts_text], check=False, timeout=30)
-        except Exception as e:
-            print(f"[TTS ERROR] Failed to speak: {e}")
+        # Speak response (chunked by paragraph)
+        speak_chunked(tts_text)
 
         # Mark speech as completed
         finish_speech()
@@ -3327,6 +3464,25 @@ def handle_cuesheet_signoff(data):
         import traceback
         traceback.print_exc()
         emit("error", {"message": "Sign-off failed: %s" % str(e)})
+
+
+@socketio.on('narrate_caption')
+def handle_narrate_caption(data):
+    """Read a gallery caption aloud via TTS. No Claude, no logging."""
+    text = (data or {}).get("text", "").strip()
+    if not text:
+        return
+    # Kill any current speech first
+    subprocess.run(['killall', 'say'], stderr=subprocess.DEVNULL)
+
+    def _speak():
+        try:
+            subprocess.run(['say', text], check=False, timeout=120)
+        except Exception:
+            pass
+        socketio.emit('narration_done')
+
+    threading.Thread(target=_speak, daemon=True).start()
 
 
 @socketio.on('interrupt')
