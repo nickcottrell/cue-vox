@@ -956,6 +956,19 @@ def handle_pull_history(data=None):
     print("[PULL] Serving %d conversation entries" % len(result))
     emit("pull_history_result", {"entries": result})
 
+    # Timing token for pull event
+    now = datetime.now()
+    emit("token_created", {
+        "token_id": "timing_pull_%d" % int(now.timestamp()),
+        "type": "timing",
+        "label": "pull",
+        "value": "%d entries" % len(result),
+        "created_at": now.isoformat(),
+        "temperature": 25,
+        "base_temp": 25,
+        "cooling_rate": 10.0,
+    })
+
 # Serve auto-prompt file written by maestro.sh
 @socketio.on("request_prompt_file")
 def handle_request_prompt_file(data=None):
@@ -1488,6 +1501,21 @@ def log_conversation(user_text, assistant_text, speech_metadata=None, input_leng
     # Create echo token - meta-token that summarizes the constellation of active tokens
     # Creates recursive awareness where tokens become aware of tokens around them
     create_token_echo()
+
+    # Emit exchange timing token to keep the stream alive
+    try:
+        emit("token_created", {
+            "token_id": "timing_exchange_%d" % int(timestamp.timestamp()),
+            "type": "timing",
+            "label": "exchange",
+            "value": timestamp.strftime("%H:%M"),
+            "created_at": timestamp.isoformat(),
+            "temperature": 30,
+            "base_temp": 30,
+            "cooling_rate": 8.0,
+        })
+    except Exception:
+        pass  # Outside socket context (e.g. CLI usage)
 
     snr_hex_out = entry.get("snr", {}).get("hex") if snr_value is not None else None
     return (log_file, clean_text, snr_hex_out)
@@ -3693,6 +3721,19 @@ def handle_cuesheet_execute(data):
 
         emit("cuesheet_result", result)
 
+        # Timing token for cue-sheet execution
+        now = datetime.now()
+        emit("token_created", {
+            "token_id": "timing_cuesheet_%d" % int(now.timestamp()),
+            "type": "timing",
+            "label": result.get("title", "cuesheet"),
+            "value": "executed",
+            "created_at": now.isoformat(),
+            "temperature": 50,
+            "base_temp": 50,
+            "cooling_rate": 3.0,
+        })
+
         # Emit sign-off gate to frontend
         emit("cuesheet_signoff_request", {
             "title": result.get("title", ""),
@@ -4053,6 +4094,19 @@ def handle_cuesheet_launch(data):
             "tokens_created": len(created_tokens)
         })
 
+        # Timing token for cue-sheet launch
+        now = datetime.now()
+        emit("token_created", {
+            "token_id": "timing_cuesheet_%d" % int(now.timestamp()),
+            "type": "timing",
+            "label": sheet_name,
+            "value": "cuesheet",
+            "created_at": now.isoformat(),
+            "temperature": 50,
+            "base_temp": 50,
+            "cooling_rate": 3.0,
+        })
+
         print("[CUESHEET] Launched: %s (%d tokens created)" % (sheet_name, len(created_tokens)))
 
     except Exception as e:
@@ -4080,13 +4134,25 @@ def handle_connect():
     with open(log_file, 'a') as f:
         f.write(json.dumps(entry) + '\n')
 
-    print(f"🔌 Client connected at {timestamp.strftime('%Y-%m-%d %H:%M:%S')}")
+    print("Client connected at %s" % timestamp.strftime("%Y-%m-%d %H:%M:%S"))
     if _audit_logger:
         _audit_logger.log("agent:session_start")
 
     # Hydrate modifier tokens via cue-mem plugin (if loaded)
     if _hydrate_modifiers:
         _hydrate_modifiers(MAESTRO_ROOT / ".claude" / "tokens")
+
+    # Emit session timing token so the stream is never empty
+    emit("token_created", {
+        "token_id": "timing_session_%d" % int(timestamp.timestamp()),
+        "type": "timing",
+        "label": get_time_period(timestamp),
+        "value": timestamp.strftime("%H:%M"),
+        "created_at": timestamp.isoformat(),
+        "temperature": 40,
+        "base_temp": 40,
+        "cooling_rate": 2.0,
+    })
 
 
 @socketio.on('disconnect')

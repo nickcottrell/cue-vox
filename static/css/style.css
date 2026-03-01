@@ -2190,6 +2190,8 @@ body {
 .cue-card__dot[data-type="cue_dispatch"]      { background: var(--accent, rgba(100, 200, 255, 0.8)); }
 .cue-card__dot[data-type="gallery"]           { background: #a855f7; }
 .cue-card__dot[data-type="cuesheet_receipt"]  { background: #10b981; }
+.cue-card__dot[data-type="timing"]           { background: var(--text-secondary, #888); opacity: 0.3; }
+.cue-card__dot[data-type="model_signal"]     { background: var(--state-transcribing, #ffd700); opacity: 0.4; }
 
 .cue-card__label {
   flex: 1;

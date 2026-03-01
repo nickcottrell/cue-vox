@@ -12,7 +12,7 @@
     <style id="vrgb-tokens">/* Tokens will be injected here by JavaScript */</style>
 
     <!-- VRGB Theme (static fallback) -->
-    <link rel="stylesheet" href="/static/css/cue-vox-theme.css?v={{ cache_bust }}">
+    <link id="themeSheet" rel="stylesheet" href="/static/css/cue-vox-theme.css?v={{ cache_bust }}">
 
     <!-- Layout/Structure (cue-vox-specific) -->
     <link rel="stylesheet" href="/static/css/style.css?v={{ cache_bust }}">
@@ -50,7 +50,11 @@
                             .map(([k, v]) => `${k}: ${v};`)
                             .join(' ');
                         const finalCSS = `:root { ${tokenCSS} }\n\n${cssRules}`;
-                        document.getElementById('vrgb-tokens').textContent = finalCSS;
+                        // Stash for theme toggle restore
+                        window._spectraCSS = finalCSS;
+                        if (localStorage.getItem("cue-vox-theme") !== "off") {
+                            document.getElementById('vrgb-tokens').textContent = finalCSS;
+                        }
                         console.log('✓ Loaded Spectra theme');
                     }
                 }
@@ -78,6 +82,7 @@
     <aside class="drawer" id="drawer">
         <!-- Conversation Area -->
         <div class="conversation" id="conversation" role="log" aria-live="polite">
+            <a class="pull-trigger" id="pullTrigger" role="button">pull</a>
             <!-- Messages render here as cards -->
         </div>
 
@@ -91,9 +96,17 @@
         <!-- Text Input -->
         <div class="drawer-input">
             <textarea class="form__input" id="drawerTextInput" placeholder="Type a message..." rows="1"></textarea>
-            <button class="btn btn--primary" id="drawerSendButton">Send</button>
+            <button class="btn btn--primary" id="drawerSendButton">Cue</button>
         </div>
+
     </aside>
+
+    <!-- Theme Toggle -->
+    <label class="toggle theme-toggle" id="themeToggle">
+        <input class="toggle__input" type="checkbox" id="themeToggleInput" checked>
+        <span class="toggle__track"><span class="toggle__thumb"></span></span>
+        <span class="toggle__label"></span>
+    </label>
 
     <!-- Main Canvas -->
     <main class="canvas">
@@ -128,21 +141,21 @@
 
         <!-- Instructions -->
         <p class="canvas__instructions">
-            Hold SPACE to talk • Release to process • Press SPACE mid-response to interrupt
+            Hold SPACE to talk • Release to process
         </p>
 
         <!-- Cue-Sheet Launcher -->
-        <button class="cuesheet-toggle" id="cuesheetToggle" aria-label="Run cue-sheet">
+        <button class="cuesheet-toggle btn btn--sm btn--secondary" id="cuesheetToggle" aria-label="Run cue-sheet">
             run
         </button>
-        <div class="cuesheet-panel" id="cuesheetPanel" style="display: none;">
-            <header class="cuesheet-panel__header">
-                <h3 class="cuesheet-panel__title">cue-sheets</h3>
+        <div class="list-card cuesheet-panel" id="cuesheetPanel" style="display: none;">
+            <header class="list-card__header cuesheet-panel__header">
+                <h3 class="list-card__title">cue-sheets</h3>
                 <button class="cuesheet-panel__close" id="cuesheetPanelClose" aria-label="Close">&times;</button>
             </header>
-            <div class="cuesheet-panel__list" id="cuesheetList">
-                <p class="cuesheet-panel__loading">loading...</p>
-            </div>
+            <ul class="list-card__list" id="cuesheetList">
+                <li class="list-card__item"><span class="list-card__item-content">loading...</span></li>
+            </ul>
         </div>
     </main>
 
@@ -192,6 +205,7 @@
             <header class="gallery-lightbox__header">
                 <h3 class="gallery-lightbox__title" id="galleryLightboxTitle"></h3>
                 <span class="gallery-lightbox__counter" id="galleryLightboxCounter"></span>
+                <button class="gallery-lightbox__let-go" id="galleryLetGo" aria-label="Let go" style="display:none">Let Go</button>
                 <button class="gallery-lightbox__close" id="galleryLightboxClose" aria-label="Close gallery">&times;</button>
             </header>
             <figure class="gallery-lightbox__stage">
@@ -202,6 +216,7 @@
                         id="galleryNext" aria-label="Next image">&#8250;</button>
             </figure>
             <footer class="gallery-lightbox__footer">
+                <button class="gallery-lightbox__narrate" id="galleryNarrate" aria-label="Read caption aloud">&#9654;</button>
                 <p class="gallery-lightbox__caption" id="galleryLightboxCaption"></p>
             </footer>
         </div>
