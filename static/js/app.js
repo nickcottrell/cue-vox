@@ -28,6 +28,85 @@ let stateStartTime = Date.now();
 let recordingTimeout = null;
 var RECORDING_LIMIT_MS = 30000;
 
+// Pull history state
+var pullHistory = { loaded: false, timestamps: {} };
+
+
+// Sound effects
+var sfx = {
+  record: new Audio("/static/sounds/record.wav"),
+  ping: new Audio("/static/sounds/ping.wav"),
+  error: new Audio("/static/sounds/error.wav"),
+  thinking: new Audio("/static/sounds/thinking.wav"),
+  affirmative: new Audio("/static/sounds/affirmative.wav"),
+  negatory: new Audio("/static/sounds/negatory.wav"),
+  working: new Audio("/static/sounds/working.wav")
+};
+sfx.thinking.loop = true;
+sfx.working.loop = true;
+var sfxUnlocked = false;
+
+function unlockSfx() {
+  if (sfxUnlocked) return;
+  sfxUnlocked = true;
+  Object.keys(sfx).forEach(function(key) {
+    sfx[key].load();
+  });
+}
+document.addEventListener("click", unlockSfx, { once: true });
+document.addEventListener("keydown", unlockSfx, { once: true });
+
+function playSound(name) {
+  var sound = sfx[name];
+  if (!sound) return;
+  sound.currentTime = 0;
+  sound.play().catch(function() {});
+}
+
+function stopSound(name) {
+  var sound = sfx[name];
+  if (!sound) return;
+  sound.pause();
+  sound.currentTime = 0;
+}
+
+function stopAllSounds() {
+  Object.keys(sfx).forEach(function(key) {
+    sfx[key].pause();
+    sfx[key].currentTime = 0;
+  });
+}
+
+// ============================================
+// THEME TOGGLE
+// ============================================
+
+(function initThemeToggle() {
+  var checkbox = document.getElementById("themeToggleInput");
+  var themeSheet = document.getElementById("themeSheet");
+  var vrgbTokens = document.getElementById("vrgb-tokens");
+  var stored = localStorage.getItem("cue-vox-theme");
+  var isOn = (stored !== "off");
+
+  function applyThemeState(on) {
+    themeSheet.disabled = !on;
+    if (!on) {
+      vrgbTokens.textContent = "";
+    } else if (window._spectraCSS) {
+      vrgbTokens.textContent = window._spectraCSS;
+    }
+    checkbox.checked = on;
+  }
+
+  applyThemeState(isOn);
+
+  checkbox.addEventListener("change", function() {
+    var on = checkbox.checked;
+    localStorage.setItem("cue-vox-theme", on ? "on" : "off");
+    applyThemeState(on);
+  });
+})();
+
 // Modifier token state
 var modifierTokens = {};          // target_id -> DOM thumbnail element
 var modifiersByTarget = {};       // target_id -> [modifier_ids]
@@ -103,6 +182,7 @@ document.addEventListener('keydown', (e) => {
     }
 
     if (currentState === 'speaking') {
+      stopAllSounds();
       socket.emit('interrupt');
       return;
     }
@@ -130,6 +210,7 @@ document.addEventListener('keydown', (e) => {
 function stopRecording() {
   if (!isRecording) return;
   console.log('⏹️ Stopping recording...');
+  playSound("ping");
   isRecording = false;
   if (recordingTimeout) {
     clearTimeout(recordingTimeout);
@@ -161,6 +242,7 @@ document.addEventListener('keyup', (e) => {
 function sendTextMessage() {
   const text = drawerTextInput.value.trim();
   if (!text) return;
+  playSound("affirmative");
 
   // Block if there's pending input
   if (hasPendingInput) {
@@ -188,11 +270,13 @@ drawerTextInput.addEventListener('keypress', (e) => {
 // ============================================
 
 canvasStopBtn.addEventListener('click', () => {
+  stopAllSounds();
   socket.emit('interrupt');
 });
 
 drawerStopLink.addEventListener('click', (e) => {
   e.preventDefault();
+  stopAllSounds();
   socket.emit('interrupt');
 });
 
@@ -212,13 +296,108 @@ socket.on('transcription', (data) => {
 
 socket.on('response', (data) => {
   console.log('🤖 Response received:', data.text.substring(0, 50) + '...');
+  stopSound("thinking");
   addMessage('assistant', data.text, data.tts_chunks || null);
+
+  // Retroactively mark the last user bubble with SNR dot
+  if (data.snr_hex) {
+    var userCards = conversation.querySelectorAll(".card.user");
+    var lastUser = userCards[userCards.length - 1];
+    if (lastUser) {
+      var body = lastUser.querySelector(".card__body");
+      if (body && !body.querySelector(".snr-dot")) {
+        var dot = document.createElement("span");
+        dot.className = "snr-dot";
+        dot.style.backgroundColor = data.snr_hex;
+        dot.setAttribute("aria-hidden", "true");
+        body.appendChild(dot);
+      }
+    }
+  }
 });
 
 socket.on('error', (data) => {
   console.error('❌ Socket error:', data.message);
+  stopSound("thinking");
+  playSound("error");
   addSystemMessage('Error: ' + data.message);
   setState('idle');
+});
+
+// ============================================
+// Pull History
+// ============================================
+
+var pullTrigger = document.getElementById("pullTrigger");
+
+if (pullTrigger) {
+  pullTrigger.addEventListener("click", function() {
+    if (pullHistory.loaded) return;
+    pullTrigger.textContent = "pulling...";
+    pullTrigger.disabled = true;
+    socket.emit("pull_history");
+  });
+}
+
+socket.on("pull_history_result", function(data) {
+  var entries = data.entries || [];
+
+  if (entries.length === 0) {
+    if (pullTrigger) {
+      pullTrigger.textContent = "no history";
+      setTimeout(function() {
+        pullTrigger.textContent = "pull";
+        pullTrigger.disabled = false;
+      }, 2000);
+    }
+    return;
+  }
+
+  pullHistory.loaded = true;
+
+  // Build fragment with all pulled messages
+  var fragment = document.createDocumentFragment();
+
+  for (var i = 0; i < entries.length; i++) {
+    var entry = entries[i];
+    var ts = entry.timestamp || "";
+
+    // Skip duplicates
+    if (pullHistory.timestamps[ts]) continue;
+    pullHistory.timestamps[ts] = true;
+
+    // User message
+    if (entry.user) {
+      fragment.appendChild(createPulledMessage("user", entry.user, ts));
+    }
+    // Assistant message
+    if (entry.assistant) {
+      fragment.appendChild(createPulledMessage("assistant", entry.assistant, ts));
+    }
+  }
+
+  // Add separator
+  var sep = document.createElement("div");
+  sep.className = "pull-separator";
+  sep.textContent = "now";
+  fragment.appendChild(sep);
+
+  // Insert after the pull button, before any live cards
+  var firstCard = conversation.querySelector(".card");
+  if (firstCard) {
+    conversation.insertBefore(fragment, firstCard);
+  } else {
+    conversation.appendChild(fragment);
+  }
+
+  // Scroll to bottom so most recent messages are visible
+  conversation.scrollTop = conversation.scrollHeight;
+
+  // Mark button as done
+  if (pullTrigger) {
+    pullTrigger.textContent = "pulled";
+    pullTrigger.classList.add("pull-trigger--done");
+  }
 });
 
 socket.on("tts_chunk_start", function(data) {
@@ -239,6 +418,7 @@ socket.on("tts_chunk_start", function(data) {
 socket.on("tts_chunk_done", function() {
   var active = document.querySelector(".tts-speaking");
   if (active) active.classList.remove("tts-speaking");
+  playSound("negatory");
 });
 
 // ============================================
@@ -256,12 +436,43 @@ function formatElapsed(ms) {
   return hrs + "h " + remMins + "m";
 }
 
+var thinkingPhases = [
+  "thinking",
+  "parsing",
+  "reading",
+  "searching",
+  "running tools",
+  "composing",
+  "reviewing"
+];
+var lastThinkingPhase = "thinking";
+
+function getThinkingPhase(elapsed) {
+  var secs = Math.floor(elapsed / 1000);
+  if (secs < 2) return "thinking";
+  if (secs < 5) return "parsing";
+  if (secs < 10) return "reading";
+  if (secs < 18) return "searching";
+  if (secs < 30) return "running tools";
+  if (secs < 50) return "composing";
+  return "reviewing";
+}
+
 function updateStatusTimer() {
   var label;
   if (currentState === "recording") {
     var remaining = RECORDING_LIMIT_MS - (Date.now() - stateStartTime);
     if (remaining < 0) remaining = 0;
     label = currentState + " " + formatElapsed(remaining);
+  } else if (currentState === "thinking") {
+    var elapsed = Date.now() - stateStartTime;
+    var phase = getThinkingPhase(elapsed);
+    if (phase !== "thinking" && lastThinkingPhase === "thinking") {
+      console.log("[SFX] starting working sound at phase:", phase);
+      playSound("working");
+    }
+    lastThinkingPhase = phase;
+    label = "thinking " + formatElapsed(elapsed) + (phase !== "thinking" ? " (" + phase + "...)" : "");
   } else {
     var elapsed = Date.now() - stateStartTime;
     label = currentState + " " + formatElapsed(elapsed);
@@ -273,6 +484,16 @@ function updateStatusTimer() {
 function setState(state) {
   currentState = state;
   stateStartTime = Date.now();
+
+  // Sound effects per state
+  stopSound("thinking");
+  stopSound("working");
+  lastThinkingPhase = "thinking";
+  if (state === "recording") {
+    playSound("record");
+  } else if (state === "thinking") {
+    playSound("thinking");
+  }
 
   // Clear previous timer
   if (stateTimerInterval) {
@@ -394,11 +615,140 @@ function addMessage(role, text, ttsChunks) {
   timestamp.textContent = 'just now';
   body.appendChild(timestamp);
 
+  // Emoji reactions (assistant messages only)
+  if (role === "assistant") {
+  var reactions = document.createElement("ul");
+  reactions.className = "emoji-reactions";
+  var emojis = ["\uD83D\uDC4D", "\u2764\uFE0F", "\uD83D\uDE02", "\uD83E\uDD14", "\uD83D\uDD25"];
+  for (var e = 0; e < emojis.length; e++) {
+    (function(emoji) {
+      var li = document.createElement("li");
+      var btn = document.createElement("button");
+      btn.className = "emoji-reactions__btn";
+      btn.textContent = emoji;
+      btn.addEventListener("click", function() {
+        playSound("affirmative");
+        socket.emit("emoji_reaction", { emoji: emoji, role: role });
+        var card = btn.closest(".card");
+        if (!card) return;
+        var badge = card.querySelector(".emoji-badge");
+        if (!badge) {
+          badge = document.createElement("span");
+          badge.className = "emoji-badge";
+          badge.dataset.emojis = "";
+          var ts = card.querySelector(".message-timestamp");
+          if (ts) {
+            ts.parentNode.insertBefore(badge, ts);
+          } else {
+            card.querySelector(".card__body").appendChild(badge);
+          }
+        }
+        var list = badge.dataset.emojis ? badge.dataset.emojis.split(",") : [];
+        list.push(emoji);
+        badge.dataset.emojis = list.join(",");
+        var display = list.slice(0, 3).join("");
+        if (list.length > 3) display += "\u2026";
+        badge.textContent = display;
+      });
+      li.appendChild(btn);
+      reactions.appendChild(li);
+    })(emojis[e]);
+  }
+  body.appendChild(reactions);
+  } // end assistant-only reactions
+
   messageCard.appendChild(header);
   messageCard.appendChild(body);
 
   conversation.appendChild(messageCard);
   conversation.scrollTop = conversation.scrollHeight;
+}
+
+// ============================================
+// Pulled Message Helpers
+// ============================================
+
+function createPulledMessage(role, text, isoTimestamp) {
+  var card = document.createElement("article");
+  card.className = "card " + role + " card--pulled";
+  card.dataset.timestamp = isoTimestamp;
+
+  var header = document.createElement("header");
+  header.className = "card__header";
+  var icon = document.createElement("span");
+  icon.className = "card__icon";
+  icon.setAttribute("aria-hidden", "true");
+  var title = document.createElement("h3");
+  title.className = "card__title";
+  title.textContent = role === "user" ? "You" : "Assistant";
+  header.appendChild(icon);
+  header.appendChild(title);
+
+  var body = document.createElement("div");
+  body.className = "card__body";
+
+  // Truncate long messages
+  var truncateAt = 500;
+  if (text.length > truncateAt) {
+    var preview = document.createElement("div");
+    preview.className = "markdown-content";
+    preview.textContent = text.substring(0, truncateAt) + "...";
+
+    var full = document.createElement("div");
+    full.className = "markdown-content";
+    full.textContent = text;
+    full.style.display = "none";
+
+    var expandBtn = document.createElement("button");
+    expandBtn.className = "pull-expand";
+    expandBtn.textContent = "show more";
+    expandBtn.addEventListener("click", function() {
+      if (full.style.display === "none") {
+        full.style.display = "";
+        preview.style.display = "none";
+        expandBtn.textContent = "show less";
+      } else {
+        full.style.display = "none";
+        preview.style.display = "";
+        expandBtn.textContent = "show more";
+      }
+    });
+
+    body.appendChild(preview);
+    body.appendChild(full);
+    body.appendChild(expandBtn);
+  } else {
+    var content = document.createElement("div");
+    content.className = "markdown-content";
+    content.textContent = text;
+    body.appendChild(content);
+  }
+
+  // Relative timestamp
+  var ts = document.createElement("div");
+  ts.className = "message-timestamp";
+  ts.textContent = formatRelativeTime(isoTimestamp);
+  body.appendChild(ts);
+
+  card.appendChild(header);
+  card.appendChild(body);
+  return card;
+}
+
+function formatRelativeTime(isoTimestamp) {
+  if (!isoTimestamp) return "";
+  try {
+    // Handle truncated timestamps like "2026-02-28T14:13"
+    var d = new Date(isoTimestamp);
+    if (isNaN(d.getTime())) return "";
+    var diff = Math.floor((Date.now() - d.getTime()) / 1000);
+    if (diff < 60) return "just now";
+    if (diff < 3600) return Math.floor(diff / 60) + "m ago";
+    if (diff < 86400) return Math.floor(diff / 3600) + "h ago";
+    return "yesterday";
+  } catch (e) {
+    return "";
+  }
 }
 
 // ============================================
@@ -669,9 +1019,10 @@ function renderMessageContent(container, text) {
     setPendingInput(true);
     var submitAllBtn = document.createElement("button");
     submitAllBtn.className = "btn btn--primary";
-    submitAllBtn.textContent = "Submit All";
+    submitAllBtn.textContent = "Cue All";
     submitAllBtn.style.marginTop = "var(--space-lg, 1rem)";
     submitAllBtn.addEventListener("click", function() {
+      playSound("affirmative");
       var allFilled = true;
       var combinedMessage = [];
 
@@ -758,6 +1109,7 @@ function createModifierIcon() {
 
     var state = btn.getAttribute("data-state");
     if (state === "inactive" || state === "sleeping") {
+      playSound("affirmative");
       socket.emit("create_modifier", { token_id: tokenId });
       btn.setAttribute("data-state", "active");
       var card = btn.closest(".structured-question");
@@ -810,6 +1162,7 @@ function createYesNoQuestion(questionText) {
 
     yesBtn.addEventListener("click", function(e) {
       e.stopPropagation();
+      playSound("affirmative");
       yesBtn.className = "btn btn--primary batch-toggle";
       noBtn.className = "btn btn--secondary batch-toggle";
       yesBtn.dataset.batchValue = "Yes";
@@ -818,6 +1171,7 @@ function createYesNoQuestion(questionText) {
     });
     noBtn.addEventListener("click", function(e) {
       e.stopPropagation();
+      playSound("negatory");
       noBtn.className = "btn btn--primary batch-toggle";
       yesBtn.className = "btn btn--secondary batch-toggle";
       noBtn.dataset.batchValue = "No";
@@ -861,6 +1215,7 @@ function createYesNoQuestion(questionText) {
 
 // Handle question response
 function handleQuestionResponse(answer, buttonGroup, questionText) {
+  playSound(answer === "No" ? "negatory" : "affirmative");
   // Send as button_response so backend creates YES/NO token
   socket.emit("button_response", { answer: answer });
 
@@ -1010,7 +1365,7 @@ function createSemanticSlider(inputData) {
     // Normal mode: individual submit
     var submitBtn = document.createElement("button");
     submitBtn.className = "btn btn--primary";
-    submitBtn.textContent = "Submit";
+    submitBtn.textContent = "Cue";
     submitBtn.style.marginTop = "var(--space-md, 0.75rem)";
     submitBtn.addEventListener("click", function(e) {
       e.stopPropagation();
@@ -1031,6 +1386,7 @@ function createSemanticSlider(inputData) {
 
 // Handle slider response
 function handleSliderResponse(value, slider, submitBtn, semanticLabel, question, thermal) {
+  playSound(parseInt(value, 10) > 50 ? "affirmative" : "negatory");
   console.log("Slider response:", value, "Label:", semanticLabel);
 
   // Send the response with context
@@ -1111,7 +1467,7 @@ function createTextInput(inputData) {
   if (!inputData._batch) {
     var submitBtn = document.createElement("button");
     submitBtn.className = "btn btn--primary";
-    submitBtn.textContent = "Submit";
+    submitBtn.textContent = "Cue";
     submitBtn.style.marginTop = "var(--space-md, 0.75rem)";
     submitBtn.addEventListener("click", function(e) {
       e.stopPropagation();
@@ -1129,6 +1485,7 @@ function createTextInput(inputData) {
 
 // Handle text input response
 function handleTextResponse(value, textarea, submitBtn, semanticLabel, question, thermal) {
+  playSound("affirmative");
   console.log("Text input response:", value, "Label:", semanticLabel);
 
   // Send the response with question context
@@ -1269,6 +1626,7 @@ function createApprovalGate(approvalData) {
 
 // Handle approval response
 function handleApprovalResponse(decision, buttonGroup, approvalData) {
+  playSound(decision === "Approve" ? "affirmative" : "negatory");
   console.log("Approval response:", decision, "Data:", approvalData);
 
   // Send as approval_response so backend handles token creation and context
@@ -2697,6 +3055,7 @@ socket.on("challenge_result", function(data) {
     msg.className = "challenge-result";
     msg.textContent = "calibrated.";
     body.appendChild(msg);
+    playSound("affirmative");
 
     if (data.fingerprint) {
       var fp = document.createElement("span");
@@ -2731,6 +3090,7 @@ socket.on("challenge_result", function(data) {
       body.appendChild(err);
     }
     err.textContent = data.reason || "try again";
+    playSound("negatory");
 
     // restart attention tracking for retry
     AttentionTracker.stop();
@@ -2959,23 +3319,29 @@ requestChallenge();
     listEl.innerHTML = "";
     var sheets = data.sheets || [];
     if (sheets.length === 0) {
-      listEl.innerHTML = "<p class=\"cuesheet-panel__loading\">no cue-sheets found</p>";
+      listEl.innerHTML = "<li class=\"list-card__item\"><span class=\"list-card__item-content\">no cue-sheets found</span></li>";
       return;
     }
     for (var i = 0; i < sheets.length; i++) {
       (function(sheet) {
-        var item = document.createElement("button");
-        item.className = "cuesheet-item";
+        var item = document.createElement("li");
+        item.className = "list-card__item";
+        item.style.cursor = "pointer";
 
-        var name = document.createElement("p");
-        name.className = "cuesheet-item__name";
+        var content = document.createElement("span");
+        content.className = "list-card__item-content";
+
+        var name = document.createElement("span");
+        name.className = "list-card__item-title";
         name.textContent = sheet.name;
-        item.appendChild(name);
+        content.appendChild(name);
 
-        var meta = document.createElement("p");
-        meta.className = "cuesheet-item__meta";
+        var meta = document.createElement("span");
+        meta.className = "list-card__item-subtitle";
         meta.textContent = sheet.description || (sheet.input_count + " inputs, " + sheet.cue_count + " cues");
-        item.appendChild(meta);
+        content.appendChild(meta);
+
+        item.appendChild(content);
 
         item.addEventListener("click", function() {
           panel.style.display = "none";
@@ -3039,6 +3405,7 @@ socket.on("cuesheet_signoff_request", function(data) {
   noBtn.textContent = "No";
 
   function handleSignoff(answer) {
+    playSound(answer === "Yes" ? "affirmative" : "negatory");
     socket.emit("cuesheet_signoff_response", {
       answer: answer,
       source_hash: data.source_hash || "",
@@ -3886,6 +4253,7 @@ function removeCueCardFromStream(tokenId) {
 
 function pinFromStream(tokenId) {
   // Keep card in stream, additionally pin to shelf
+  playSound("affirmative");
   // Create modifier (pin) via socket
   socket.emit("create_modifier", { token_id: tokenId });
   // Optimistically create thumbnail

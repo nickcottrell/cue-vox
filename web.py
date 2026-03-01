@@ -154,6 +154,7 @@ def get_whisper_model():
 
 # TTS process
 tts_process = None
+tts_interrupted = False
 
 # Speech consumption tracking
 current_speech = None
@@ -235,6 +236,9 @@ last_echo_timestamp = None
 # In-memory token storage (fallback when CUE-MEM unavailable)
 in_memory_summary_tokens = []
 
+# Active track tag for emoji reaction propagation (set by buff-launch, cleared on reset)
+_active_track = None
+
 # Token directories
 TOKENS_DIR = MAESTRO_ROOT / '.claude' / 'tokens'
 CONTEXT_DIR = MAESTRO_ROOT / '.claude'
@@ -296,12 +300,50 @@ def extract_citations(text):
         return (text, None)
 
 
+def extract_snr(text):
+    """Extract [SNR: XX] tag from end of response.
+
+    Returns (clean_text, snr_value) -- snr_value is int 0-100 or None.
+    """
+    pattern = r"\[SNR:\s*(\d{1,3})\]\s*$"
+    match = re.search(pattern, text)
+    if not match:
+        return (text, None)
+    try:
+        value = int(match.group(1))
+        value = max(0, min(100, value))
+        clean = text[:match.start()].rstrip()
+        return (clean, value)
+    except (ValueError, TypeError):
+        return (text, None)
+
+
+def strip_markdown_for_tts(text):
+    """Strip markdown formatting so macOS say gets clean prose.
+    Bullet/number prefixes, bold/italic markers, heading hashes, code fences."""
+    # Headings: ## Title -> Title
+    text = re.sub(r"^#{1,6}\s+", "", text, flags=re.MULTILINE)
+    # Bold/italic: **text** or __text__ or *text* or _text_
+    text = re.sub(r"\*{1,3}(.*?)\*{1,3}", r"\1", text)
+    text = re.sub(r"_{1,3}(.*?)_{1,3}", r"\1", text)
+    # Bullet list markers: - item or * item
+    text = re.sub(r"^[\-\*]\s+", "", text, flags=re.MULTILINE)
+    # Numbered list markers: 1. item
+    text = re.sub(r"^\d+\.\s+", "", text, flags=re.MULTILINE)
+    # Inline code
+    text = re.sub(r"`([^`]+)`", r"\1", text)
+    # Code fences
+    text = re.sub(r"```[\s\S]*?```", "", text)
+    return text.strip()
+
+
 def sanitize_for_tts(text):
     """
     Sanitize text for TTS by extracting question text from structured input tags.
     Prevents TTS from trying to speak raw tags like [YES_NO: ...] or [INPUT: {...}]
     """
-    # Strip citation block first (metadata only, never spoken)
+    # Strip SNR and citation blocks (metadata only, never spoken)
+    text, _ = extract_snr(text)
     text, _ = extract_citations(text)
 
     print(f"[TTS DEBUG] Input text: {text[:200]}")  # Log first 200 chars
@@ -372,15 +414,23 @@ def tts_chunk_split(text):
 def speak_chunked(text):
     """Speak text in paragraph-sized chunks. Each chunk gets its own
     30s timeout so long responses don't get cut off mid-sentence.
-    Emits tts_chunk_start so the frontend can highlight the active chunk."""
+    Emits tts_chunk_start so the frontend can highlight the active chunk.
+    Checks tts_interrupted between chunks so stop kills the whole queue."""
+    global tts_interrupted
+    tts_interrupted = False
     chunks = tts_chunk_split(text)
     if not chunks:
         return
     for i, chunk in enumerate(chunks):
+        if tts_interrupted:
+            break
         emit("tts_chunk_start", {"index": i})
         socketio.sleep(0.05)
         try:
-            subprocess.run(["say", chunk], check=False, timeout=30)
+            clean_chunk = strip_markdown_for_tts(chunk)
+            if not clean_chunk:
+                continue
+            subprocess.run(["say", clean_chunk], check=False, timeout=30)
         except subprocess.TimeoutExpired:
             print("[TTS] Chunk exceeded 30s, moving to next")
         except Exception as e:
@@ -856,6 +906,24 @@ def handle_pin_gallery(data):
 
 # On-demand hydration: client can request re-hydration at any time
 # (e.g. after buff-launch creates tokens externally via ?hydrate=1 URL param)
+@socketio.on("emoji_reaction")
+def handle_emoji_reaction(data):
+    emoji = (data or {}).get("emoji", "")
+    if not emoji:
+        return
+    if token_factory is not None:
+        try:
+            tags = ["track:%s" % _active_track] if _active_track else None
+            token_factory.create(
+                token_type="emoji_reaction",
+                label="emoji_reaction",
+                value=emoji,
+                thermal={"base_temp": 20, "cooling_rate": 5.0},
+                tags=tags,
+            )
+        except Exception as e:
+            print("Emoji token creation failed: %s" % e)
+
 @socketio.on("request_hydration")
 def handle_request_hydration(data=None):
     if _hydrate_modifiers:
@@ -864,9 +932,29 @@ def handle_request_hydration(data=None):
 # Reset session: clear conversation summary so fresh runs start clean
 @socketio.on("reset_session")
 def handle_reset_session(data=None):
-    global in_memory_summary_tokens
+    global in_memory_summary_tokens, _active_track
     in_memory_summary_tokens = []
+    _active_track = None
     print("[SESSION] Conversation summary cleared")
+
+# Pull history: serve last 20 conversation exchanges from today's log
+@socketio.on("pull_history")
+def handle_pull_history(data=None):
+    entries = load_recent_logs(limit=200)
+    # Filter to conversation-only entries (have user + assistant, no event key)
+    convos = [e for e in entries if "user" in e and "assistant" in e and "event" not in e]
+    # Take last 20
+    convos = convos[-20:]
+    # Slim payload
+    result = []
+    for entry in convos:
+        result.append({
+            "timestamp": entry.get("timestamp", ""),
+            "user": entry.get("user", ""),
+            "assistant": entry.get("assistant", "")
+        })
+    print("[PULL] Serving %d conversation entries" % len(result))
+    emit("pull_history_result", {"entries": result})
 
 # Serve auto-prompt file written by maestro.sh
 @socketio.on("request_prompt_file")
@@ -1324,8 +1412,9 @@ def log_conversation(user_text, assistant_text, speech_metadata=None, input_leng
     timestamp = datetime.now()
     log_file = LOG_DIR / f"{timestamp.strftime('%Y-%m-%d')}.jsonl"
 
-    # Extract and resolve citations from assistant response
-    clean_text, citations_data = extract_citations(assistant_text)
+    # Extract SNR and citations from assistant response
+    text_after_snr, snr_value = extract_snr(assistant_text)
+    clean_text, citations_data = extract_citations(text_after_snr)
 
     entry = {
         'timestamp': timestamp.strftime('%Y-%m-%dT%H:%M'),  # No seconds
@@ -1368,6 +1457,27 @@ def log_conversation(user_text, assistant_text, speech_metadata=None, input_leng
             # No resolver available -- store raw refs unresolved
             entry['citations'] = refs
 
+    # Record SNR self-assessment in log and create token
+    if snr_value is not None:
+        snr_h = snr_value * 1.2  # 0-120 hue: red->yellow->green
+        snr_hex = hsl_to_hex(snr_h, 70, 50)
+        entry["snr"] = {"value": snr_value, "hex": snr_hex}
+
+        if token_factory is not None:
+            try:
+                snr_tags = None
+                if _active_track:
+                    snr_tags = ["track:%s" % _active_track]
+                token_factory.create(
+                    token_type="model_signal",
+                    label="snr_%d" % int(timestamp.timestamp()),
+                    value=str(snr_value),
+                    tags=snr_tags,
+                    extra_fields={"snr": snr_value, "hex": snr_hex},
+                )
+            except Exception as e:
+                print("SNR token creation failed: %s" % e)
+
     with open(log_file, 'a') as f:
         f.write(json.dumps(entry) + '\n')
 
@@ -1379,7 +1489,8 @@ def log_conversation(user_text, assistant_text, speech_metadata=None, input_leng
     # Creates recursive awareness where tokens become aware of tokens around them
     create_token_echo()
 
-    return (log_file, clean_text)
+    snr_hex_out = entry.get("snr", {}).get("hex") if snr_value is not None else None
+    return (log_file, clean_text, snr_hex_out)
 
 def cleanup_old_logs():
     ensure_log_dir()
@@ -1535,6 +1646,220 @@ def format_logs_with_time(entries):
     return "\n".join(formatted)
 
 
+POSITIVE_EMOJI = {
+    "\U0001f44d", "\u2764\ufe0f", "\u2764", "\U0001f525", "\U0001f602",
+    "\U0001f60d", "\U0001f64f", "\U0001f389", "\U0001f680", "\U0001f4af",
+    "\U0001f31f", "\U0001f44f",
+}
+NEUTRAL_EMOJI = {"\U0001f914", "\U0001f440", "\U0001f4ad"}
+
+def _compute_vibe_metrics():
+    """Scan active emoji_reaction tokens and return structured vibe metrics.
+
+    Returns dict with total, density, diversity, mood, polarity_shift, counts
+    or None when no active emoji tokens exist.
+    """
+    tokens = []
+    if CUE_MEM_AVAILABLE:
+        try:
+            all_tokens = cue_mem_list_tokens()
+            tokens = [
+                t for t in all_tokens
+                if t.get("type") == "emoji_reaction" and t.get("status") == "active"
+            ]
+        except Exception:
+            pass
+
+    if not tokens:
+        return None
+
+    # Count by emoji character
+    counts = {}
+    for t in tokens:
+        emoji = t.get("value", "")
+        if emoji:
+            counts[emoji] = counts.get(emoji, 0) + 1
+
+    if not counts:
+        return None
+
+    total = sum(counts.values())
+    unique = len(counts)
+
+    # Density: reactions per recent exchange
+    recent_logs = load_recent_logs(limit=20)
+    exchange_count = max(len(recent_logs), 1)
+    density = total / exchange_count
+
+    # Diversity: unique emoji / total (0-1, Shannon-like info density)
+    diversity = unique / total if total > 0 else 0
+
+    # Mood classification
+    positive = sum(v for k, v in counts.items() if k in POSITIVE_EMOJI)
+    neutral = sum(v for k, v in counts.items() if k in NEUTRAL_EMOJI)
+
+    if positive > neutral:
+        mood = "positive"
+    elif neutral > positive:
+        mood = "neutral"
+    else:
+        mood = "mixed"
+
+    # Polarity shift: compare first-half vs second-half sentiment
+    polarity_shift = False
+    if len(tokens) >= 4:
+        mid = len(tokens) // 2
+        first_half = tokens[:mid]
+        second_half = tokens[mid:]
+        first_pos = sum(1 for t in first_half if t.get("value", "") in POSITIVE_EMOJI)
+        second_pos = sum(1 for t in second_half if t.get("value", "") in POSITIVE_EMOJI)
+        first_ratio = first_pos / max(len(first_half), 1)
+        second_ratio = second_pos / max(len(second_half), 1)
+        if abs(first_ratio - second_ratio) > 0.3:
+            polarity_shift = True
+
+    return {
+        "total": total,
+        "density": round(density, 2),
+        "diversity": round(diversity, 2),
+        "mood": mood,
+        "polarity_shift": polarity_shift,
+        "counts": counts,
+    }
+
+
+def _build_vibe_line():
+    """Thin wrapper: format vibe metrics as a one-line summary.
+
+    Returns empty string when no active emoji tokens exist.
+    """
+    metrics = _compute_vibe_metrics()
+    if not metrics:
+        return ""
+
+    parts = [
+        "%dx %s" % (v, k)
+        for k, v in sorted(metrics["counts"].items(), key=lambda x: -x[1])
+    ]
+    return "Vibe: %s (%d reactions, %s)" % (
+        ", ".join(parts), metrics["total"], metrics["mood"]
+    )
+
+
+# ---------------------------------------------------------------------------
+# Engagement quadrant system
+# ---------------------------------------------------------------------------
+
+SNR_HIGH_THRESHOLD = 50
+EMOJI_DENSITY_HIGH_THRESHOLD = 0.3
+
+QUADRANT_LOCKED_IN = "LOCKED_IN"
+QUADRANT_FATIGUING = "FATIGUING"
+QUADRANT_REFRAME = "REFRAME"
+QUADRANT_DRIFTING = "DRIFTING"
+
+QUADRANT_DESCRIPTIONS = {
+    QUADRANT_LOCKED_IN: "Stay the course. User is engaged and signal is clear.",
+    QUADRANT_FATIGUING: "Productive but draining. Keep it concise, offer breaks.",
+    QUADRANT_REFRAME: "Engaged but noisy. Crystallize the thread, reduce ambiguity.",
+    QUADRANT_DRIFTING: "Both sides unfocused. You may initiate a pivot or probe.",
+}
+
+
+def _compute_engagement_quadrant():
+    """Cross SNR x Emoji Vibe into four behavioral quadrants.
+
+    Returns dict with quadrant, snr_avg, vibe_metrics, description
+    or None if insufficient data for either axis.
+    """
+    # Gather recent SNR tokens (last 5)
+    snr_values = []
+    if CUE_MEM_AVAILABLE:
+        try:
+            all_tokens = cue_mem_list_tokens()
+            snr_tokens = [
+                t for t in all_tokens
+                if t.get("type") == "model_signal" and t.get("status") == "active"
+            ]
+            # Sort by label (contains timestamp) descending, take last 5
+            snr_tokens.sort(key=lambda t: t.get("label", ""), reverse=True)
+            for t in snr_tokens[:5]:
+                try:
+                    snr_values.append(int(t.get("value", 0)))
+                except (ValueError, TypeError):
+                    pass
+        except Exception:
+            pass
+
+    # Get vibe metrics
+    vibe_metrics = _compute_vibe_metrics()
+
+    has_snr = len(snr_values) > 0
+    has_vibe = vibe_metrics is not None
+
+    if not has_snr and not has_vibe:
+        return None
+
+    snr_avg = sum(snr_values) / len(snr_values) if has_snr else None
+    snr_high = snr_avg >= SNR_HIGH_THRESHOLD if snr_avg is not None else None
+    vibe_high = vibe_metrics["density"] >= EMOJI_DENSITY_HIGH_THRESHOLD if has_vibe else None
+
+    # Determine quadrant
+    if snr_high is not None and vibe_high is not None:
+        # Full bilateral: both axes available
+        if snr_high and vibe_high:
+            quadrant = QUADRANT_LOCKED_IN
+        elif snr_high and not vibe_high:
+            quadrant = QUADRANT_FATIGUING
+        elif not snr_high and vibe_high:
+            quadrant = QUADRANT_REFRAME
+        else:
+            quadrant = QUADRANT_DRIFTING
+    elif snr_high is not None:
+        # SNR only: simplified binary
+        quadrant = QUADRANT_LOCKED_IN if snr_high else QUADRANT_DRIFTING
+    else:
+        # Vibe only: simplified binary
+        quadrant = QUADRANT_LOCKED_IN if vibe_high else QUADRANT_DRIFTING
+
+    result = {
+        "quadrant": quadrant,
+        "snr_avg": round(snr_avg, 1) if snr_avg is not None else None,
+        "vibe_metrics": vibe_metrics,
+        "description": QUADRANT_DESCRIPTIONS[quadrant],
+    }
+    return result
+
+
+def get_engagement_context():
+    """Build compact engagement quadrant context for prompt injection.
+
+    Returns ~200 char string or empty string when no data.
+    """
+    state = _compute_engagement_quadrant()
+    if not state:
+        return ""
+
+    lines = ["[ENGAGEMENT QUADRANT]"]
+    lines.append("State: %s" % state["quadrant"])
+
+    parts = []
+    if state["snr_avg"] is not None:
+        parts.append("SNR: %d (avg last 5)" % state["snr_avg"])
+    vm = state["vibe_metrics"]
+    if vm:
+        parts.append("Vibe: %.1f density, %.1f diversity, %s" % (
+            vm["density"], vm["diversity"], vm["mood"]
+        ))
+        if vm["polarity_shift"]:
+            parts.append("polarity shifting")
+    if parts:
+        lines.append(" | ".join(parts))
+
+    lines.append("Leeway: %s" % state["description"])
+    return "\n".join(lines)
+
+
 def compress_conversation_chunk(entries, compression_level='light'):
     """
     Compress conversation entries into a concise summary.
@@ -1641,6 +1966,12 @@ def create_scale_token(scale_name, config, now):
 
     if not summary_text:
         return None
+
+    # Append vibe line for fine and medium scales (not heavy -- those are theme-only)
+    if scale_name in ("fine", "medium"):
+        vibe = _build_vibe_line()
+        if vibe:
+            summary_text = summary_text + "\n" + vibe
 
     # Use this scale's base temperature
     temperature = config['base_temp']
@@ -2523,10 +2854,11 @@ def handle_audio(data):
         # Inject temporal context if query is time-related
         enhanced_text = inject_temporal_context(text)
 
-        # Inject instance identity, speech consumption, variables, input history, and rolling summary context
+        # Inject instance identity, speech consumption, variables, input history, engagement, and rolling summary context
         context_sections = [
             ("identity", get_instance_identity()),
             ("flux", get_flux_capacitor_context()),
+            ("engagement", get_engagement_context()),
             ("summary", get_conversation_summary_context()),
             ("speech", get_speech_consumption_context()),
             ("variables", get_variables_context()),
@@ -2559,11 +2891,14 @@ def handle_audio(data):
             print("[CLAUDE] Empty response. Exit code: %d. Prompt length: %d chars" % (process.returncode, len(enhanced_text)))
 
         # Log conversation with input length
-        _, clean_response = log_conversation(text, response, input_length=input_word_count)
+        _, clean_response, snr_hex = log_conversation(text, response, input_length=input_word_count)
 
         tts_text = sanitize_for_tts(clean_response)
         tts_chunks = tts_chunk_split(tts_text)
-        emit('response', {'text': clean_response, 'tts_chunks': tts_chunks})
+        response_data = {"text": clean_response, "tts_chunks": tts_chunks}
+        if snr_hex:
+            response_data["snr_hex"] = snr_hex
+        emit("response", response_data)
         emit('state_change', {'state': 'speaking'})
 
         # Start tracking speech playback
@@ -2676,11 +3011,14 @@ IMPORTANT: When speaking, say "Yes OR No" not "yes-no" or "yes slash no"."""
         response = stdout.strip()
 
         # Log conversation (button answer as user input) with input length
-        _, clean_response = log_conversation(answer, response, input_length=input_word_count)
+        _, clean_response, snr_hex = log_conversation(answer, response, input_length=input_word_count)
 
         tts_text = sanitize_for_tts(clean_response)
         tts_chunks = tts_chunk_split(tts_text)
-        emit('response', {'text': clean_response, 'tts_chunks': tts_chunks})
+        response_data = {"text": clean_response, "tts_chunks": tts_chunks}
+        if snr_hex:
+            response_data["snr_hex"] = snr_hex
+        emit("response", response_data)
         emit('state_change', {'state': 'speaking'})
 
         # Start tracking speech playback
@@ -2701,14 +3039,17 @@ IMPORTANT: When speaking, say "Yes OR No" not "yes-no" or "yes slash no"."""
 
 def _respond_and_speak(user_log_text, response_text, confidence=None):
     """Log, emit, speak, and return to idle. DRY helper for approval handler."""
-    _, clean_response = log_conversation(
+    _, clean_response, snr_hex = log_conversation(
         user_log_text, response_text,
         input_length=get_input_word_count(user_log_text),
         confidence=confidence,
     )
     tts_text = sanitize_for_tts(clean_response)
     tts_chunks = tts_chunk_split(tts_text)
-    emit('response', {'text': clean_response, 'tts_chunks': tts_chunks})
+    response_data = {"text": clean_response, "tts_chunks": tts_chunks}
+    if snr_hex:
+        response_data["snr_hex"] = snr_hex
+    emit("response", response_data)
     emit('state_change', {'state': 'speaking'})
     start_speech_tracking(clean_response)
     speak_chunked(tts_text)
@@ -3039,11 +3380,14 @@ def handle_input_response(data):
         response = stdout.strip()
 
         # Log conversation with input length
-        _, clean_response = log_conversation(user_message, response, input_length=input_word_count)
+        _, clean_response, snr_hex = log_conversation(user_message, response, input_length=input_word_count)
 
         tts_text = sanitize_for_tts(clean_response)
         tts_chunks = tts_chunk_split(tts_text)
-        emit('response', {'text': clean_response, 'tts_chunks': tts_chunks})
+        response_data = {"text": clean_response, "tts_chunks": tts_chunks}
+        if snr_hex:
+            response_data["snr_hex"] = snr_hex
+        emit("response", response_data)
         emit('state_change', {'state': 'speaking'})
 
         # Start tracking speech playback
@@ -3085,10 +3429,11 @@ def handle_text_message(data):
         # Inject temporal context if query is time-related
         enhanced_text = inject_temporal_context(text)
 
-        # Inject instance identity, speech consumption, variables, input history, and rolling summary context
+        # Inject instance identity, speech consumption, variables, input history, engagement, and rolling summary context
         context_sections = [
             ("identity", get_instance_identity()),
             ("flux", get_flux_capacitor_context()),
+            ("engagement", get_engagement_context()),
             ("summary", get_conversation_summary_context()),
             ("speech", get_speech_consumption_context()),
             ("variables", get_variables_context()),
@@ -3116,11 +3461,14 @@ def handle_text_message(data):
         response = stdout.strip()
 
         # Log conversation with input length
-        _, clean_response = log_conversation(text, response, input_length=input_word_count)
+        _, clean_response, snr_hex = log_conversation(text, response, input_length=input_word_count)
 
         tts_text = sanitize_for_tts(clean_response)
         tts_chunks = tts_chunk_split(tts_text)
-        emit('response', {'text': clean_response, 'tts_chunks': tts_chunks})
+        response_data = {"text": clean_response, "tts_chunks": tts_chunks}
+        if snr_hex:
+            response_data["snr_hex"] = snr_hex
+        emit("response", response_data)
         emit('state_change', {'state': 'speaking'})
 
         # Start tracking speech playback
@@ -3487,8 +3835,9 @@ def handle_narrate_caption(data):
 
 @socketio.on('interrupt')
 def handle_interrupt():
-    """Stop current speech"""
-    global tts_process
+    """Stop current speech and cancel queued chunks"""
+    global tts_process, tts_interrupted
+    tts_interrupted = True
     if tts_process:
         tts_process.terminate()
         tts_process = None
@@ -3567,6 +3916,10 @@ def handle_cuesheet_launch(data):
         inputs = doc.get("inputs", [])
         cues = doc.get("cues", [])
         slug = re.sub(r"[^a-z0-9-]", "", sheet_name.lower().replace(" ", "-"))
+
+        # Set active track so emoji reactions inherit the buff tag
+        global _active_track
+        _active_track = slug
 
         # Build cue list string
         cue_ids = [c.get("id", "cue-%d" % i) for i, c in enumerate(cues)]

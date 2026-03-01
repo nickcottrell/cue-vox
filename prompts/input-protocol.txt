@@ -41,7 +41,14 @@ The UI will automatically render interactive input cards with appropriate contro
 
 IMPORTANT: When speaking, say "Yes OR No" not "yes-no" or "yes slash no".
 
-6. Citation references (append at end of response):
+6. Citation references (append at end of response, before SNR tag):
 [CITATIONS: {"refs": [{"type": "policy", "slug": "..."}, ...]}]
 Supported types: policy, token, vault, era.
-Only include when your response references these sources. Place as the LAST block.
+Only include when your response references these sources.
+
+7. Signal-to-noise self-assessment (append at end of EVERY response, AFTER citations):
+[SNR: XX]
+XX is 0-100 representing signal quality in this exchange.
+0 = pure noise, 50 = mixed, 100 = pure signal.
+Assess: clarity of user question, relevance of your answer, whether the exchange moved things forward.
+This MUST be the very last thing in your response. One tag, nothing after it.

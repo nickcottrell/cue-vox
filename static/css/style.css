@@ -96,7 +96,7 @@ body {
   transition: left 0.3s ease;
   display: flex;
   flex-direction: column;
-  padding: var(--space-2xl, 2rem);
+  padding: 0 var(--space-2xl, 2rem) var(--space-2xl, 2rem);
   gap: var(--space-lg, 1rem);
   border-right: 1px solid var(--border, rgba(255, 255, 255, 0.1));
   box-shadow: var(--shadow-lg, 0 10px 20px rgba(0, 0, 0, 0.3));
@@ -113,9 +113,10 @@ body {
 .conversation {
   flex: 1;
   overflow-y: auto;
-  overflow-x: hidden;
-  padding: var(--space-lg, 1rem) 0;
+  padding: 0 0 2rem;
   display: block;
+  mask-image: linear-gradient(to bottom, black calc(100% - 1rem), transparent);
+  -webkit-mask-image: linear-gradient(to bottom, black calc(100% - 1rem), transparent);
 }
 
 .conversation > * {
@@ -176,6 +177,156 @@ body {
   color: var(--text-secondary, #888);
   margin-top: var(--space-xs, 0.25rem);
   opacity: 0.6;
+}
+
+/* Emoji Reactions */
+.emoji-reactions {
+  list-style: none;
+  display: flex;
+  justify-content: flex-end;
+  gap: var(--space-xs, 0.25rem);
+  margin-top: var(--space-sm, 0.5rem);
+  padding: 0;
+}
+
+.emoji-reactions__btn {
+  background: none;
+  border: 1px solid var(--border, rgba(255, 255, 255, 0.1));
+  border-radius: var(--radius-sm, 4px);
+  padding: 2px 6px;
+  font-size: 16px;
+  cursor: pointer;
+  opacity: 0.4;
+  transition: opacity 0.15s ease, transform 0.15s ease;
+}
+
+.emoji-reactions__btn:hover {
+  opacity: 1;
+  transform: scale(1.2);
+}
+
+.emoji-reactions__btn:active {
+  transform: scale(0.9);
+}
+
+.emoji-badge {
+  display: block;
+  text-align: right;
+  font-size: 14px;
+  line-height: 1;
+  letter-spacing: 1px;
+  margin-top: var(--space-xs, 0.25rem);
+}
+
+/* SNR signal dot - ambient color indicator in lower-right of user bubble */
+.card.user .card__body {
+  position: relative;
+}
+
+.snr-dot {
+  position: absolute;
+  bottom: 6px;
+  right: 6px;
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  opacity: 0.6;
+  transition: opacity 0.3s ease;
+  pointer-events: none;
+}
+
+.card.user:hover .snr-dot {
+  opacity: 0.9;
+}
+
+/* Pull trigger button */
+.pull-trigger {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  font-size: 10px;
+  color: var(--text-secondary, #888);
+  opacity: 0.5;
+  cursor: pointer;
+  transition: color 0.2s ease, opacity 0.2s ease;
+  text-decoration: none;
+  background: none;
+  border: none;
+  padding: 8px 0 var(--space-sm, 0.5rem);
+}
+
+.pull-trigger::before {
+  content: "";
+  display: block;
+  width: 16px;
+  height: 16px;
+  margin-bottom: 2px;
+  background: currentColor;
+  mask: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'%3E%3Cpath d='M8 12L3 7h10z'/%3E%3C/svg%3E");
+  -webkit-mask: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'%3E%3Cpath d='M8 12L3 7h10z'/%3E%3C/svg%3E");
+}
+  letter-spacing: 0.04em;
+}
+
+.pull-trigger:hover {
+  opacity: 1;
+  color: var(--text, #fff);
+}
+
+.pull-trigger:disabled {
+  cursor: default;
+  pointer-events: none;
+}
+
+.pull-trigger--done {
+  display: none;
+}
+
+/* Pulled history cards */
+.card--pulled {
+  opacity: 0.55;
+}
+
+.card--pulled .card__body {
+  font-size: 0.92em;
+}
+
+/* Separator between pulled history and live conversation */
+.pull-separator {
+  display: flex;
+  align-items: center;
+  gap: var(--space-sm, 0.5rem);
+  margin: var(--space-md, 0.75rem) 0;
+  color: var(--text-secondary, #888);
+  font-size: 11px;
+  letter-spacing: 0.06em;
+  text-transform: lowercase;
+}
+
+.pull-separator::before,
+.pull-separator::after {
+  content: "";
+  flex: 1;
+  height: 1px;
+  background: var(--border, #333);
+  opacity: 0.4;
+}
+
+/* Show more button for truncated pulled messages */
+.pull-expand {
+  display: inline-block;
+  background: none;
+  border: none;
+  color: var(--text-secondary, #888);
+  font-size: 11px;
+  cursor: pointer;
+  padding: 2px 0;
+  opacity: 0.7;
+  text-decoration: underline;
+}
+
+.pull-expand:hover {
+  opacity: 1;
 }
 
 /* Structured questions */
@@ -889,8 +1040,7 @@ body {
   gap: var(--space-sm, 0.5rem);
   z-index: 100;
   max-height: 50vh;
-  overflow-y: auto;
-  overflow-x: hidden;
+  overflow: visible;
   pointer-events: none;
   background: transparent;
 }
@@ -919,13 +1069,7 @@ body {
 }
 
 .pinned-clear-all::after {
-  content: "";
-  position: absolute;
-  bottom: 0;
-  right: 0;
-  width: 200%;
-  height: 1px;
-  background: linear-gradient(to left, rgba(255, 255, 255, 0.12) 0%, rgba(255, 255, 255, 0) 100%);
+  display: none;
 }
 
 .pinned-clear-all:hover {
@@ -1210,9 +1354,10 @@ body {
   overflow-wrap: break-word;
 }
 
-/* Tighter markdown in chat cards (not lightbox) */
-.conversation .card .markdown-content {
-  font-size: var(--font-size-sm, 0.875rem);
+/* Consistent typography in chat cards (not lightbox) */
+.conversation .card .card__body {
+  font-size: var(--font-size-base, 1rem);
+  font-weight: var(--font-weight-normal, 400);
   line-height: 1.6;
   overflow-wrap: break-word;
 }
@@ -1286,22 +1431,28 @@ body {
 }
 
 .markdown-content ul,
-.markdown-content ol {
+.markdown-content ol,
+.tts-speakable ul,
+.tts-speakable ol {
   margin: 0 0 var(--space-md, 0.75rem) 0;
   padding-left: 1.75em;
 }
 
-.markdown-content li {
+.markdown-content li,
+.tts-speakable li {
   margin-bottom: var(--space-xs, 0.25rem);
   line-height: var(--line-height-normal, 1.6);
 }
 
-.markdown-content li:last-child {
+.markdown-content li:last-child,
+.tts-speakable li:last-child {
   margin-bottom: 0;
 }
 
 .markdown-content li > ul,
-.markdown-content li > ol {
+.markdown-content li > ol,
+.tts-speakable li > ul,
+.tts-speakable li > ol {
   margin-top: var(--space-xs, 0.25rem);
   margin-bottom: 0;
 }
@@ -1661,25 +1812,6 @@ body {
   bottom: var(--space-lg, 1rem);
   right: var(--space-lg, 1rem);
   z-index: 1001;
-  padding: var(--space-xs, 0.25rem) var(--space-md, 0.75rem);
-  border-radius: var(--radius-sm, 4px);
-  font-size: 12px;
-  font-weight: 600;
-  letter-spacing: 0.08em;
-  text-transform: lowercase;
-  cursor: pointer;
-  background: rgba(255, 255, 255, 0.08);
-  backdrop-filter: blur(10px);
-  -webkit-backdrop-filter: blur(10px);
-  border: 1px solid rgba(255, 255, 255, 0.1);
-  color: var(--text-secondary, #888);
-  transition: all 0.2s ease;
-}
-
-.cuesheet-toggle:hover {
-  background: rgba(255, 255, 255, 0.12);
-  color: var(--text, #fff);
-  border-color: rgba(255, 255, 255, 0.2);
 }
 
 .cuesheet-panel {
@@ -1689,9 +1821,6 @@ body {
   z-index: 1002;
   width: 260px;
   max-height: 360px;
-  background: var(--surface, rgba(26, 26, 26, 0.95));
-  backdrop-filter: blur(16px);
-  -webkit-backdrop-filter: blur(16px);
   border: 1px solid var(--border, rgba(255, 255, 255, 0.1));
   border-radius: var(--radius-md, 8px);
   box-shadow: var(--shadow-lg, 0 8px 24px rgba(0, 0, 0, 0.4));
@@ -1702,17 +1831,6 @@ body {
   display: flex;
   align-items: center;
   justify-content: space-between;
-  padding: var(--space-sm, 0.5rem) var(--space-md, 0.75rem);
-  border-bottom: 1px solid var(--border, rgba(255, 255, 255, 0.08));
-}
-
-.cuesheet-panel__title {
-  font-size: 11px;
-  font-weight: 600;
-  letter-spacing: 0.08em;
-  text-transform: lowercase;
-  color: var(--text-secondary, #888);
-  margin: 0;
 }
 
 .cuesheet-panel__close {
@@ -1729,46 +1847,9 @@ body {
   color: var(--text, #fff);
 }
 
-.cuesheet-panel__list {
+.cuesheet-panel .list-card__list {
   overflow-y: auto;
   max-height: 300px;
-  padding: var(--space-xs, 0.25rem) 0;
-}
-
-.cuesheet-panel__loading {
-  padding: var(--space-md, 0.75rem);
-  font-size: 12px;
-  color: var(--text-secondary, #888);
-  text-align: center;
-}
-
-.cuesheet-item {
-  display: block;
-  width: 100%;
-  padding: var(--space-sm, 0.5rem) var(--space-md, 0.75rem);
-  background: none;
-  border: none;
-  text-align: left;
-  cursor: pointer;
-  transition: background 0.15s ease;
-  color: var(--text, #fff);
-}
-
-.cuesheet-item:hover {
-  background: rgba(255, 255, 255, 0.06);
-}
-
-.cuesheet-item__name {
-  font-size: 13px;
-  font-weight: 500;
-  margin: 0;
-  color: var(--text, #fff);
-}
-
-.cuesheet-item__meta {
-  font-size: 11px;
-  color: var(--text-secondary, #888);
-  margin: 2px 0 0;
 }
 
 /* ============================================
@@ -2069,7 +2150,7 @@ body {
 }
 
 .cue-stream::-webkit-scrollbar-thumb {
-  background: rgba(255, 255, 255, 0.15);
+  background: var(--border, rgba(255, 255, 255, 0.15));
   border-radius: 2px;
 }
 
@@ -2114,7 +2195,8 @@ body {
   flex: 1;
   min-width: 0;
   font-size: 11px;
-  color: rgba(255, 255, 255, 0.5);
+  color: var(--text-secondary, #888);
+  opacity: 0.7;
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
@@ -2122,7 +2204,8 @@ body {
 
 .cue-card__age {
   font-size: 10px;
-  color: rgba(255, 255, 255, 0.25);
+  color: var(--text-secondary, #888);
+  opacity: 0.4;
   white-space: nowrap;
   flex-shrink: 0;
 }
@@ -2198,4 +2281,20 @@ body {
 .cue-pile__featured--exiting {
   opacity: 0;
   transition: opacity 0.25s ease;
+}
+
+/* ============================================
+   THEME TOGGLE (fixed lower-left)
+   ============================================ */
+
+.theme-toggle {
+  position: fixed;
+  bottom: var(--space-lg, 1rem);
+  left: var(--space-lg, 1rem);
+  z-index: 999;
+}
+
+.theme-toggle .toggle__label {
+  font-size: var(--font-size-sm, 0.875rem);
+  color: var(--text-secondary, #888);
 }
