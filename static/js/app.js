@@ -3743,7 +3743,6 @@ function renderGallerySlide() {
 
   var idx = galleryLightboxState.index;
   var img = images[idx];
-  var el = document.getElementById("galleryLightboxImage");
 
   // Reset zoom on every slide change
   galleryZoom = 1.0;
@@ -3765,25 +3764,23 @@ function renderGallerySlide() {
   document.getElementById("galleryPrev").style.display = images.length > 1 ? "" : "none";
   document.getElementById("galleryNext").style.display = images.length > 1 ? "" : "none";
 
-  // Fade out, clear, load new, fade in
-  el.classList.remove("gallery-lightbox__image--visible");
-  el.style.transform = "";
-
-  // Wait for fade-out transition, then swap src
-  setTimeout(function() {
-    el.removeAttribute("src");
-    el.alt = img.caption || img.filename || "";
-
-    el.onload = function() {
-      el.classList.add("gallery-lightbox__image--visible");
-    };
-    el.onerror = function() {
-      console.error("[gallery] lightbox image failed to load: " + this.src);
-      el.classList.add("gallery-lightbox__image--visible");
-      el.classList.add("gallery-lightbox__image--error");
-    };
-    el.src = resolveGalleryImageUrl(img);
-  }, 150);
+  // Replace the img element entirely -- prevents stale image pixels
+  var oldEl = document.getElementById("galleryLightboxImage");
+  var stage = oldEl.parentNode;
+  var newEl = document.createElement("img");
+  newEl.className = "gallery-lightbox__image";
+  newEl.id = "galleryLightboxImage";
+  newEl.alt = img.caption || img.filename || "";
+  newEl.onload = function() {
+    newEl.classList.add("gallery-lightbox__image--visible");
+  };
+  newEl.onerror = function() {
+    console.error("[gallery] lightbox image failed to load: " + this.src);
+    newEl.classList.add("gallery-lightbox__image--visible");
+    newEl.classList.add("gallery-lightbox__image--error");
+  };
+  newEl.src = resolveGalleryImageUrl(img);
+  stage.replaceChild(newEl, oldEl);
 }
 
 function navigateGallery(direction) {
@@ -3810,12 +3807,15 @@ function closeGalleryLightbox() {
   galleryLightboxState.galleryId = null;
   galleryLightboxState.index = 0;
 
-  // Clear stale image content and reset zoom
+  // Replace img element to fully clear stale pixels
   galleryZoom = 1.0;
-  var el = document.getElementById("galleryLightboxImage");
-  el.className = "gallery-lightbox__image";
-  el.removeAttribute("src");
-  el.style.transform = "";
+  var oldEl = document.getElementById("galleryLightboxImage");
+  var stage = oldEl.parentNode;
+  var freshEl = document.createElement("img");
+  freshEl.className = "gallery-lightbox__image";
+  freshEl.id = "galleryLightboxImage";
+  freshEl.alt = "";
+  stage.replaceChild(freshEl, oldEl);
 
   var lb = document.getElementById("galleryLightbox");
   lb.style.display = "none";
