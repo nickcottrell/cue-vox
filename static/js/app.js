@@ -3721,29 +3721,23 @@ function openGalleryLightbox(galleryId, startIndex) {
     letGoBtn.style.display = galleryTokenMap[galleryId] ? "" : "none";
   }
 
-  renderGallerySlide();
+  renderGallerySlide(0);
 }
 
-function renderGallerySlide() {
+/**
+ * Render the current gallery slide with optional slide animation.
+ * @param {number} direction  1 = next (slide left), -1 = prev (slide right), 0 = initial (fade in)
+ */
+function renderGallerySlide(direction) {
   var entry = galleryRegistry[galleryLightboxState.galleryId];
   if (!entry) return;
   var images = entry.images;
 
   var idx = galleryLightboxState.index;
   var img = images[idx];
-
   var el = document.getElementById("galleryLightboxImage");
-  el.style.opacity = "0";
-  el.className = "gallery-lightbox__image";
-  el.src = resolveGalleryImageUrl(img);
-  el.alt = img.caption || img.filename || "";
-  el.onload = function() { el.style.opacity = "1"; };
-  el.onerror = function() {
-    console.error("[gallery] lightbox image failed to load: " + this.src);
-    el.style.opacity = "1";
-    el.classList.add("gallery-lightbox__image--error");
-  };
 
+  // Update metadata immediately
   var title = document.getElementById("galleryLightboxTitle");
   var strip = document.querySelector(
     "[data-gallery-id='" + galleryLightboxState.galleryId + "']"
@@ -3757,9 +3751,58 @@ function renderGallerySlide() {
   var caption = document.getElementById("galleryLightboxCaption");
   caption.textContent = img.caption || "";
 
-  // Toggle nav visibility for single-image galleries
   document.getElementById("galleryPrev").style.display = images.length > 1 ? "" : "none";
   document.getElementById("galleryNext").style.display = images.length > 1 ? "" : "none";
+
+  // Determine enter animation class based on direction
+  var enterClass;
+  if (direction === 1) {
+    enterClass = "gallery-lightbox__image--enter-right";
+  } else if (direction === -1) {
+    enterClass = "gallery-lightbox__image--enter-left";
+  } else {
+    enterClass = "gallery-lightbox__image--fade-in";
+  }
+
+  // Load the new image: clear src first to prevent stale image flash
+  function loadNewSlide() {
+    el.className = "gallery-lightbox__image";
+    el.style.opacity = "0";
+    el.removeAttribute("src");
+    el.alt = img.caption || img.filename || "";
+
+    el.onload = function() {
+      el.style.opacity = "";
+      el.className = "gallery-lightbox__image " + enterClass;
+    };
+    el.onerror = function() {
+      console.error("[gallery] lightbox image failed to load: " + this.src);
+      el.style.opacity = "";
+      el.className = "gallery-lightbox__image gallery-lightbox__image--fade-in gallery-lightbox__image--error";
+    };
+    el.src = resolveGalleryImageUrl(img);
+  }
+
+  // If navigating (direction != 0), animate exit first
+  if (direction === 1 || direction === -1) {
+    var exitClass = direction === 1
+      ? "gallery-lightbox__image--exit-left"
+      : "gallery-lightbox__image--exit-right";
+    el.className = "gallery-lightbox__image " + exitClass;
+
+    var onExit = function() {
+      el.removeEventListener("animationend", onExit);
+      loadNewSlide();
+    };
+    el.addEventListener("animationend", onExit);
+    // Safety timeout in case animationend doesn't fire
+    setTimeout(function() {
+      el.removeEventListener("animationend", onExit);
+      loadNewSlide();
+    }, 300);
+  } else {
+    loadNewSlide();
+  }
 }
 
 function navigateGallery(direction) {
@@ -3772,7 +3815,7 @@ function navigateGallery(direction) {
   if (next >= images.length) next = 0;
   galleryLightboxState.index = next;
 
-  renderGallerySlide();
+  renderGallerySlide(direction);
 }
 
 function closeGalleryLightbox() {
@@ -3785,6 +3828,12 @@ function closeGalleryLightbox() {
   galleryLightboxOpen = false;
   galleryLightboxState.galleryId = null;
   galleryLightboxState.index = 0;
+
+  // Clear stale image content
+  var el = document.getElementById("galleryLightboxImage");
+  el.className = "gallery-lightbox__image";
+  el.removeAttribute("src");
+  el.style.opacity = "0";
 
   var lb = document.getElementById("galleryLightbox");
   lb.style.display = "none";
