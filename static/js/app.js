@@ -3721,14 +3721,22 @@ function openGalleryLightbox(galleryId, startIndex) {
     letGoBtn.style.display = galleryTokenMap[galleryId] ? "" : "none";
   }
 
-  renderGallerySlide(0);
+  renderGallerySlide();
 }
 
-/**
- * Render the current gallery slide with optional slide animation.
- * @param {number} direction  1 = next (slide left), -1 = prev (slide right), 0 = initial (fade in)
- */
-function renderGallerySlide(direction) {
+// Zoom state for lightbox image
+var galleryZoom = 1.0;
+var GALLERY_ZOOM_STEP = 0.25;
+var GALLERY_ZOOM_MIN = 0.5;
+var GALLERY_ZOOM_MAX = 4.0;
+
+function applyGalleryZoom() {
+  var el = document.getElementById("galleryLightboxImage");
+  if (!el) return;
+  el.style.transform = galleryZoom === 1.0 ? "" : "scale(" + galleryZoom + ")";
+}
+
+function renderGallerySlide() {
   var entry = galleryRegistry[galleryLightboxState.galleryId];
   if (!entry) return;
   var images = entry.images;
@@ -3737,7 +3745,10 @@ function renderGallerySlide(direction) {
   var img = images[idx];
   var el = document.getElementById("galleryLightboxImage");
 
-  // Update metadata immediately
+  // Reset zoom on every slide change
+  galleryZoom = 1.0;
+
+  // Update metadata
   var title = document.getElementById("galleryLightboxTitle");
   var strip = document.querySelector(
     "[data-gallery-id='" + galleryLightboxState.galleryId + "']"
@@ -3754,55 +3765,25 @@ function renderGallerySlide(direction) {
   document.getElementById("galleryPrev").style.display = images.length > 1 ? "" : "none";
   document.getElementById("galleryNext").style.display = images.length > 1 ? "" : "none";
 
-  // Determine enter animation class based on direction
-  var enterClass;
-  if (direction === 1) {
-    enterClass = "gallery-lightbox__image--enter-right";
-  } else if (direction === -1) {
-    enterClass = "gallery-lightbox__image--enter-left";
-  } else {
-    enterClass = "gallery-lightbox__image--fade-in";
-  }
+  // Fade out, clear, load new, fade in
+  el.classList.remove("gallery-lightbox__image--visible");
+  el.style.transform = "";
 
-  // Load the new image: clear src first to prevent stale image flash
-  function loadNewSlide() {
-    el.className = "gallery-lightbox__image";
-    el.style.opacity = "0";
+  // Wait for fade-out transition, then swap src
+  setTimeout(function() {
     el.removeAttribute("src");
     el.alt = img.caption || img.filename || "";
 
     el.onload = function() {
-      el.style.opacity = "";
-      el.className = "gallery-lightbox__image " + enterClass;
+      el.classList.add("gallery-lightbox__image--visible");
     };
     el.onerror = function() {
       console.error("[gallery] lightbox image failed to load: " + this.src);
-      el.style.opacity = "";
-      el.className = "gallery-lightbox__image gallery-lightbox__image--fade-in gallery-lightbox__image--error";
+      el.classList.add("gallery-lightbox__image--visible");
+      el.classList.add("gallery-lightbox__image--error");
     };
     el.src = resolveGalleryImageUrl(img);
-  }
-
-  // If navigating (direction != 0), animate exit first
-  if (direction === 1 || direction === -1) {
-    var exitClass = direction === 1
-      ? "gallery-lightbox__image--exit-left"
-      : "gallery-lightbox__image--exit-right";
-    el.className = "gallery-lightbox__image " + exitClass;
-
-    var onExit = function() {
-      el.removeEventListener("animationend", onExit);
-      loadNewSlide();
-    };
-    el.addEventListener("animationend", onExit);
-    // Safety timeout in case animationend doesn't fire
-    setTimeout(function() {
-      el.removeEventListener("animationend", onExit);
-      loadNewSlide();
-    }, 300);
-  } else {
-    loadNewSlide();
-  }
+  }, 150);
 }
 
 function navigateGallery(direction) {
@@ -3815,7 +3796,7 @@ function navigateGallery(direction) {
   if (next >= images.length) next = 0;
   galleryLightboxState.index = next;
 
-  renderGallerySlide(direction);
+  renderGallerySlide();
 }
 
 function closeGalleryLightbox() {
@@ -3829,11 +3810,12 @@ function closeGalleryLightbox() {
   galleryLightboxState.galleryId = null;
   galleryLightboxState.index = 0;
 
-  // Clear stale image content
+  // Clear stale image content and reset zoom
+  galleryZoom = 1.0;
   var el = document.getElementById("galleryLightboxImage");
   el.className = "gallery-lightbox__image";
   el.removeAttribute("src");
-  el.style.opacity = "0";
+  el.style.transform = "";
 
   var lb = document.getElementById("galleryLightbox");
   lb.style.display = "none";
@@ -3943,6 +3925,14 @@ function unpinGallery(galleryId) {
     } else if (e.key === "ArrowRight") {
       e.preventDefault();
       navigateGallery(1);
+    } else if (e.key === "ArrowUp") {
+      e.preventDefault();
+      galleryZoom = Math.min(galleryZoom + GALLERY_ZOOM_STEP, GALLERY_ZOOM_MAX);
+      applyGalleryZoom();
+    } else if (e.key === "ArrowDown") {
+      e.preventDefault();
+      galleryZoom = Math.max(galleryZoom - GALLERY_ZOOM_STEP, GALLERY_ZOOM_MIN);
+      applyGalleryZoom();
     }
   });
 })();
