@@ -159,7 +159,21 @@ cmd_logs() {
 
     # Display last 10 entries with formatting
     tail -n 10 "$LATEST_LOG" | while IFS= read -r line; do
-        T_RELATIVE=$(echo "$line" | python3 -c "import sys, json; print(json.load(sys.stdin).get('t_relative', ''))" 2>/dev/null || echo "")
+        T_RELATIVE=$(echo "$line" | python3 -c "
+import sys, json
+from datetime import datetime
+e = json.load(sys.stdin)
+ts = e.get('timestamp', '')
+if ts:
+    try:
+        d = (datetime.now() - datetime.fromisoformat(ts)).total_seconds()
+        m = int(d // 60); h = int(d // 3600)
+        if h == 0: print('%dm ago' % m)
+        elif h < 24: print('%dh %dm ago' % (h, m % 60))
+        else: print('%dd ago' % (h // 24))
+    except Exception: print('')
+else: print('')
+" 2>/dev/null || echo "")
         T_PERIOD=$(echo "$line" | python3 -c "import sys, json; print(json.load(sys.stdin).get('t_period', ''))" 2>/dev/null || echo "")
         USER=$(echo "$line" | python3 -c "import sys, json; print(json.load(sys.stdin)['user'])" 2>/dev/null || echo "")
         ASSISTANT=$(echo "$line" | python3 -c "import sys, json; print(json.load(sys.stdin)['assistant'])" 2>/dev/null || echo "")

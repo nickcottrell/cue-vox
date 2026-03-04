@@ -162,7 +162,6 @@ current_speech = None
 # Conversation logging with 24-hour retention
 LOG_DIR = Path(__file__).parent / 'logs'
 LOG_RETENTION_HOURS = 24
-SESSION_START = datetime.now()  # Track when server started
 
 # Session variables - key-value pairs from text inputs
 session_variables = {}
@@ -337,6 +336,34 @@ def strip_markdown_for_tts(text):
     return text.strip()
 
 
+def _strip_bracket_balanced_tags(text, tag_types):
+    """Remove [TAG: ...] blocks using bracket-balanced matching.
+
+    Handles JSON payloads that contain ] characters (e.g. arrays).
+    """
+    tag_pattern = "|".join(re.escape(t) for t in tag_types)
+    starter = re.compile(r"\[(" + tag_pattern + r"):\s*")
+    result = text
+    while True:
+        m = starter.search(result)
+        if not m:
+            break
+        depth = 1
+        pos = m.end()
+        while pos < len(result) and depth > 0:
+            if result[pos] == "[":
+                depth += 1
+            elif result[pos] == "]":
+                depth -= 1
+            if depth > 0:
+                pos += 1
+        if depth == 0:
+            result = result[:m.start()] + result[pos + 1:]
+        else:
+            break
+    return result.strip()
+
+
 def sanitize_for_tts(text):
     """
     Sanitize text for TTS by extracting question text from structured input tags.
@@ -345,6 +372,9 @@ def sanitize_for_tts(text):
     # Strip SNR and citation blocks (metadata only, never spoken)
     text, _ = extract_snr(text)
     text, _ = extract_citations(text)
+
+    # Strip visual-only tags (rendered as widgets, never spoken)
+    text = _strip_bracket_balanced_tags(text, ("GALLERY", "APPROVAL", "DOCUMENT", "CUE"))
 
     print(f"[TTS DEBUG] Input text: {text[:200]}")  # Log first 200 chars
 
@@ -1409,16 +1439,31 @@ def interpret_confidence(h, s, l):
         "clarity": clarity
     }
 
-def get_relative_time(timestamp):
-    """Get human-readable relative time since session start"""
-    delta = timestamp - SESSION_START
-    hours = int(delta.total_seconds() // 3600)
-    minutes = int((delta.total_seconds() % 3600) // 60)
+def compute_relative_time_from_now(timestamp_str):
+    """Compute human-readable relative time from a stored timestamp to now.
 
-    if hours == 0:
-        return f"{minutes}m ago"
-    else:
-        return f"{hours}h {minutes}m ago"
+    This computes FRESH relative time at READ time from the absolute timestamp.
+    Prevents stale relative values from being baked into logs and re-injected
+    into LLM context windows hours later.
+    """
+    if not timestamp_str:
+        return ""
+    try:
+        ts = datetime.fromisoformat(str(timestamp_str))
+        total_seconds = (datetime.now() - ts).total_seconds()
+        if total_seconds < 0:
+            return "just now"
+        minutes = int(total_seconds // 60)
+        hours = int(total_seconds // 3600)
+        if hours == 0:
+            return "%dm ago" % minutes
+        elif hours < 24:
+            return "%dh %dm ago" % (hours, minutes % 60)
+        else:
+            days = int(hours // 24)
+            return "%dd ago" % days
+    except (ValueError, TypeError):
+        return ""
 
 def log_conversation(user_text, assistant_text, speech_metadata=None, input_length=None, confidence=None):
     ensure_log_dir()
@@ -1431,7 +1476,6 @@ def log_conversation(user_text, assistant_text, speech_metadata=None, input_leng
 
     entry = {
         'timestamp': timestamp.strftime('%Y-%m-%dT%H:%M'),  # No seconds
-        't_relative': get_relative_time(timestamp),
         't_period': get_time_period(timestamp),
         'user': user_text,
         'assistant': clean_text
@@ -1661,7 +1705,7 @@ def format_logs_with_time(entries):
 
     formatted = []
     for entry in entries:
-        t_rel = entry.get('t_relative', '')
+        t_rel = compute_relative_time_from_now(entry.get('timestamp', ''))
         t_per = entry.get('t_period', '')
         user = entry.get('user', '')
         assistant = entry.get('assistant', '')
@@ -1928,7 +1972,7 @@ def compress_conversation_chunk(entries, compression_level='light'):
     else:  # 'light' - recent, less baked
         # Light compression - preserve more detail
         for entry in entries:
-            t_rel = entry.get('t_relative', '')
+            t_rel = compute_relative_time_from_now(entry.get('timestamp', ''))
             user = entry.get('user', '')[:80]
             assistant = entry.get('assistant', '')[:100]
             compressed_lines.append(f"{t_rel}: U: {user} | A: {assistant}")
@@ -4127,7 +4171,6 @@ def handle_connect():
     entry = {
         'timestamp': timestamp.isoformat(),
         'event': 'client_connected',
-        't_relative': get_relative_time(timestamp),
         't_period': get_time_period(timestamp)
     }
 
@@ -4165,7 +4208,6 @@ def handle_disconnect():
     entry = {
         'timestamp': timestamp.isoformat(),
         'event': 'client_disconnected',
-        't_relative': get_relative_time(timestamp),
         't_period': get_time_period(timestamp)
     }
 
