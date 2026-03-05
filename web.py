@@ -3961,11 +3961,16 @@ def handle_cuesheet_list(data=None):
             try:
                 with open(f) as fh:
                     doc = _yaml.safe_load(fh) or {}
+                # Skip child sheets -- only top-level sheets appear in the do menu
+                if doc.get("parent"):
+                    continue
                 sheets.append({
                     "path": str(f),
                     "filename": f.name,
                     "name": doc.get("name", f.stem),
                     "description": doc.get("description", ""),
+                    "icon": doc.get("icon", ""),
+                    "order": doc.get("order", 999),
                     "input_count": len(doc.get("inputs", [])),
                     "cue_count": len(doc.get("cues", []))
                 })

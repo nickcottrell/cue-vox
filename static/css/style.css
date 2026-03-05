@@ -1819,7 +1819,7 @@ body {
   bottom: calc(var(--space-lg, 1rem) + 36px);
   right: var(--space-lg, 1rem);
   z-index: 1002;
-  width: 260px;
+  width: 320px;
   max-height: 360px;
   border: 1px solid var(--border, rgba(255, 255, 255, 0.1));
   border-radius: var(--radius-md, 8px);

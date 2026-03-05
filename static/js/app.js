@@ -3319,9 +3319,10 @@ requestChallenge();
     listEl.innerHTML = "";
     var sheets = data.sheets || [];
     if (sheets.length === 0) {
-      listEl.innerHTML = "<li class=\"list-card__item\"><span class=\"list-card__item-content\">no cue-sheets found</span></li>";
+      listEl.innerHTML = "<li class=\"list-card__item\"><span class=\"list-card__item-content\">nothing here yet</span></li>";
       return;
     }
+    sheets.sort(function(a, b) { return (a.order || 999) - (b.order || 999); });
     for (var i = 0; i < sheets.length; i++) {
       (function(sheet) {
         var item = document.createElement("li");
@@ -3331,14 +3332,18 @@ requestChallenge();
         var content = document.createElement("span");
         content.className = "list-card__item-content";
 
-        var name = document.createElement("span");
+        var name = document.createElement("strong");
         name.className = "list-card__item-title";
-        name.textContent = sheet.name;
+        name.style.display = "block";
+        name.textContent = (sheet.icon ? sheet.icon + "  " : "") + sheet.name;
         content.appendChild(name);
 
         var meta = document.createElement("span");
         meta.className = "list-card__item-subtitle";
-        meta.textContent = sheet.description || (sheet.input_count + " inputs, " + sheet.cue_count + " cues");
+        meta.style.display = "block";
+        meta.style.opacity = "0.7";
+        meta.style.fontSize = "0.85em";
+        meta.textContent = sheet.description || "";
         content.appendChild(meta);
 
         item.appendChild(content);
