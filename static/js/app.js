@@ -2075,12 +2075,15 @@ function createModifierThumbnail(tokenId, sourceCard) {
 
   var label = document.createElement("p");
   label.className = "pinned-thumbnail__label";
-  label.textContent = data.label || data.key || "token";
+  var formattedLabel = formatTokenLabel(data);
+  label.textContent = formattedLabel;
   info.appendChild(label);
 
   var value = document.createElement("p");
   value.className = "pinned-thumbnail__value";
-  value.textContent = data.value || "";
+  // Skip value if the label already shows it (avoids double-labeling)
+  var rawValue = data.value || "";
+  value.textContent = (rawValue === formattedLabel) ? "" : rawValue;
   info.appendChild(value);
 
   // Countdown timer
@@ -2399,12 +2402,17 @@ function openLightbox(tokenId) {
   var title = document.getElementById("lightboxTitle");
   var body = document.getElementById("lightboxBody");
 
-  title.textContent = data.label || data.key || "Token";
+  title.textContent = formatTokenLabel(data);
   renderLightboxBody(body, data, false);
 
   // Show view mode buttons, hide edit mode buttons
-  document.getElementById("lightboxEditBtn").style.display = "";
-  document.getElementById("lightboxDeleteBtn").style.display = "";
+  var editableTypes = ["scalar_param", "text_input", "yes_no_response", "approval_response"];
+  var rawKey = data.label || data.key || "";
+  var isSystemToken = rawKey.indexOf("cuesheet_session_") === 0
+    || rawKey.indexOf("buff_cuesheet_") === 0
+    || rawKey.indexOf("mod_") === 0;
+  var isEditable = editableTypes.indexOf(data.type) !== -1 && !isSystemToken;
+  document.getElementById("lightboxEditBtn").style.display = isEditable ? "" : "none";
   document.getElementById("lightboxUnpinBtn").style.display = "";
   document.getElementById("lightboxSaveBtn").style.display = "none";
   document.getElementById("lightboxCancelBtn").style.display = "none";
@@ -2595,7 +2603,7 @@ function buildHexLog(data) {
   lines.push("");
   if (data.type === "scalar_param") {
     var sv = data.slider_value != null ? data.slider_value : sliderTag;
-    lines.push("dimension   " + (data.label || "param") + " @ " + sv + "/100");
+    lines.push("dimension   " + formatTokenLabel(data) + " @ " + sv + "/100");
   } else if (data.type === "yes_no_response" || data.type === "approval_response") {
     lines.push("gate        boolean (" + (data.value || "") + ")");
   } else if (data.type === "text_input") {
@@ -2705,7 +2713,6 @@ function thermalOriginLabel(temp, base, rate) {
 // Lightbox button wiring
 (function() {
   var editBtn = document.getElementById("lightboxEditBtn");
-  var deleteBtn = document.getElementById("lightboxDeleteBtn");
   var unpinBtn = document.getElementById("lightboxUnpinBtn");
   var saveBtn = document.getElementById("lightboxSaveBtn");
   var cancelBtn = document.getElementById("lightboxCancelBtn");
@@ -2737,7 +2744,6 @@ function thermalOriginLabel(temp, base, rate) {
     var body = document.getElementById("lightboxBody");
     renderLightboxBody(body, data, true);
     editBtn.style.display = "none";
-    deleteBtn.style.display = "none";
     unpinBtn.style.display = "none";
     saveBtn.style.display = "";
     cancelBtn.style.display = "";
@@ -2750,7 +2756,6 @@ function thermalOriginLabel(temp, base, rate) {
     var body = document.getElementById("lightboxBody");
     renderLightboxBody(body, data, false);
     editBtn.style.display = "";
-    deleteBtn.style.display = "";
     unpinBtn.style.display = "";
     saveBtn.style.display = "none";
     cancelBtn.style.display = "none";
@@ -2765,23 +2770,6 @@ function thermalOriginLabel(temp, base, rate) {
     tokenRegistry[currentLightboxTokenId].value = newValue;
     updateThumbnailValue(currentLightboxTokenId, newValue);
     promoteModifierThumbnail(currentLightboxTokenId);
-    closeLightbox();
-  });
-
-  deleteBtn.addEventListener("click", function() {
-    if (!currentLightboxTokenId) return;
-    var tokenId = currentLightboxTokenId;
-    socket.emit("delete_token", { token_id: tokenId });
-    removeModifierThumbnail(tokenId);
-    // Reset modifier icon on the source card
-    var card = conversation.querySelector("[data-token-id=\"" + tokenId + "\"]");
-    if (card) {
-      var modIcon = card.querySelector(".pin-icon");
-      if (modIcon) {
-        modIcon.setAttribute("data-state", "sleeping");
-      }
-    }
-    delete tokenRegistry[tokenId];
     closeLightbox();
   });
 
@@ -2834,6 +2822,17 @@ socket.on("modifiers_removed", function(data) {
   }
 });
 
+socket.on("token_resolved", function(data) {
+  console.log("Token resolved:", data.token_id, data.modifier_id || "(already)");
+  removeModifierThumbnail(data.token_id);
+  delete modifiersByTarget[data.token_id];
+  delete modifierThermalData[data.token_id];
+  if (modifierCountdownIntervals[data.token_id]) {
+    clearInterval(modifierCountdownIntervals[data.token_id]);
+    delete modifierCountdownIntervals[data.token_id];
+  }
+});
+
 // Hydrate modifier targets on page load (most recent first)
 socket.on("hydrate_modifiers", function(data) {
   var targets = data.modifiers || [];
@@ -2848,6 +2847,13 @@ socket.on("hydrate_modifiers", function(data) {
 
   for (var i = 0; i < targets.length; i++) {
     var target = targets[i];
+    // Skip resolved items -- they stay in the chain but not in the pinned UI
+    if (target.resolved) {
+      if (!tokenRegistry[target.token_id]) {
+        tokenRegistry[target.token_id] = target;
+      }
+      continue;
+    }
     // Register in tokenRegistry if not already there
     if (!tokenRegistry[target.token_id]) {
       tokenRegistry[target.token_id] = target;
@@ -3350,6 +3356,15 @@ requestChallenge();
 
         item.addEventListener("click", function() {
           panel.style.display = "none";
+          // Open panel window NOW (on user click) so browser allows it.
+          // Socket.IO callback is async and browsers block popups there.
+          if (sheet.panel && sheet.panel.url) {
+            var pw = sheet.panel.width || 600;
+            var ph = sheet.panel.height || 400;
+            var pt = sheet.panel.title || sheet.name;
+            var pf = "width=" + pw + ",height=" + ph + ",menubar=no,toolbar=no,location=no,status=no,resizable=yes,scrollbars=yes";
+            window.open(sheet.panel.url, pt, pf);
+          }
           socket.emit("cuesheet_launch", { path: sheet.path });
         });
 
@@ -3359,16 +3374,93 @@ requestChallenge();
   });
 
   socket.on("cuesheet_launched", function(data) {
+    // Panel window is opened on click (before this callback) to avoid popup blocker.
     // Send launch message as text to kick off the conversation
     var msg = "Cue-sheet launched: " + data.name + ". " + data.description +
       " (" + data.tokens_created + " tokens created, tag: buff:" + data.slug + ")";
     addSystemMessage(msg);
 
-    // Auto-send to Claude so it picks up the tokens and starts presenting inputs
-    socket.emit("text_message", {
-      text: "I just launched the " + data.name + " cue-sheet. The tokens are loaded. Let's go."
-    });
+    // No auto-message to Claude. User speaks when ready.
   });
+})();
+
+// ============================================
+// Panel PostMessage Bridge
+// ============================================
+// Any panel window opened via cue-sheet can postMessage back here.
+// Origin-checked. Routes events to Claude as text messages.
+
+(function() {
+  var ALLOWED_ORIGINS = ["http://localhost:3001"];
+
+  // Map cue-sheet slugs to file paths for panel-initiated launches
+  var _cuesheetPathCache = {};
+
+  function _cacheCuesheetPaths() {
+    socket.emit("cuesheet_list");
+  }
+
+  // Listen for list results to build path cache
+  socket.on("cuesheet_list_result", function(data) {
+    var sheets = data.sheets || [];
+    for (var i = 0; i < sheets.length; i++) {
+      var s = sheets[i];
+      var slug = s.filename ? s.filename.replace(".yaml", "") : "";
+      if (slug) _cuesheetPathCache[slug] = s.path;
+    }
+  });
+
+  // Also cache child sheets -- request full list including children
+  socket.on("cuesheet_children_result", function(data) {
+    var sheets = data.sheets || [];
+    for (var i = 0; i < sheets.length; i++) {
+      var s = sheets[i];
+      var slug = s.filename ? s.filename.replace(".yaml", "") : "";
+      if (slug) _cuesheetPathCache[slug] = s.path;
+    }
+  });
+
+  window.addEventListener("message", function(e) {
+    if (ALLOWED_ORIGINS.indexOf(e.origin) === -1) return;
+    if (!e.data || !e.data.type) return;
+
+    if (e.data.type === "rom_loaded" && e.data.title) {
+      socket.emit("speak", {text: e.data.title + " loaded."});
+    }
+
+    if (e.data.type === "rom_ejected" && e.data.title) {
+      socket.emit("speak", {text: e.data.title + " ejected."});
+    }
+
+    if (e.data.type === "game_over" && e.data.slug) {
+      socket.emit("arcade_game_over", {slug: e.data.slug, title: e.data.title || e.data.slug});
+    }
+
+    // Panel-initiated cue-sheet launch
+    if (e.data.type === "launch_cuesheet" && e.data.slug) {
+      var slug = e.data.slug;
+      var path = _cuesheetPathCache[slug];
+      if (path) {
+        socket.emit("cuesheet_launch", {path: path});
+      } else {
+        // Try constructing path directly
+        socket.emit("cuesheet_launch", {path: "cue-sheets/" + slug + ".yaml"});
+      }
+    }
+
+    // Panel-initiated TTS
+    if (e.data.type === "panel_speak" && e.data.text) {
+      socket.emit("speak", {text: e.data.text});
+    }
+
+    // Quick action with pre-filled data
+    if (e.data.type === "quick_action" && e.data.task) {
+      addSystemMessage("Quick action: " + e.data.task + " (urgency: " + e.data.urgency + ")");
+    }
+  });
+
+  // Pre-cache paths on load
+  _cacheCuesheetPaths();
 })();
 
 // ============================================
@@ -3471,6 +3563,16 @@ function safeEncodeComponent(str) {
   } catch (e) {
     return encodeURIComponent(str);
   }
+}
+
+var _galleryVideoExts = [".mp4", ".mov", ".webm", ".m4v"];
+
+function isGalleryVideo(item) {
+  if (item && item.type === "video") return true;
+  var fname = (item && (item.filename || item.src)) || "";
+  var dot = fname.lastIndexOf(".");
+  if (dot < 0) return false;
+  return _galleryVideoExts.indexOf(fname.substring(dot).toLowerCase()) >= 0;
 }
 
 function resolveGalleryImageUrl(img) {
@@ -3637,18 +3739,38 @@ function createGalleryStrip(data) {
       btn.setAttribute("data-index", idx);
       btn.setAttribute("role", "listitem");
 
-      var thumb = document.createElement("img");
-      thumb.className = "gallery-strip__thumb";
-      thumb.src = resolveGalleryImageUrl(img);
-      thumb.alt = img.caption || img.filename || "";
-      thumb.loading = "lazy";
-      thumb.onerror = function() {
-        console.error("[gallery] thumbnail failed to load: " + this.src);
-        this.src = "";
-        this.alt = "Image not found";
-        btn.classList.add("gallery-strip__item--error");
-      };
-      btn.appendChild(thumb);
+      var isVideo = isGalleryVideo(img);
+      var thumb;
+      if (isVideo) {
+        thumb = document.createElement("video");
+        thumb.className = "gallery-strip__thumb";
+        thumb.src = resolveGalleryImageUrl(img);
+        thumb.preload = "metadata";
+        thumb.muted = true;
+        thumb.playsInline = true;
+        thumb.onerror = function() {
+          console.error("[gallery] video thumbnail failed to load: " + this.src);
+          btn.classList.add("gallery-strip__item--error");
+        };
+        btn.appendChild(thumb);
+        var badge = document.createElement("span");
+        badge.className = "gallery-strip__play-badge";
+        badge.setAttribute("aria-hidden", "true");
+        btn.appendChild(badge);
+      } else {
+        thumb = document.createElement("img");
+        thumb.className = "gallery-strip__thumb";
+        thumb.src = resolveGalleryImageUrl(img);
+        thumb.alt = img.caption || img.filename || "";
+        thumb.loading = "lazy";
+        thumb.onerror = function() {
+          console.error("[gallery] thumbnail failed to load: " + this.src);
+          this.src = "";
+          this.alt = "Image not found";
+          btn.classList.add("gallery-strip__item--error");
+        };
+        btn.appendChild(thumb);
+      }
 
       if (img.caption) {
         var cap = document.createElement("span");
@@ -3669,7 +3791,10 @@ function createGalleryStrip(data) {
 
   var count = document.createElement("p");
   count.className = "gallery-strip__count";
-  count.textContent = images.length + " image" + (images.length !== 1 ? "s" : "");
+  var hasVideo = images.some(function(m) { return isGalleryVideo(m); });
+  var hasImage = images.some(function(m) { return !isGalleryVideo(m); });
+  var unit = (hasVideo && hasImage) ? "item" : hasVideo ? "video" : "image";
+  count.textContent = images.length + " " + unit + (images.length !== 1 ? "s" : "");
   figure.appendChild(count);
 
   return figure;
@@ -3737,7 +3862,7 @@ var GALLERY_ZOOM_MAX = 4.0;
 
 function applyGalleryZoom() {
   var el = document.getElementById("galleryLightboxImage");
-  if (!el) return;
+  if (!el || el.tagName === "VIDEO") return;
   el.style.transform = galleryZoom === 1.0 ? "" : "scale(" + galleryZoom + ")";
 }
 
@@ -3769,22 +3894,43 @@ function renderGallerySlide() {
   document.getElementById("galleryPrev").style.display = images.length > 1 ? "" : "none";
   document.getElementById("galleryNext").style.display = images.length > 1 ? "" : "none";
 
-  // Replace the img element entirely -- prevents stale image pixels
+  // Replace the media element entirely -- prevents stale pixels / lingering playback
   var oldEl = document.getElementById("galleryLightboxImage");
   var stage = oldEl.parentNode;
-  var newEl = document.createElement("img");
-  newEl.className = "gallery-lightbox__image";
-  newEl.id = "galleryLightboxImage";
-  newEl.alt = img.caption || img.filename || "";
-  newEl.onload = function() {
-    newEl.classList.add("gallery-lightbox__image--visible");
-  };
-  newEl.onerror = function() {
-    console.error("[gallery] lightbox image failed to load: " + this.src);
-    newEl.classList.add("gallery-lightbox__image--visible");
-    newEl.classList.add("gallery-lightbox__image--error");
-  };
-  newEl.src = resolveGalleryImageUrl(img);
+  var newEl;
+  var mediaSrc = resolveGalleryImageUrl(img);
+
+  if (isGalleryVideo(img)) {
+    newEl = document.createElement("video");
+    newEl.className = "gallery-lightbox__image gallery-lightbox__video";
+    newEl.id = "galleryLightboxImage";
+    newEl.controls = true;
+    newEl.autoplay = true;
+    newEl.playsInline = true;
+    newEl.onloadeddata = function() {
+      newEl.classList.add("gallery-lightbox__image--visible");
+    };
+    newEl.onerror = function() {
+      console.error("[gallery] lightbox video failed to load: " + this.src);
+      newEl.classList.add("gallery-lightbox__image--visible");
+      newEl.classList.add("gallery-lightbox__image--error");
+    };
+    newEl.src = mediaSrc;
+  } else {
+    newEl = document.createElement("img");
+    newEl.className = "gallery-lightbox__image";
+    newEl.id = "galleryLightboxImage";
+    newEl.alt = img.caption || img.filename || "";
+    newEl.onload = function() {
+      newEl.classList.add("gallery-lightbox__image--visible");
+    };
+    newEl.onerror = function() {
+      console.error("[gallery] lightbox image failed to load: " + this.src);
+      newEl.classList.add("gallery-lightbox__image--visible");
+      newEl.classList.add("gallery-lightbox__image--error");
+    };
+    newEl.src = mediaSrc;
+  }
   stage.replaceChild(newEl, oldEl);
 }
 
@@ -3812,9 +3958,14 @@ function closeGalleryLightbox() {
   galleryLightboxState.galleryId = null;
   galleryLightboxState.index = 0;
 
-  // Replace img element to fully clear stale pixels
+  // Pause video if playing, then replace element to clear stale pixels
   galleryZoom = 1.0;
   var oldEl = document.getElementById("galleryLightboxImage");
+  if (oldEl && oldEl.tagName === "VIDEO") {
+    oldEl.pause();
+    oldEl.removeAttribute("src");
+    oldEl.load();
+  }
   var stage = oldEl.parentNode;
   var freshEl = document.createElement("img");
   freshEl.className = "gallery-lightbox__image";
@@ -3972,6 +4123,44 @@ function formatStreamAge(createdAt) {
   return Math.floor(hours / 24) + "d";
 }
 
+function formatTokenLabel(data) {
+  var raw = data.label || data.key || "token";
+
+  // Cue tokens: show the objective text
+  if (data.type === "cue" && raw.indexOf("cue_") === 0) {
+    if (data.value && data.value.length <= 60) return data.value;
+    var stripped = raw.replace(/^cue_/, "").replace(/_[a-z]+-[a-z]+.*$/, "");
+    return stripped.charAt(0).toUpperCase() + stripped.slice(1);
+  }
+
+  // Session tokens: show the sheet name
+  if (raw.indexOf("cuesheet_session_") === 0) {
+    var slug = raw.replace("cuesheet_session_", "");
+    return slug.split("-").map(function(w) { return w.charAt(0).toUpperCase() + w.slice(1); }).join(" ");
+  }
+
+  // Modifier tokens: clean display
+  if (raw.indexOf("mod_holdon_") === 0) return "Hold";
+  if (raw.indexOf("mod_cuesheet_context_") === 0) return "Context";
+  if (raw.indexOf("mod_") === 0) {
+    var modName = raw.replace(/^mod_/, "").replace(/_[a-z]+-[a-z]+.*$/, "");
+    return modName.split("_").map(function(w) { return w.charAt(0).toUpperCase() + w.slice(1); }).join(" ");
+  }
+
+  // Buff tokens
+  if (raw.indexOf("buff_cuesheet_") === 0) {
+    var bSlug = raw.replace("buff_cuesheet_", "");
+    return bSlug.split("-").map(function(w) { return w.charAt(0).toUpperCase() + w.slice(1); }).join(" ");
+  }
+
+  // General cleanup: replace underscores with spaces, title case
+  if (raw.indexOf("_") !== -1) {
+    return raw.split("_").map(function(w) { return w.charAt(0).toUpperCase() + w.slice(1); }).join(" ");
+  }
+
+  return raw;
+}
+
 function addCueCardToStream(tokenId) {
   // Skip if already in stream
   if (streamCards[tokenId]) return;
@@ -4006,7 +4195,7 @@ function createIndividualCueCard(tokenId) {
 
   var label = document.createElement("span");
   label.className = "cue-card__label";
-  label.textContent = data.label || data.key || "token";
+  label.textContent = formatTokenLabel(data);
   card.appendChild(label);
 
   var age = document.createElement("span");
@@ -4142,7 +4331,7 @@ function renderFeaturedCard(trackName) {
 
   var label = document.createElement("span");
   label.className = "cue-card__label";
-  label.textContent = data.label || data.key || "token";
+  label.textContent = formatTokenLabel(data);
   card.appendChild(label);
 
   card.addEventListener("click", function() {
@@ -4177,7 +4366,7 @@ function renderPileMembers(trackName) {
 
     var label = document.createElement("span");
     label.className = "cue-card__label";
-    label.textContent = data.label || data.key || "token";
+    label.textContent = formatTokenLabel(data);
     card.appendChild(label);
 
     (function(tid) {
