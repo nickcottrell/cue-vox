@@ -2753,6 +2753,38 @@ def serve_vault_image(slug, filename):
     return send_from_directory(directory, fname)
 
 
+@app.route("/api/describe", methods=["POST"])
+def api_describe():
+    """Describe images using C2D2 vision model.
+
+    Expects JSON: { "images": ["<base64>", ...], "prompt": "optional" }
+    Returns JSON: { "result": "description text" }
+    """
+    try:
+        c2d2_path = MAESTRO_ROOT / "tools" / "c2d2"
+        if str(c2d2_path) not in sys.path:
+            sys.path.insert(0, str(c2d2_path))
+        from ollama_client import describe_images
+        data = request.get_json() or {}
+        raw_images = data.get("images", [])
+        if not raw_images:
+            return jsonify({"error": "no images provided"}), 400
+        # Strip data URI prefix from each
+        cleaned = []
+        for img in raw_images:
+            if "," in img and img.index(",") < 100:
+                img = img.split(",", 1)[1]
+            cleaned.append(img)
+        prompt = data.get("prompt")
+        result = describe_images(cleaned, prompt=prompt)
+        if result is None:
+            return jsonify({"error": "vision model unavailable"}), 503
+        return jsonify({"result": result})
+    except Exception as e:
+        print(f"[api/describe] error: {e}")
+        return jsonify({"error": str(e)}), 500
+
+
 def _parse_case_study_segments(text):
     """Parse message text into narrative and gallery segments.
 
@@ -3964,7 +3996,7 @@ def handle_cuesheet_list(data=None):
                 # Skip child sheets -- only top-level sheets appear in the do menu
                 if doc.get("parent"):
                     continue
-                sheets.append({
+                entry = {
                     "path": str(f),
                     "filename": f.name,
                     "name": doc.get("name", f.stem),
@@ -3973,11 +4005,25 @@ def handle_cuesheet_list(data=None):
                     "order": doc.get("order", 999),
                     "input_count": len(doc.get("inputs", [])),
                     "cue_count": len(doc.get("cues", []))
-                })
+                }
+                if doc.get("panel"):
+                    entry["panel"] = doc["panel"]
+                sheets.append(entry)
             except Exception:
                 continue
 
         emit("cuesheet_list_result", {"sheets": sheets})
+
+        # Also emit ALL sheets (including children) for panel path cache
+        all_sheets = []
+        for f in sorted(sheets_dir.iterdir()):
+            if f.suffix != ".yaml":
+                continue
+            try:
+                all_sheets.append({"path": str(f), "filename": f.name})
+            except Exception:
+                continue
+        emit("cuesheet_children_result", {"sheets": all_sheets})
     except Exception as e:
         print("cuesheet_list error: %s" % e)
         emit("cuesheet_list_result", {"sheets": [], "error": str(e)})
@@ -4005,7 +4051,25 @@ def handle_cuesheet_launch(data):
         sheet_desc = doc.get("description", "")
         inputs = doc.get("inputs", [])
         cues = doc.get("cues", [])
+        pulls = doc.get("pulls", [])
         slug = re.sub(r"[^a-z0-9-]", "", sheet_name.lower().replace(" ", "-"))
+        panel_config = doc.get("panel")
+
+        # Ensure pull data freshness before launch (collect-only, no webhooks)
+        if pulls:
+            ensure_script = MAESTRO_ROOT / "tools" / "zapier" / "pull" / "scripts" / "_lib.sh"
+            for pull_source in pulls:
+                try:
+                    result = subprocess.run(
+                        ["bash", "-c", "source '%s' && pull_init 2>/dev/null && pull_ensure_fresh '%s'" % (ensure_script, pull_source)],
+                        capture_output=True, text=True, timeout=15,
+                        cwd=str(MAESTRO_ROOT)
+                    )
+                    for line in result.stdout.strip().split("\n"):
+                        if line.strip():
+                            print("  pull:%s -- %s" % (pull_source, line.strip()))
+                except Exception as e:
+                    print("  pull:%s -- freshness check failed: %s" % (pull_source, e))
 
         # Set active track so emoji reactions inherit the buff tag
         global _active_track
@@ -4039,8 +4103,12 @@ def handle_cuesheet_launch(data):
             return None
 
         # 1. Session token
-        session_value = "CUESHEET-LAUNCH SESSION\ncue-sheet: %s\ndescription: %s\ninputs: %d\ncues: %s\ninstruction: Present each input to the user via the appropriate widget, then execute cues in order." % (
-            sheet_name, sheet_desc, len(inputs), cue_list
+        if inputs:
+            session_instruction = "Present each input to the user via the appropriate widget, then execute cues in order."
+        else:
+            session_instruction = "No inputs required. Execute cues in order. Do not ask the user to choose or confirm anything."
+        session_value = "CUESHEET-LAUNCH SESSION\ncue-sheet: %s\ndescription: %s\ninputs: %d\ncues: %s\ninstruction: %s" % (
+            sheet_name, sheet_desc, len(inputs), cue_list, session_instruction
         )
         session_id = _create_token(
             "cuesheet_session_%s" % slug, session_value,
@@ -4090,22 +4158,23 @@ def handle_cuesheet_launch(data):
                     references=cue_token_id
                 )
 
-        # 4. Cuesheet body token
-        with open(sheet_path) as fh:
-            yaml_body = fh.read()
-        cuesheet_token_id = _create_token(
-            "buff_cuesheet_%s" % slug, yaml_body,
-            base_temp=95, tags=["buff-launch", "buff:%s" % slug]
-        )
-        if cuesheet_token_id:
-            created_tokens.append(cuesheet_token_id)
-            _create_token(
-                "mod_holdon_cuesheet_%s" % slug,
-                "hold-on modifier for %s" % cuesheet_token_id,
-                token_type="modifier", base_temp=95,
-                tags=["modifier", "hold-on", "buff:%s" % slug],
-                references=cuesheet_token_id
+        # 4. Cuesheet body token (skip for panel sheets -- cues are already individual tokens)
+        if not panel_config:
+            with open(sheet_path) as fh:
+                yaml_body = fh.read()
+            cuesheet_token_id = _create_token(
+                "buff_cuesheet_%s" % slug, yaml_body,
+                base_temp=95, tags=["buff-launch", "buff:%s" % slug]
             )
+            if cuesheet_token_id:
+                created_tokens.append(cuesheet_token_id)
+                _create_token(
+                    "mod_holdon_cuesheet_%s" % slug,
+                    "hold-on modifier for %s" % cuesheet_token_id,
+                    token_type="modifier", base_temp=95,
+                    tags=["modifier", "hold-on", "buff:%s" % slug],
+                    references=cuesheet_token_id
+                )
 
         # 5. Refresh context
         try:
@@ -4140,7 +4209,8 @@ def handle_cuesheet_launch(data):
             "slug": slug,
             "inputs": input_defs,
             "cues": [{"id": c.get("id", ""), "objective": c.get("objective", "")} for c in cues],
-            "tokens_created": len(created_tokens)
+            "tokens_created": len(created_tokens),
+            "panel": panel_config
         })
 
         # Timing token for cue-sheet launch
@@ -4156,6 +4226,12 @@ def handle_cuesheet_launch(data):
             "cooling_rate": 3.0,
         })
 
+        # Speak announcement if defined in YAML (direct TTS, no Claude round-trip)
+        announce_text = doc.get("announce", "")
+        if announce_text:
+            socketio.emit("response", {"role": "assistant", "text": announce_text, "tts_chunks": [announce_text]})
+            subprocess.run(["say", announce_text], check=False, timeout=30)
+
         print("[CUESHEET] Launched: %s (%d tokens created)" % (sheet_name, len(created_tokens)))
 
     except Exception as e:
@@ -4163,6 +4239,82 @@ def handle_cuesheet_launch(data):
         import traceback
         traceback.print_exc()
         emit("error", {"message": "Cue-sheet launch failed: %s" % str(e)})
+
+
+@app.route('/api/speak', methods=['POST'])
+def api_speak():
+    """HTTP endpoint for direct TTS. Any service can POST here."""
+    text = ""
+    if request.is_json:
+        text = (request.json or {}).get("text", "")
+    else:
+        text = request.form.get("text", "")
+    text = text.strip()
+    if not text:
+        return {"ok": False, "error": "no text"}, 400
+    socketio.emit("response", {"role": "assistant", "text": text, "tts_chunks": [text]})
+    subprocess.run(["say", text], check=False, timeout=30)
+    return {"ok": True}
+
+
+@socketio.on('speak')
+def handle_speak(data):
+    """Direct TTS -- speak text without going through Claude."""
+    text = data.get("text", "").strip()
+    if not text:
+        return
+    emit("response", {"role": "assistant", "text": text, "tts_chunks": [text]})
+    speak_chunked(text)
+
+
+@socketio.on('arcade_game_over')
+def handle_arcade_game_over(data):
+    """Read final score from tokens and announce game over via TTS."""
+    slug = data.get("slug", "")
+    title = data.get("title", slug)
+    game_tag = "arcade:%s" % slug
+
+    # Read latest score token
+    score = None
+    high_score = None
+    try:
+        cue_mem_cli = MAESTRO_ROOT / "cue-mem" / "cli"
+        result = subprocess.run(
+            [str(cue_mem_cli / "listtokens"), "--format", "json"],
+            capture_output=True, text=True, timeout=10
+        )
+        if result.returncode == 0:
+            import json as _json
+            tokens = _json.loads(result.stdout)
+            for t in tokens:
+                tags = t.get("tags") or []
+                if game_tag not in tags:
+                    continue
+                label = t.get("label", "")
+                if label == "arcade_score" and score is None:
+                    try:
+                        score = int(t.get("value", 0))
+                    except (ValueError, TypeError):
+                        pass
+                if label == "arcade_high_score" and high_score is None:
+                    try:
+                        high_score = int(t.get("value", 0))
+                    except (ValueError, TypeError):
+                        pass
+    except Exception as e:
+        print("[ARCADE] Score read error: %s" % e)
+
+    # Build announcement
+    text = "Game over."
+    if score is not None:
+        text = text + " Final score: %d." % score
+        if high_score is not None and score >= high_score:
+            text = text + " New high score!"
+    else:
+        text = text + " %s session complete." % title
+
+    emit("response", {"role": "assistant", "text": text, "tts_chunks": [text]})
+    speak_chunked(text)
 
 
 @socketio.on('connect')

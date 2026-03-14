@@ -119,6 +119,31 @@ body {
   -webkit-mask-image: linear-gradient(to bottom, black calc(100% - 1rem), transparent);
 }
 
+/* Drop viewer: full-screen overlay on dragover */
+.drop-overlay {
+  position: fixed;
+  inset: 0;
+  z-index: 9999;
+  display: none;
+  align-items: center;
+  justify-content: center;
+  background: rgba(0, 0, 0, 0.7);
+  border: 3px dashed rgba(255, 255, 255, 0.4);
+  border-radius: 8px;
+  pointer-events: none;
+  transition: opacity 0.15s ease;
+}
+
+.drop-overlay--active {
+  display: flex;
+}
+
+.drop-overlay__label {
+  font-size: 1.25rem;
+  color: rgba(255, 255, 255, 0.6);
+  letter-spacing: 0.05em;
+}
+
 .conversation > * {
   margin-bottom: var(--space-lg, 1rem);
 }
@@ -1982,6 +2007,114 @@ body {
   margin: var(--space-xs, 0.25rem) 0 0;
 }
 
+/* Drop viewer status */
+.drop-status {
+  font-size: 12px;
+  color: var(--text-secondary, #888);
+  padding: var(--space-xs, 0.25rem) 0;
+  font-style: italic;
+}
+
+/* ============================================
+   GALLERY HERO (single image - full width)
+   ============================================ */
+
+.gallery-hero {
+  position: relative;
+  width: 100%;
+  margin-top: var(--space-md, 0.75rem);
+}
+
+.gallery-hero .gallery-strip__title {
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--text, #fff);
+  margin: 0 0 var(--space-xs, 0.25rem);
+}
+
+.gallery-hero .gallery-strip__track {
+  display: block;
+}
+
+.gallery-hero .gallery-strip__item {
+  flex: none;
+  width: 100%;
+  background: none;
+  border: none;
+  border-radius: var(--radius-md, 8px);
+  padding: 0;
+  cursor: pointer;
+  overflow: hidden;
+  color: var(--text, #fff);
+}
+
+.gallery-hero .gallery-strip__thumb {
+  display: block;
+  width: 100%;
+  height: 280px;
+  object-fit: cover;
+}
+
+.gallery-hero .gallery-strip__caption,
+.gallery-hero .gallery-strip__count {
+  display: none;
+}
+
+.gallery-hero .case-study-icon {
+  display: none;
+}
+
+/* ============================================
+   GALLERY COMPARE (two images side by side)
+   ============================================ */
+
+.gallery-compare {
+  position: relative;
+  width: 100%;
+  margin-top: var(--space-md, 0.75rem);
+}
+
+.gallery-compare .gallery-strip__title {
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--text, #fff);
+  margin: 0 0 var(--space-xs, 0.25rem);
+}
+
+.gallery-compare .gallery-strip__track {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: var(--space-sm, 0.5rem);
+}
+
+.gallery-compare .gallery-strip__item {
+  flex: none;
+  width: 100%;
+  background: none;
+  border: none;
+  border-radius: var(--radius-md, 8px);
+  padding: 0;
+  cursor: pointer;
+  overflow: hidden;
+  color: var(--text, #fff);
+}
+
+.gallery-compare .gallery-strip__thumb {
+  display: block;
+  width: 100%;
+  height: 200px;
+  object-fit: cover;
+}
+
+.gallery-compare .gallery-strip__caption,
+.gallery-compare .gallery-strip__count {
+  display: none;
+}
+
+.gallery-compare .case-study-icon {
+  display: none;
+}
+
 /* ============================================
    GALLERY LIGHTBOX (full-screen viewer)
    ============================================ */
@@ -2155,6 +2288,41 @@ body {
   font-size: 13px;
   color: var(--text-secondary, #888);
   margin: 0;
+}
+
+.gallery-lightbox__caption--generating {
+  font-style: italic;
+  opacity: 0.6;
+}
+
+.gallery-lightbox__footer {
+  flex-wrap: wrap;
+}
+
+.gallery-lightbox__refine {
+  font-size: 12px;
+  color: rgba(255, 255, 255, 0.4);
+  text-decoration: none;
+  margin-left: var(--space-sm, 0.5rem);
+  transition: color 0.15s ease;
+}
+
+.gallery-lightbox__refine:hover {
+  color: rgba(255, 255, 255, 0.8);
+}
+
+.gallery-lightbox__refine--hidden {
+  display: none;
+}
+
+.refine-thumb {
+  display: block;
+  width: 100%;
+  max-height: 120px;
+  object-fit: cover;
+  border-radius: var(--radius-sm, 4px);
+  margin-bottom: var(--space-xs, 0.25rem);
+  opacity: 0.8;
 }
 
 /* Video in lightbox */

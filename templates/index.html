@@ -73,6 +73,11 @@
     <script src="https://cdn.socket.io/4.5.4/socket.io.min.js"></script>
 </head>
 <body>
+    <!-- Drop Viewer Overlay -->
+    <div class="drop-overlay" id="dropOverlay">
+        <span class="drop-overlay__label">drop to view</span>
+    </div>
+
     <!-- Drawer Toggle -->
     <button class="drawer-toggle" id="drawerToggle" aria-label="Toggle conversation">
         💬
@@ -217,6 +222,7 @@
             <footer class="gallery-lightbox__footer">
                 <button class="gallery-lightbox__narrate" id="galleryNarrate" aria-label="Read caption aloud">&#9654;</button>
                 <p class="gallery-lightbox__caption" id="galleryLightboxCaption"></p>
+                <a class="gallery-lightbox__refine" id="galleryRefine" href="#">refine</a>
             </footer>
         </div>
     </div>

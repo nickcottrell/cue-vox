@@ -290,8 +290,68 @@ socket.on('state_change', (data) => {
 });
 
 socket.on('transcription', (data) => {
-  console.log('🎤 Transcription received:', data.text);
+  console.log('Transcription received:', data.text);
   addMessage('user', data.text);
+
+  // Intercept for caption refinement
+  if (window._pendingRefine) {
+    var refine = window._pendingRefine;
+    window._pendingRefine = null;
+
+    // Show processing status in chat
+    var statusCard = document.createElement("article");
+    statusCard.className = "card assistant";
+    statusCard.dataset.timestamp = Date.now();
+    var statusBody = document.createElement("div");
+    statusBody.className = "card__body";
+    var statusText = document.createElement("p");
+    statusText.className = "drop-status";
+    statusText.textContent = "refining...";
+    statusBody.appendChild(statusText);
+    statusCard.appendChild(statusBody);
+    conversation.appendChild(statusCard);
+    conversation.scrollTop = conversation.scrollHeight;
+
+    var context = data.text;
+    if (refine.currentCaption) {
+      context = "Current caption: \"" + refine.currentCaption + "\". User says: " + data.text;
+    }
+
+    _captionImage(refine.src, context, function(result) {
+      if (result) {
+        _persistCaption(refine.galleryId, refine.index, result);
+        statusText.textContent = result;
+        statusText.classList.remove("drop-status");
+
+        // TTS the refined caption
+        socket.emit("speak", { text: result });
+
+        // Update the gallery strip caption in place
+        var stripEl = document.querySelector("[data-gallery-id='" + refine.galleryId + "']");
+        if (stripEl) {
+          var item = stripEl.querySelector("[data-index='" + refine.index + "']");
+          if (item) {
+            var cap = item.querySelector(".gallery-strip__caption");
+            if (!cap) {
+              cap = document.createElement("span");
+              cap.className = "gallery-strip__caption";
+              item.appendChild(cap);
+            }
+            cap.textContent = result;
+          }
+        }
+      } else {
+        statusText.textContent = "couldn't refine -- try again?";
+        statusText.classList.remove("drop-status");
+        socket.emit("speak", { text: "couldn't refine. try again?" });
+      }
+      conversation.scrollTop = conversation.scrollHeight;
+    });
+
+    // Prevent normal Claude processing for this transcription
+    socket.emit("interrupt");
+    return;
+  }
 });
 
 socket.on('response', (data) => {
@@ -3681,7 +3741,10 @@ function createGalleryStrip(data) {
   galleryRegistry[id] = { images: images, title: data.title || "" };
 
   var figure = document.createElement("figure");
-  figure.className = "gallery-strip";
+  var layout = images.length === 1 ? "gallery-hero"
+             : images.length === 2 ? "gallery-compare"
+             : "gallery-strip";
+  figure.className = layout;
   figure.setAttribute("data-gallery-id", id);
 
   // Pin icon
@@ -3872,6 +3935,48 @@ function applyGalleryZoom() {
   el.style.transform = galleryZoom === 1.0 ? "" : "scale(" + galleryZoom + ")";
 }
 
+// Send an image to the vision model for captioning
+function _captionImage(imgSrc, context, callback) {
+  fetch(imgSrc).then(function(r) { return r.blob(); }).then(function(blob) {
+    var reader = new FileReader();
+    reader.onload = function() {
+      var prompt;
+      if (context) {
+        prompt = "The viewer says: \"" + context + "\". Distill that into a tight caption for this image. Under 10 words. Keep what matters, drop the rest. No quotes, no emoji.";
+      }
+      fetch("/api/describe", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ images: [reader.result], prompt: prompt || undefined })
+      }).then(function(r) { return r.ok ? r.json() : null; })
+        .then(function(data) {
+          callback(data && data.result ? data.result : null);
+        }).catch(function() { callback(null); });
+    };
+    reader.readAsDataURL(blob);
+  }).catch(function() { callback(null); });
+}
+
+// Update caption in registry and any visible thumbnail caption
+function _persistCaption(galleryId, idx, text) {
+  var entry = galleryRegistry[galleryId];
+  if (entry && entry.images[idx]) entry.images[idx].caption = text;
+  // Update thumbnail caption if visible
+  var strip = document.querySelector("[data-gallery-id='" + galleryId + "']");
+  if (strip) {
+    var item = strip.querySelector("[data-index='" + idx + "']");
+    if (item) {
+      var cap = item.querySelector(".gallery-strip__caption");
+      if (!cap) {
+        cap = document.createElement("span");
+        cap.className = "gallery-strip__caption";
+        item.appendChild(cap);
+      }
+      cap.textContent = text;
+    }
+  }
+}
+
 function renderGallerySlide() {
   var entry = galleryRegistry[galleryLightboxState.galleryId];
   if (!entry) return;
@@ -3894,8 +3999,48 @@ function renderGallerySlide() {
   var counter = document.getElementById("galleryLightboxCounter");
   counter.textContent = (idx + 1) + " / " + images.length;
 
-  var caption = document.getElementById("galleryLightboxCaption");
-  caption.textContent = img.caption || "";
+  var captionEl = document.getElementById("galleryLightboxCaption");
+  var refineLink = document.getElementById("galleryRefine");
+  var refineInputWrap = document.getElementById("galleryRefineInput");
+  var refineText = document.getElementById("galleryRefineText");
+
+  // Hide refine input on slide change
+  if (refineInputWrap) refineInputWrap.style.display = "none";
+  if (refineText) refineText.value = "";
+
+  if (img.caption) {
+    captionEl.textContent = img.caption;
+    captionEl.classList.remove("gallery-lightbox__caption--generating");
+    if (refineLink) refineLink.style.display = "";
+  } else {
+    // Auto-caption: fire vision model
+    captionEl.textContent = "captioning...";
+    captionEl.classList.add("gallery-lightbox__caption--generating");
+    if (refineLink) refineLink.style.display = "none";
+
+    var mediaSrc = resolveGalleryImageUrl(img);
+    var captureGalleryId = galleryLightboxState.galleryId;
+    var captureIdx = idx;
+    _captionImage(mediaSrc, null, function(result) {
+      // Only update if still viewing the same slide
+      if (galleryLightboxState.galleryId === captureGalleryId &&
+          galleryLightboxState.index === captureIdx) {
+        if (result) {
+          captionEl.textContent = result;
+          captionEl.classList.remove("gallery-lightbox__caption--generating");
+          if (refineLink) refineLink.style.display = "";
+        } else {
+          captionEl.textContent = "";
+          captionEl.classList.remove("gallery-lightbox__caption--generating");
+          if (refineLink) {
+            refineLink.style.display = "";
+            refineLink.textContent = "describe";
+          }
+        }
+      }
+      if (result) _persistCaption(captureGalleryId, captureIdx, result);
+    });
+  }
 
   document.getElementById("galleryPrev").style.display = images.length > 1 ? "" : "none";
   document.getElementById("galleryNext").style.display = images.length > 1 ? "" : "none";
@@ -4053,6 +4198,57 @@ function unpinGallery(galleryId) {
         galleryNarrating = true;
         narrateBtn.innerHTML = "&#9724;";
       }
+    });
+  }
+
+  // Refine link: voice-driven caption refinement
+  var refineLink = document.getElementById("galleryRefine");
+
+  if (refineLink) {
+    refineLink.addEventListener("click", function(e) {
+      e.preventDefault();
+      var entry = galleryRegistry[galleryLightboxState.galleryId];
+      if (!entry) return;
+      var idx = galleryLightboxState.index;
+      var img = entry.images[idx];
+
+      // Store pending refine state
+      window._pendingRefine = {
+        galleryId: galleryLightboxState.galleryId,
+        index: idx,
+        src: resolveGalleryImageUrl(img),
+        currentCaption: img.caption || ""
+      };
+
+      // Close lightbox, open drawer next frame (avoids outside-click handler race)
+      var refineSrc = window._pendingRefine.src;
+      closeGalleryLightbox();
+      requestAnimationFrame(function() {
+        drawer.classList.add("open");
+
+        // Build a card with thumbnail + prompt
+        var card = document.createElement("article");
+        card.className = "card assistant";
+        card.dataset.timestamp = Date.now();
+        var body = document.createElement("div");
+        body.className = "card__body";
+
+        var thumb = document.createElement("img");
+        thumb.className = "refine-thumb";
+        thumb.src = refineSrc;
+        thumb.alt = "image to refine";
+        body.appendChild(thumb);
+
+        var p = document.createElement("p");
+        p.textContent = "tell me what you see -- I'll refine the caption.";
+        body.appendChild(p);
+
+        card.appendChild(body);
+        conversation.appendChild(card);
+        conversation.scrollTop = conversation.scrollHeight;
+
+        socket.emit("speak", { text: "tell me what you see. I'll refine the caption." });
+      });
     });
   }
 
@@ -4525,6 +4721,175 @@ function pinFromStream(tokenId) {
   window.addEventListener("resize", updatePosition);
   updatePosition();
   window._updateStreamPosition = updatePosition;
+})();
+
+// ============================================
+// DROP VIEWER
+// Drag images/videos anywhere on page to view via gallery lightbox
+// ============================================
+(function() {
+  var conv = document.getElementById("conversation");
+  if (!conv) {
+    console.warn("[drop-viewer] no #conversation element found");
+    return;
+  }
+  console.log("[drop-viewer] initialized on document.body, appending to #conversation");
+
+  var _imageTypes = ["image/png", "image/jpeg", "image/gif", "image/webp", "image/svg+xml"];
+  var _videoTypes = ["video/mp4", "video/quicktime", "video/webm", "video/x-m4v"];
+  var _dragDepth = 0;
+
+  function isMediaFile(file) {
+    var hit = _imageTypes.indexOf(file.type) >= 0 || _videoTypes.indexOf(file.type) >= 0;
+    console.log("[drop-viewer] file: " + file.name + " type: " + file.type + " accepted: " + hit);
+    return hit;
+  }
+
+  var overlay = document.getElementById("dropOverlay");
+
+  function showOverlay() {
+    if (overlay) overlay.classList.add("drop-overlay--active");
+  }
+  function hideOverlay() {
+    if (overlay) overlay.classList.remove("drop-overlay--active");
+  }
+
+  document.body.addEventListener("dragenter", function(e) {
+    e.preventDefault();
+    _dragDepth++;
+    if (_dragDepth === 1) showOverlay();
+  });
+
+  document.body.addEventListener("dragleave", function(e) {
+    e.preventDefault();
+    _dragDepth--;
+    if (_dragDepth <= 0) {
+      _dragDepth = 0;
+      hideOverlay();
+    }
+  });
+
+  document.body.addEventListener("dragover", function(e) {
+    e.preventDefault();
+    e.dataTransfer.dropEffect = "copy";
+  });
+
+  document.body.addEventListener("drop", function(e) {
+    e.preventDefault();
+    _dragDepth = 0;
+    hideOverlay();
+    console.log("[drop-viewer] drop event fired");
+
+    var files = e.dataTransfer && e.dataTransfer.files;
+    if (!files || files.length === 0) {
+      console.log("[drop-viewer] no files in drop");
+      return;
+    }
+    console.log("[drop-viewer] " + files.length + " file(s) dropped");
+
+    var mediaFiles = [];
+    for (var i = 0; i < files.length; i++) {
+      if (isMediaFile(files[i])) mediaFiles.push(files[i]);
+    }
+    if (mediaFiles.length === 0) {
+      console.warn("[drop-viewer] no media files found in drop");
+      return;
+    }
+
+    // Build gallery data from dropped files
+    var images = [];
+    for (var j = 0; j < mediaFiles.length; j++) {
+      var file = mediaFiles[j];
+      var blobUrl = URL.createObjectURL(file);
+      console.log("[drop-viewer] blob URL: " + blobUrl);
+      var item = { src: blobUrl, alt: file.name };
+      if (_videoTypes.indexOf(file.type) >= 0) item.type = "video";
+      images.push(item);
+    }
+
+    var strip = createGalleryStrip({ images: images });
+    if (!strip) {
+      console.warn("[drop-viewer] createGalleryStrip returned null");
+      return;
+    }
+
+    // Wrap in a message card with processing status
+    var card = document.createElement("article");
+    card.className = "card assistant";
+    card.dataset.timestamp = Date.now();
+
+    var body = document.createElement("div");
+    body.className = "card__body";
+
+    var status = document.createElement("p");
+    status.className = "drop-status";
+    status.textContent = "processing...";
+    body.appendChild(status);
+    body.appendChild(strip);
+    card.appendChild(body);
+
+    conv.appendChild(card);
+    conv.scrollTop = conv.scrollHeight;
+    console.log("[drop-viewer] gallery appended, captioning " + mediaFiles.length + " image(s)...");
+
+    // Get the gallery ID from the strip element
+    var galleryId = strip.getAttribute("data-gallery-id");
+
+    // Auto-caption each image individually
+    for (var k = 0; k < images.length; k++) {
+      (function(idx) {
+        _captionImage(resolveGalleryImageUrl(images[idx]), null, function(result) {
+          if (result) {
+            _persistCaption(galleryId, idx, result);
+          }
+        });
+      })(k);
+    }
+
+    // Multi-image: also generate a summary description for the status line
+    if (mediaFiles.length >= 2) {
+      var pending = mediaFiles.length;
+      var b64Images = new Array(mediaFiles.length);
+      for (var m = 0; m < mediaFiles.length; m++) {
+        (function(idx) {
+          var reader = new FileReader();
+          reader.onload = function() {
+            b64Images[idx] = reader.result;
+            pending--;
+            if (pending === 0) {
+              fetch("/api/describe", {
+                method: "POST",
+                headers: { "Content-Type": "application/json" },
+                body: JSON.stringify({ images: b64Images })
+              }).then(function(res) {
+                return res.ok ? res.json() : null;
+              }).then(function(data) {
+                if (data && data.result) {
+                  status.textContent = data.result;
+                  status.classList.remove("drop-status");
+                } else {
+                  status.remove();
+                }
+                conv.scrollTop = conv.scrollHeight;
+              }).catch(function() { status.remove(); });
+            }
+          };
+          reader.readAsDataURL(mediaFiles[idx]);
+        })(m);
+      }
+    } else {
+      // Single image: status line mirrors the caption
+      _captionImage(resolveGalleryImageUrl(images[0]), null, function(result) {
+        if (result) {
+          status.textContent = result;
+          status.classList.remove("drop-status");
+        } else {
+          status.remove();
+        }
+        conv.scrollTop = conv.scrollHeight;
+      });
+    }
+  });
 })();
 
 console.log('CUE-VOX V2 initialized');
