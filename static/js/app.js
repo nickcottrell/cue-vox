@@ -3747,6 +3747,35 @@ function createGalleryStrip(data) {
   figure.className = layout;
   figure.setAttribute("data-gallery-id", id);
 
+  // Header bar: caption (left) + icons (right)
+  var header = document.createElement("div");
+  header.className = "gallery__header";
+
+  var caption = document.createElement("figcaption");
+  caption.className = "gallery-strip__title";
+  caption.textContent = data.title || "";
+  header.appendChild(caption);
+
+  var actions = document.createElement("div");
+  actions.className = "gallery__actions";
+
+  // Case study icon
+  var caseBtn = document.createElement("button");
+  caseBtn.className = "case-study-icon";
+  caseBtn.setAttribute("aria-label", "Open as case study");
+  caseBtn.setAttribute("title", "open as case study");
+  caseBtn.setAttribute("data-gallery-id", id);
+
+  var caseGlyph = document.createElement("span");
+  caseGlyph.className = "case-study-icon__glyph";
+  caseBtn.appendChild(caseGlyph);
+
+  caseBtn.addEventListener("click", function(e) {
+    e.stopPropagation();
+    openCaseStudy(id, figure);
+  });
+  actions.appendChild(caseBtn);
+
   // Pin icon
   var pinBtn = document.createElement("button");
   pinBtn.className = "pin-icon";
@@ -3770,31 +3799,10 @@ function createGalleryStrip(data) {
       pinBtn.setAttribute("data-state", "inactive");
     }
   });
-  figure.appendChild(pinBtn);
+  actions.appendChild(pinBtn);
 
-  // Case study icon
-  var caseBtn = document.createElement("button");
-  caseBtn.className = "case-study-icon";
-  caseBtn.setAttribute("aria-label", "Open as case study");
-  caseBtn.setAttribute("title", "open as case study");
-  caseBtn.setAttribute("data-gallery-id", id);
-
-  var caseGlyph = document.createElement("span");
-  caseGlyph.className = "case-study-icon__glyph";
-  caseBtn.appendChild(caseGlyph);
-
-  caseBtn.addEventListener("click", function(e) {
-    e.stopPropagation();
-    openCaseStudy(id, figure);
-  });
-  figure.appendChild(caseBtn);
-
-  if (data.title) {
-    var caption = document.createElement("figcaption");
-    caption.className = "gallery-strip__title";
-    caption.textContent = data.title;
-    figure.appendChild(caption);
-  }
+  header.appendChild(actions);
+  figure.appendChild(header);
 
   var track = document.createElement("div");
   track.className = "gallery-strip__track";
