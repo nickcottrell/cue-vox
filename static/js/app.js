@@ -3582,7 +3582,7 @@ function resolveGalleryImageUrl(img) {
   }
   // Format 1: structured slug + filename (port-aware when available)
   if (img.slug && img.filename) {
-    var port = img.port || "cold";
+    var port = (img.port || "cold").toLowerCase();
     var url = "/vault/" + port + "/" + safeEncodeComponent(img.slug) + "/" + safeEncodeComponent(img.filename);
     console.log("[gallery] resolved slug+filename (" + port + "): " + url);
     return url;
@@ -3591,8 +3591,14 @@ function resolveGalleryImageUrl(img) {
   if (img.src) {
     var src = img.src;
     if (src.charAt(0) === "/") src = src.substring(1);
-    // hot/<slug>/<filename>
-    if (src.indexOf("hot/") === 0) {
+    // Strip vault/ prefix if present (e.g. vault/HOT/slug/file.png)
+    var srcLower = src.toLowerCase();
+    if (srcLower.indexOf("vault/") === 0) {
+      src = src.substring(6);
+      srcLower = src.toLowerCase();
+    }
+    // hot/<slug>/<filename> or HOT/<slug>/<filename>
+    if (srcLower.indexOf("hot/") === 0) {
       var rest = src.substring(4);
       var idx = rest.indexOf("/");
       if (idx > 0) {
@@ -3604,8 +3610,8 @@ function resolveGalleryImageUrl(img) {
         return url;
       }
     }
-    // cold/<slug>/<filename>
-    if (src.indexOf("cold/") === 0) {
+    // cold/<slug>/<filename> or COLD/<slug>/<filename>
+    if (srcLower.indexOf("cold/") === 0) {
       var rest = src.substring(5);
       var idx = rest.indexOf("/");
       if (idx > 0) {
