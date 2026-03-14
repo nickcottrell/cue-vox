@@ -289,66 +289,129 @@ socket.on('state_change', (data) => {
   setState(data.state);
 });
 
+// ============================================
+// FOLLOW-UP STATE MACHINE
+// General-purpose: gather context → propose → YES/NO gate → commit or loop
+// ============================================
+window._followUp = null;
+
+function startFollowUp(config) {
+  // config: { type, context, generate(userInput, cb), onConfirm(proposal), prompt }
+  window._followUp = {
+    type: config.type,
+    context: config.context || {},
+    generate: config.generate,
+    onConfirm: config.onConfirm,
+    phase: "gather",   // gather → proposed → (confirm or loop)
+    proposal: null
+  };
+  console.log("[follow-up] started: " + config.type);
+}
+
+function _followUpPropose(proposal) {
+  var fu = window._followUp;
+  if (!fu) return;
+  fu.phase = "proposed";
+  fu.proposal = proposal;
+
+  // Show proposal with YES/NO gate
+  var card = document.createElement("article");
+  card.className = "card assistant";
+  card.dataset.timestamp = Date.now();
+  var body = document.createElement("div");
+  body.className = "card__body";
+
+  var p = document.createElement("p");
+  p.textContent = proposal;
+  body.appendChild(p);
+
+  var question = document.createElement("p");
+  question.className = "card__description";
+  question.textContent = "update to this?";
+  body.appendChild(question);
+
+  var btnGroup = document.createElement("div");
+  btnGroup.className = "button-group";
+
+  var yesBtn = document.createElement("button");
+  yesBtn.className = "btn btn--primary";
+  yesBtn.textContent = "Yes";
+  yesBtn.addEventListener("click", function(e) {
+    e.stopPropagation();
+    playSound("affirmative");
+    yesBtn.disabled = true;
+    noBtn.disabled = true;
+    addMessage("user", "Yes");
+    if (fu.onConfirm) fu.onConfirm(fu.proposal);
+    window._followUp = null;
+    console.log("[follow-up] confirmed");
+  });
+
+  var noBtn = document.createElement("button");
+  noBtn.className = "btn btn--secondary";
+  noBtn.textContent = "No";
+  noBtn.addEventListener("click", function(e) {
+    e.stopPropagation();
+    playSound("negatory");
+    yesBtn.disabled = true;
+    noBtn.disabled = true;
+    addMessage("user", "No");
+    // Loop back to gather phase
+    fu.phase = "gather";
+    fu.proposal = null;
+    var loopPrompt = "ok, tell me more -- what should change?";
+    addMessage("assistant", loopPrompt);
+    socket.emit("speak", { text: loopPrompt });
+    console.log("[follow-up] rejected, looping");
+  });
+
+  btnGroup.appendChild(yesBtn);
+  btnGroup.appendChild(noBtn);
+  body.appendChild(btnGroup);
+  card.appendChild(body);
+
+  conversation.appendChild(card);
+  conversation.scrollTop = conversation.scrollHeight;
+
+  // TTS the proposal
+  socket.emit("speak", { text: proposal + ". update to this?" });
+}
+
 socket.on('transcription', (data) => {
   console.log('Transcription received:', data.text);
   addMessage('user', data.text);
 
-  // Intercept for caption refinement
-  if (window._pendingRefine) {
-    var refine = window._pendingRefine;
-    window._pendingRefine = null;
+  // Follow-up intercept
+  if (window._followUp && window._followUp.phase === "gather") {
+    var fu = window._followUp;
 
-    // Show processing status in chat
-    var statusCard = document.createElement("article");
-    statusCard.className = "card assistant";
-    statusCard.dataset.timestamp = Date.now();
-    var statusBody = document.createElement("div");
-    statusBody.className = "card__body";
+    // Show processing
+    var card = document.createElement("article");
+    card.className = "card assistant";
+    card.dataset.timestamp = Date.now();
+    var body = document.createElement("div");
+    body.className = "card__body";
     var statusText = document.createElement("p");
     statusText.className = "drop-status";
-    statusText.textContent = "refining...";
-    statusBody.appendChild(statusText);
-    statusCard.appendChild(statusBody);
-    conversation.appendChild(statusCard);
+    statusText.textContent = "thinking...";
+    body.appendChild(statusText);
+    card.appendChild(body);
+    conversation.appendChild(card);
     conversation.scrollTop = conversation.scrollHeight;
 
-    var context = data.text;
-    if (refine.currentCaption) {
-      context = "Current caption: \"" + refine.currentCaption + "\". User says: " + data.text;
-    }
-
-    _captionImage(refine.src, context, function(result) {
-      if (result) {
-        _persistCaption(refine.galleryId, refine.index, result);
-        statusText.textContent = result;
-        statusText.classList.remove("drop-status");
-
-        // TTS the refined caption
-        socket.emit("speak", { text: result });
-
-        // Update the gallery strip caption in place
-        var stripEl = document.querySelector("[data-gallery-id='" + refine.galleryId + "']");
-        if (stripEl) {
-          var item = stripEl.querySelector("[data-index='" + refine.index + "']");
-          if (item) {
-            var cap = item.querySelector(".gallery-strip__caption");
-            if (!cap) {
-              cap = document.createElement("span");
-              cap.className = "gallery-strip__caption";
-              item.appendChild(cap);
-            }
-            cap.textContent = result;
-          }
-        }
+    // Call the generator with user input
+    fu.generate(data.text, function(proposal) {
+      statusText.remove();
+      if (proposal) {
+        _followUpPropose(proposal);
       } else {
-        statusText.textContent = "couldn't refine -- try again?";
-        statusText.classList.remove("drop-status");
-        socket.emit("speak", { text: "couldn't refine. try again?" });
+        var failBody = document.createElement("p");
+        failBody.textContent = "couldn't generate -- try again?";
+        body.appendChild(failBody);
+        socket.emit("speak", { text: "couldn't generate. try again?" });
       }
-      conversation.scrollTop = conversation.scrollHeight;
     });
 
-    // Prevent normal Claude processing for this transcription
     socket.emit("interrupt");
     return;
   }
@@ -4209,7 +4272,7 @@ function unpinGallery(galleryId) {
     });
   }
 
-  // Refine link: voice-driven caption refinement
+  // Refine link: voice-driven caption refinement via follow-up system
   var refineLink = document.getElementById("galleryRefine");
 
   if (refineLink) {
@@ -4219,22 +4282,51 @@ function unpinGallery(galleryId) {
       if (!entry) return;
       var idx = galleryLightboxState.index;
       var img = entry.images[idx];
+      var captureGalleryId = galleryLightboxState.galleryId;
+      var captureSrc = resolveGalleryImageUrl(img);
+      var currentCaption = img.caption || "";
 
-      // Store pending refine state
-      window._pendingRefine = {
-        galleryId: galleryLightboxState.galleryId,
-        index: idx,
-        src: resolveGalleryImageUrl(img),
-        currentCaption: img.caption || ""
-      };
+      // Start follow-up
+      startFollowUp({
+        type: "caption_refine",
+        context: {
+          galleryId: captureGalleryId,
+          index: idx,
+          src: captureSrc,
+          currentCaption: currentCaption
+        },
+        generate: function(userInput, cb) {
+          var context = userInput;
+          if (currentCaption) {
+            context = "Current caption: \"" + currentCaption + "\". User says: " + userInput;
+          }
+          _captionImage(captureSrc, context, cb);
+        },
+        onConfirm: function(proposal) {
+          _persistCaption(captureGalleryId, idx, proposal);
+          // Update strip caption
+          var stripEl = document.querySelector("[data-gallery-id='" + captureGalleryId + "']");
+          if (stripEl) {
+            var item = stripEl.querySelector("[data-index='" + idx + "']");
+            if (item) {
+              var cap = item.querySelector(".gallery-strip__caption");
+              if (!cap) {
+                cap = document.createElement("span");
+                cap.className = "gallery-strip__caption";
+                item.appendChild(cap);
+              }
+              cap.textContent = proposal;
+            }
+          }
+        }
+      });
 
-      // Close lightbox, open drawer next frame (avoids outside-click handler race)
-      var refineSrc = window._pendingRefine.src;
+      // Close lightbox, open drawer
       closeGalleryLightbox();
       requestAnimationFrame(function() {
         drawer.classList.add("open");
 
-        // Build a card with thumbnail + prompt
+        // Show image + prompt
         var card = document.createElement("article");
         card.className = "card assistant";
         card.dataset.timestamp = Date.now();
@@ -4243,9 +4335,16 @@ function unpinGallery(galleryId) {
 
         var thumb = document.createElement("img");
         thumb.className = "refine-thumb";
-        thumb.src = refineSrc;
+        thumb.src = captureSrc;
         thumb.alt = "image to refine";
         body.appendChild(thumb);
+
+        if (currentCaption) {
+          var current = document.createElement("p");
+          current.className = "drop-status";
+          current.textContent = "current: " + currentCaption;
+          body.appendChild(current);
+        }
 
         var p = document.createElement("p");
         p.textContent = "tell me what you see -- I'll refine the caption.";
@@ -4829,73 +4928,48 @@ function pinFromStream(tokenId) {
     var body = document.createElement("div");
     body.className = "card__body";
 
-    var status = document.createElement("p");
-    status.className = "drop-status";
-    status.textContent = "processing...";
-    body.appendChild(status);
     body.appendChild(strip);
     card.appendChild(body);
 
     conv.appendChild(card);
     conv.scrollTop = conv.scrollHeight;
-    console.log("[drop-viewer] gallery appended, captioning " + mediaFiles.length + " image(s)...");
+
+    // TTS confirmation
+    var spoken = mediaFiles.length === 1 ? "image received" : "images received";
+    socket.emit("speak", { text: spoken });
+    console.log("[drop-viewer] " + spoken);
 
     // Get the gallery ID from the strip element
     var galleryId = strip.getAttribute("data-gallery-id");
 
-    // Auto-caption each image individually
-    for (var k = 0; k < images.length; k++) {
+    // Recognize each image against vault, fall back to vision caption
+    for (var k = 0; k < mediaFiles.length; k++) {
       (function(idx) {
-        _captionImage(resolveGalleryImageUrl(images[idx]), null, function(result) {
-          if (result) {
-            _persistCaption(galleryId, idx, result);
-          }
-        });
+        var reader = new FileReader();
+        reader.onload = function() {
+          var b64 = reader.result;
+          fetch("/api/recognize", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ image: b64 })
+          }).then(function(r) { return r.ok ? r.json() : null; })
+            .then(function(data) {
+              if (data && data.found && data.caption) {
+                _persistCaption(galleryId, idx, data.caption);
+                console.log("[drop-viewer] recognized: " + data.slug + "/" + data.filename);
+              } else {
+                _captionImage(resolveGalleryImageUrl(images[idx]), null, function(result) {
+                  if (result) _persistCaption(galleryId, idx, result);
+                });
+              }
+            }).catch(function() {
+              _captionImage(resolveGalleryImageUrl(images[idx]), null, function(result) {
+                if (result) _persistCaption(galleryId, idx, result);
+              });
+            });
+        };
+        reader.readAsDataURL(mediaFiles[idx]);
       })(k);
-    }
-
-    // Multi-image: also generate a summary description for the status line
-    if (mediaFiles.length >= 2) {
-      var pending = mediaFiles.length;
-      var b64Images = new Array(mediaFiles.length);
-      for (var m = 0; m < mediaFiles.length; m++) {
-        (function(idx) {
-          var reader = new FileReader();
-          reader.onload = function() {
-            b64Images[idx] = reader.result;
-            pending--;
-            if (pending === 0) {
-              fetch("/api/describe", {
-                method: "POST",
-                headers: { "Content-Type": "application/json" },
-                body: JSON.stringify({ images: b64Images })
-              }).then(function(res) {
-                return res.ok ? res.json() : null;
-              }).then(function(data) {
-                if (data && data.result) {
-                  status.textContent = data.result;
-                  status.classList.remove("drop-status");
-                } else {
-                  status.remove();
-                }
-                conv.scrollTop = conv.scrollHeight;
-              }).catch(function() { status.remove(); });
-            }
-          };
-          reader.readAsDataURL(mediaFiles[idx]);
-        })(m);
-      }
-    } else {
-      // Single image: status line mirrors the caption
-      _captionImage(resolveGalleryImageUrl(images[0]), null, function(result) {
-        if (result) {
-          status.textContent = result;
-          status.classList.remove("drop-status");
-        } else {
-          status.remove();
-        }
-        conv.scrollTop = conv.scrollHeight;
-      });
     }
   });
 })();

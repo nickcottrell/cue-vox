@@ -2753,6 +2753,68 @@ def serve_vault_image(slug, filename):
     return send_from_directory(directory, fname)
 
 
+@app.route("/api/recognize", methods=["POST"])
+def api_recognize():
+    """Check if an image is already in the vault by content hash.
+
+    Expects JSON: { "image": "<base64 data URI>" }
+    Returns JSON: { "found": true, "slug": "...", "filename": "...",
+                     "caption": "...", "context": "...", "description": "...",
+                     "port": "...", "file_hash": "..." }
+    or { "found": false, "file_hash": "..." }
+    """
+    import hashlib
+    try:
+        vault_lib = MAESTRO_ROOT / "cue-vault" / "app" / "lib"
+        if str(vault_lib) not in sys.path:
+            sys.path.insert(0, str(vault_lib))
+        from fts import get_connection, ensure_schema, ensure_registry_schema
+        from config import get_fts_db_path
+
+        data = request.get_json() or {}
+        image_b64 = data.get("image", "")
+        if not image_b64:
+            return jsonify({"error": "no image provided"}), 400
+
+        # Strip data URI prefix
+        if "," in image_b64 and image_b64.index(",") < 100:
+            image_b64 = image_b64.split(",", 1)[1]
+
+        # Hash the raw bytes
+        import base64
+        raw_bytes = base64.b64decode(image_b64)
+        file_hash = hashlib.sha256(raw_bytes).hexdigest()
+
+        # Look up in vault DB
+        db_path = get_fts_db_path()
+        conn = get_connection(db_path)
+        ensure_schema(conn)
+        ensure_registry_schema(conn)
+
+        row = conn.execute(
+            "SELECT slug, filename, caption, context, description, port "
+            "FROM vault_images WHERE file_hash = ? LIMIT 1",
+            (file_hash,),
+        ).fetchone()
+
+        if row:
+            return jsonify({
+                "found": True,
+                "file_hash": file_hash,
+                "slug": row["slug"],
+                "filename": row["filename"],
+                "caption": row["caption"] or row["description"] or "",
+                "context": row["context"] or "",
+                "port": row["port"] or "cold",
+            })
+        else:
+            return jsonify({"found": False, "file_hash": file_hash})
+
+    except Exception as e:
+        print(f"[api/recognize] error: {e}")
+        return jsonify({"found": False, "error": str(e)})
+
+
 @app.route("/api/describe", methods=["POST"])
 def api_describe():
     """Describe images using C2D2 vision model.
@@ -2847,10 +2909,62 @@ def _parse_case_study_segments(text):
     return segments
 
 
+def _generate_story(images, context=""):
+    """Generate a structured story from gallery images + captions.
+
+    Returns dict: { title, intro, slides: [{narrative}], closing }
+    """
+    try:
+        c2d2_path = MAESTRO_ROOT / "tools" / "c2d2"
+        if str(c2d2_path) not in sys.path:
+            sys.path.insert(0, str(c2d2_path))
+        from ollama_client import generate
+    except Exception:
+        return None
+
+    # Build prompt from captions
+    caption_list = []
+    for i, img in enumerate(images):
+        cap = img.get("caption", "") or img.get("description", "") or ""
+        caption_list.append("Slide %d: %s" % (i + 1, cap or "(no caption)"))
+
+    captions_block = "\n".join(caption_list)
+    extra = ("\nContext: %s" % context) if context else ""
+
+    prompt = (
+        "You are writing a short visual story for a slideshow with %d images.\n"
+        "The captions for each image are:\n%s\n%s\n\n"
+        "Write a JSON object with these fields:\n"
+        "- title: a short compelling title (under 8 words)\n"
+        "- intro: 1-2 sentences setting the scene\n"
+        "- slides: array of objects, one per image, each with a \"narrative\" field "
+        "(1-2 sentences describing what this image shows in the story)\n"
+        "- closing: 1 sentence wrap-up\n\n"
+        "Return ONLY valid JSON, no markdown fences, no explanation."
+    ) % (len(images), captions_block, extra)
+
+    result = generate(prompt, max_tokens=1024, timeout=60)
+    if not result:
+        return None
+
+    # Parse JSON from response
+    try:
+        # Strip markdown fences if present
+        cleaned = result.strip()
+        if cleaned.startswith("```"):
+            cleaned = cleaned.split("\n", 1)[1]
+        if cleaned.endswith("```"):
+            cleaned = cleaned.rsplit("```", 1)[0]
+        cleaned = cleaned.strip()
+        return json.loads(cleaned)
+    except (json.JSONDecodeError, ValueError):
+        print(f"[case-study] failed to parse story JSON: {result[:200]}")
+        return None
+
+
 @app.route("/case-study", methods=["POST"])
 def case_study():
-    """Render a print-ready case study from message text + gallery data."""
-    # Accept either JSON body or form-encoded JSON field
+    """Render a print-ready case study with generated narrative."""
     payload = request.get_json(silent=True)
     if not payload:
         form_json = request.form.get("json", "{}")
@@ -2858,26 +2972,12 @@ def case_study():
             payload = json.loads(form_json)
         except json.JSONDecodeError:
             payload = {}
-    raw_text = payload.get("text", "")
+
     gallery_json = payload.get("gallery", {})
     gallery_id = payload.get("galleryId", "")
+    context = payload.get("context", "")
 
-    segments = _parse_case_study_segments(raw_text)
-
-    # Resolve image URLs for all gallery segments
-    for seg in segments:
-        if seg["type"] == "gallery":
-            images = seg["data"].get("images", [])
-            for img in images:
-                if img.get("slug") and img.get("filename"):
-                    port = img.get("port", "cold")
-                    img["url"] = "/vault/{}/{}/{}".format(
-                        port, img["slug"], img["filename"]
-                    )
-                elif img.get("src"):
-                    img["url"] = img["src"]
-
-    # Also resolve the standalone gallery passed from the frontend
+    # Resolve image URLs
     gallery_images = gallery_json.get("images", [])
     for img in gallery_images:
         if img.get("slug") and img.get("filename"):
@@ -2888,15 +2988,43 @@ def case_study():
         elif img.get("src"):
             img["url"] = img["src"]
 
-    title = gallery_json.get("title", "Case Study")
+    # Generate story
+    story = _generate_story(gallery_images, context)
+    if not story:
+        story = {
+            "title": gallery_json.get("title", "Untitled"),
+            "intro": "",
+            "slides": [{"narrative": img.get("caption", "")} for img in gallery_images],
+            "closing": "",
+        }
+
+    # Ensure slides array matches image count
+    while len(story.get("slides", [])) < len(gallery_images):
+        story["slides"].append({"narrative": ""})
 
     return render_template(
         "case-study.html",
-        title=title,
-        segments=segments,
-        gallery=gallery_json,
+        title=story.get("title", "Untitled"),
+        intro=story.get("intro", ""),
+        slides=list(zip(gallery_images, story.get("slides", []))),
+        closing=story.get("closing", ""),
+        gallery_json=json.dumps(gallery_json),
         gallery_id=gallery_id,
     )
+
+
+@app.route("/api/regenerate-story", methods=["POST"])
+def api_regenerate_story():
+    """Regenerate story narrative with user refinements as context."""
+    payload = request.get_json() or {}
+    gallery = payload.get("gallery", {})
+    context = payload.get("context", "")
+
+    images = gallery.get("images", [])
+    story = _generate_story(images, context)
+    if story:
+        return jsonify(story)
+    return jsonify({"error": "generation failed"}), 503
 
 
 @socketio.on('audio_data')

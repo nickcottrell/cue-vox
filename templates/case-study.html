@@ -1,0 +1,128 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>{{ title }} - Case Study</title>
+
+    <!-- Haberdash CSS (typography tokens) -->
+    <link rel="stylesheet" href="https://nickcottrell.github.io/haberdash/haberdash.css">
+
+    <!-- Case study styles -->
+    <link rel="stylesheet" href="/static/css/case-study.css">
+</head>
+<body>
+    <!-- Toolbar (hidden in print) -->
+    <nav class="case-study__toolbar" id="toolbar">
+        <input type="text" class="case-study__refine-input" id="refineInput"
+               placeholder="describe what you want changed..." autocomplete="off">
+        <button class="case-study__regenerate" id="regenerateBtn">regenerate</button>
+        <button class="case-study__print" onclick="window.print()">print</button>
+    </nav>
+
+    <article class="case-study" id="caseStudy">
+        <header class="case-study__header">
+            <h1 class="case-study__title" contenteditable="true" id="storyTitle">{{ title }}</h1>
+            <p class="case-study__byline">Nick Cottrell</p>
+        </header>
+
+        <div class="case-study__body" id="storyBody">
+            {% if intro %}
+            <section class="case-study__intro">
+                <p contenteditable="true" id="storyIntro">{{ intro }}</p>
+            </section>
+            {% endif %}
+
+            {% for img, slide in slides %}
+            <section class="case-study__slide" data-index="{{ loop.index0 }}">
+                <figure class="case-study__figure">
+                    <img class="case-study__image"
+                         src="{{ img.get('url', img.get('src', '')) }}"
+                         alt="{{ img.get('caption', img.get('filename', '')) }}"
+                         loading="eager">
+                    <figcaption class="case-study__caption" contenteditable="true">{{ img.get('caption', '') }}</figcaption>
+                </figure>
+                <p class="case-study__narrative" contenteditable="true">{{ slide.get('narrative', '') }}</p>
+            </section>
+            {% endfor %}
+
+            {% if closing %}
+            <section class="case-study__closing">
+                <p contenteditable="true" id="storyClosing">{{ closing }}</p>
+            </section>
+            {% endif %}
+        </div>
+
+        <footer class="case-study__footer">
+            <p class="case-study__colophon">Portfolio sample generated via cue-vox</p>
+        </footer>
+    </article>
+
+    <script>
+        var galleryData = {{ gallery_json | safe }};
+
+        document.getElementById("regenerateBtn").addEventListener("click", function() {
+            var btn = this;
+            var input = document.getElementById("refineInput");
+            var context = input.value.trim();
+
+            // Collect current edits as additional context
+            var title = document.getElementById("storyTitle").textContent;
+            var intro = document.getElementById("storyIntro");
+            var closing = document.getElementById("storyClosing");
+
+            var editContext = "Current title: " + title;
+            if (intro) editContext += ". Current intro: " + intro.textContent;
+            if (context) editContext += ". User wants: " + context;
+
+            btn.textContent = "generating...";
+            btn.disabled = true;
+
+            fetch("/api/regenerate-story", {
+                method: "POST",
+                headers: { "Content-Type": "application/json" },
+                body: JSON.stringify({
+                    gallery: galleryData,
+                    context: editContext
+                })
+            }).then(function(r) { return r.ok ? r.json() : null; })
+              .then(function(story) {
+                if (!story || story.error) {
+                    btn.textContent = "failed -- try again";
+                    btn.disabled = false;
+                    return;
+                }
+
+                // Update DOM
+                document.getElementById("storyTitle").textContent = story.title || title;
+                if (intro) intro.textContent = story.intro || "";
+                if (closing) closing.textContent = story.closing || "";
+
+                var slides = document.querySelectorAll(".case-study__slide");
+                var storySlides = story.slides || [];
+                for (var i = 0; i < slides.length; i++) {
+                    var narrative = slides[i].querySelector(".case-study__narrative");
+                    if (narrative && storySlides[i]) {
+                        narrative.textContent = storySlides[i].narrative || "";
+                    }
+                }
+
+                btn.textContent = "regenerate";
+                btn.disabled = false;
+                input.value = "";
+            }).catch(function() {
+                btn.textContent = "regenerate";
+                btn.disabled = false;
+            });
+        });
+
+        // Enter key in refine input triggers regenerate
+        document.getElementById("refineInput").addEventListener("keydown", function(e) {
+            if (e.key === "Enter") {
+                e.preventDefault();
+                document.getElementById("regenerateBtn").click();
+            }
+        });
+    </script>
+</body>
+</html>
