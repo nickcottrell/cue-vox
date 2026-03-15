@@ -2616,6 +2616,39 @@ See VRGB_POLICY.md for complete policy.
 """
 
 
+def get_image_context():
+    """Read active image_visual and image_context tokens for direct prompt injection.
+
+    Bypasses flux capacitor lag so Claude sees dropped images immediately.
+    """
+    tokens_dir = MAESTRO_ROOT / ".claude" / "tokens"
+    if not tokens_dir.is_dir():
+        return ""
+
+    sections = []
+    for pattern in ["image_visual_*.json", "image_context_*.json", "image_drop_*.json"]:
+        import glob as _glob
+        for path in sorted(_glob.glob(str(tokens_dir / pattern)), reverse=True):
+            try:
+                with open(path) as f:
+                    token = json.load(f)
+                if token.get("status") != "active":
+                    continue
+                temp = token.get("temperature", 0)
+                if temp <= 0:
+                    continue
+                label = token.get("label", "")
+                value = token.get("value", "")
+                sections.append("[%s (%.0f deg)] %s" % (label, temp, value))
+            except Exception:
+                continue
+
+    if not sections:
+        return ""
+
+    return "[ACTIVE IMAGE TOKENS]\n" + "\n\n".join(sections[:6]) + "\n[/ACTIVE IMAGE TOKENS]"
+
+
 def inject_temporal_context(text):
     """Inject recent log context for temporal queries"""
     if not detect_temporal_query(text):
@@ -3437,6 +3470,7 @@ def handle_audio(data):
         context_sections = [
             ("identity", get_instance_identity()),
             ("flux", get_flux_capacitor_context()),
+            ("images", get_image_context()),
             ("engagement", get_engagement_context()),
             ("summary", get_conversation_summary_context()),
             ("speech", get_speech_consumption_context()),
@@ -4012,6 +4046,7 @@ def handle_text_message(data):
         context_sections = [
             ("identity", get_instance_identity()),
             ("flux", get_flux_capacitor_context()),
+            ("images", get_image_context()),
             ("engagement", get_engagement_context()),
             ("summary", get_conversation_summary_context()),
             ("speech", get_speech_consumption_context()),
