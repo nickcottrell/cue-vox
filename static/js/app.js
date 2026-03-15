@@ -4942,30 +4942,47 @@ function pinFromStream(tokenId) {
     // Get the gallery ID from the strip element
     var galleryId = strip.getAttribute("data-gallery-id");
 
-    // Recognize each image against vault, fall back to vision caption
+    // Register each image: save, analyze, create token chain
     for (var k = 0; k < mediaFiles.length; k++) {
       (function(idx) {
+        var fname = mediaFiles[idx].name;
+        console.log("[drop-viewer] reading file " + (idx + 1) + "/" + mediaFiles.length + ": " + fname);
         var reader = new FileReader();
         reader.onload = function() {
           var b64 = reader.result;
-          fetch("/api/recognize", {
+          var sizeMB = (b64.length * 0.75 / 1024 / 1024).toFixed(2);
+          console.log("[drop-viewer] sending " + fname + " to /api/drop-register (" + sizeMB + " MB)");
+          fetch("/api/drop-register", {
             method: "POST",
             headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({ image: b64 })
-          }).then(function(r) { return r.ok ? r.json() : null; })
-            .then(function(data) {
-              if (data && data.found && data.caption) {
-                _persistCaption(galleryId, idx, data.caption);
-                console.log("[drop-viewer] recognized: " + data.slug + "/" + data.filename);
-              } else {
-                _captionImage(resolveGalleryImageUrl(images[idx]), null, function(result) {
-                  if (result) _persistCaption(galleryId, idx, result);
-                });
+            body: JSON.stringify({
+              image: b64,
+              filename: fname
+            })
+          }).then(function(r) {
+            console.log("[drop-viewer] response status: " + r.status);
+            return r.ok ? r.json() : null;
+          }).then(function(data) {
+              if (!data) {
+                console.warn("[drop-viewer] no data returned for " + fname);
+                return;
               }
-            }).catch(function() {
-              _captionImage(resolveGalleryImageUrl(images[idx]), null, function(result) {
-                if (result) _persistCaption(galleryId, idx, result);
-              });
+              console.log("[drop-viewer] === " + fname + " ===");
+              console.log("[drop-viewer]   token1 (drop):    " + data.token1_id);
+              console.log("[drop-viewer]   token2 (visual):  " + data.token2_id);
+              console.log("[drop-viewer]   token3 (context): " + data.token3_id);
+              console.log("[drop-viewer]   recognized: " + data.recognized);
+              console.log("[drop-viewer]   caption: " + (data.caption || "(none)"));
+              console.log("[drop-viewer]   description: " + (data.description || "(none)").substring(0, 80));
+              console.log("[drop-viewer]   ocr: " + (data.ocr || "(none)").substring(0, 80));
+              console.log("[drop-viewer]   colors: " + (data.colors || "(none)"));
+              console.log("[drop-viewer]   context: " + (data.context_blurb || "(none)").substring(0, 80));
+              console.log("[drop-viewer]   path: " + data.path);
+              if (data.caption) {
+                _persistCaption(galleryId, idx, data.caption);
+              }
+            }).catch(function(err) {
+              console.error("[drop-viewer] register failed for " + fname + ":", err);
             });
         };
         reader.readAsDataURL(mediaFiles[idx]);

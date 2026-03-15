@@ -38,6 +38,9 @@ logs/
 # Separate repos (cloned locally for development)
 claude-init/
 
+# Dropped image files (temp storage for vision analysis)
+drops/
+
 # Runtime-generated paths (created when deployed in parent project)
 .claude/tokens/
 .claude/audit/

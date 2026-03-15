@@ -2815,6 +2815,353 @@ def api_recognize():
         return jsonify({"found": False, "error": str(e)})
 
 
+def _create_token_cli(label, value, token_type="text_input", base_temp=70, tags="", references=""):
+    """Create a token via the createtoken CLI and emit socket event. Returns token_id or None."""
+    cue_mem_cli = MAESTRO_ROOT / "cue-mem" / "cli" / "createtoken"
+    cmd = [str(cue_mem_cli), label, value, "--type", token_type, "--base-temp", str(base_temp)]
+    if tags:
+        cmd.extend(["--tags", tags])
+    if references:
+        cmd.extend(["--references", references])
+    try:
+        result = subprocess.run(cmd, capture_output=True, text=True, timeout=10)
+        for line in result.stdout.strip().split("\n"):
+            if line.startswith("Created token:"):
+                token_id = line.replace("Created token: ", "").strip()
+                # Emit to connected clients so cue-stream updates
+                tag_list = [t.strip() for t in tags.split(",")] if tags else []
+                socketio.emit("token_created", {
+                    "token_id": token_id,
+                    "type": token_type,
+                    "label": label,
+                    "value": value,
+                    "tags": tag_list,
+                    "temperature": base_temp,
+                    "base_temp": base_temp,
+                    "created_at": datetime.now().isoformat(),
+                })
+                return token_id
+    except Exception as e:
+        print(f"[token-cli] creation failed: {e}")
+    return None
+
+
+@app.route("/api/drop-register", methods=["POST"])
+def api_drop_register():
+    """Register a dropped image with two-token chain:
+
+    Token 1 (immediate): image dropped, processing
+    Token 2 (chained): vivid description, context blurb, transcribed text, color/tone
+
+    Expects JSON: { "image": "<base64>", "filename": "..." }
+    """
+    import hashlib, base64
+    try:
+        data = request.get_json() or {}
+        image_b64 = data.get("image", "")
+        filename = data.get("filename", "dropped_image")
+
+        if not image_b64:
+            return jsonify({"error": "no image"}), 400
+
+        # Strip data URI prefix
+        raw_b64 = image_b64
+        if "," in raw_b64 and raw_b64.index(",") < 100:
+            raw_b64 = raw_b64.split(",", 1)[1]
+        raw_bytes = base64.b64decode(raw_b64)
+        file_hash = hashlib.sha256(raw_bytes).hexdigest()
+
+        # Save to drops folder
+        drops_dir = MAESTRO_ROOT / "tools" / "cue-vox" / "drops"
+        drops_dir.mkdir(exist_ok=True)
+        ext = Path(filename).suffix or ".png"
+        drop_path = drops_dir / (file_hash[:16] + ext)
+        drop_path.write_bytes(raw_bytes)
+        drop_path_str = str(drop_path)
+
+        # ── Index in vault DB for dedup/persistence ──
+        try:
+            vault_lib = MAESTRO_ROOT / "cue-vault" / "app" / "lib"
+            if str(vault_lib) not in sys.path:
+                sys.path.insert(0, str(vault_lib))
+            from fts import get_connection, ensure_schema, ensure_registry_schema
+            from config import get_fts_db_path
+            conn = get_connection(get_fts_db_path())
+            ensure_schema(conn)
+            ensure_registry_schema(conn)
+
+            # Check if already indexed
+            existing = conn.execute(
+                "SELECT slug FROM vault_images WHERE file_hash = ? LIMIT 1",
+                (file_hash,),
+            ).fetchone()
+
+            if not existing:
+                # Insert as a new dropped image
+                import mimetypes
+                mime = mimetypes.guess_type(filename)[0] or "image/png"
+                fext = ext.lstrip(".")
+                now_iso = datetime.now().isoformat(timespec="seconds") + "Z"
+                conn.execute(
+                    "INSERT OR IGNORE INTO vault_images "
+                    "(slug, filename, extension, file_size, indexed_at, port, file_hash, blob_path, rel_path) "
+                    "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                    ("_drops", filename, fext, len(raw_bytes), now_iso,
+                     "hot", file_hash, drop_path_str, "drops/" + drop_path.name),
+                )
+                conn.commit()
+                print(f"[drop-register] indexed in vault_images: {filename} ({file_hash[:12]})")
+        except Exception as e:
+            print(f"[drop-register] vault indexing failed (non-fatal): {e}")
+
+        # ── Token 1: immediate "processing" token ──
+        hash_short = file_hash[:8]
+        token1_value = "image dropped: %s; path: %s; hash: %s; status: processing" % (
+            filename, drop_path_str, hash_short
+        )
+        token1_id = _create_token_cli(
+            "image_drop_%s" % hash_short, token1_value,
+            base_temp=70, tags="drop-viewer,image,processing"
+        )
+        print(f"[drop-register] token1: {token1_id}")
+
+        # ── Vault lookup ──
+        recognized = False
+        vault_meta = {}
+        caption = ""
+        try:
+            vault_lib = MAESTRO_ROOT / "cue-vault" / "app" / "lib"
+            if str(vault_lib) not in sys.path:
+                sys.path.insert(0, str(vault_lib))
+            from fts import get_connection, ensure_schema, ensure_registry_schema
+            from config import get_fts_db_path
+            conn = get_connection(get_fts_db_path())
+            ensure_schema(conn)
+            ensure_registry_schema(conn)
+            row = conn.execute(
+                "SELECT slug, filename, caption, context, description, port, blob_path "
+                "FROM vault_images WHERE file_hash = ? LIMIT 1",
+                (file_hash,),
+            ).fetchone()
+            if row:
+                recognized = True
+                vault_meta = {
+                    "slug": row["slug"],
+                    "vault_filename": row["filename"],
+                    "caption": row["caption"] or row["description"] or "",
+                    "context": row["context"] or "",
+                    "port": row["port"] or "cold",
+                    "blob_path": row["blob_path"] or "",
+                }
+                caption = vault_meta.get("caption", "")
+        except Exception as e:
+            print(f"[drop-register] vault lookup failed (non-fatal): {e}")
+
+        # ── Vision analysis ──
+        describe_result = ""
+        ocr_result = ""
+        colors_result = ""
+        try:
+            c2d2_path = MAESTRO_ROOT / "tools" / "c2d2"
+            if str(c2d2_path) not in sys.path:
+                sys.path.insert(0, str(c2d2_path))
+            from ollama_client import describe_image
+
+            # Vivid visual description
+            describe_result = describe_image(raw_b64, prompt=(
+                "Describe this image vividly in 2-3 sentences. "
+                "What is the subject, setting, mood, and notable details? "
+                "Be specific and visual."
+            ), max_tokens=200) or ""
+
+            # Short caption if we don't have one
+            if not caption:
+                caption = describe_image(raw_b64) or ""
+
+            # OCR -- read any visible text
+            ocr_result = describe_image(raw_b64, prompt=(
+                "Read all visible text in this image. Return ONLY the text, "
+                "preserving line breaks. If no text is visible, say 'none'."
+            ), max_tokens=300) or ""
+
+            # Color and tone
+            colors_result = describe_image(raw_b64, prompt=(
+                "Describe the color palette and tone of this image in one line. "
+                "Name the dominant color, secondary colors, overall warmth "
+                "(warm/cool/neutral), and mood (energetic/calm/dramatic/etc)."
+            ), max_tokens=80) or ""
+
+        except Exception as e:
+            print(f"[drop-register] vision analysis failed (non-fatal): {e}")
+
+        # ── Token 2: VISUAL description (long-lived, persists to DB) ──
+        visual_parts = []
+        visual_parts.append("file: %s" % filename)
+        visual_parts.append("path: %s" % drop_path_str)
+        if caption:
+            visual_parts.append("caption: %s" % caption)
+        if describe_result:
+            visual_parts.append("visual: %s" % describe_result)
+        if ocr_result and ocr_result.lower().strip() != "none":
+            visual_parts.append("text: %s" % ocr_result)
+        if colors_result:
+            visual_parts.append("colors: %s" % colors_result)
+        visual_parts.append("hash: %s" % file_hash[:16])
+
+        token2_value = "\n".join(visual_parts)
+
+        tags2 = "drop-viewer,image,visual"
+        if vault_meta.get("slug"):
+            tags2 += ",vault:%s" % vault_meta["slug"]
+
+        # Visual token: high base temp, slow decay -- this is the durable record
+        token2_id = _create_token_cli(
+            "image_visual_%s" % hash_short, token2_value,
+            base_temp=80, tags=tags2,
+            references=token1_id or ""
+        )
+        print(f"[drop-register] token2 (visual): {token2_id}")
+
+        # ── Token 3: CONTEXTUAL blurb (short-lived, burns faster) ──
+        context_result = ""
+        try:
+            context_result = describe_image(raw_b64, prompt=(
+                "What is the purpose or context of this image? "
+                "Who might use it and why? What story does it tell? "
+                "One concise paragraph. No quotes, no emoji."
+            ), max_tokens=150) or ""
+        except Exception as e:
+            print(f"[drop-register] context generation failed (non-fatal): {e}")
+
+        context_parts = []
+        context_parts.append("file: %s" % filename)
+        if context_result:
+            context_parts.append("context: %s" % context_result)
+        if vault_meta.get("slug"):
+            context_parts.append("vault: %s/%s" % (vault_meta["slug"], vault_meta.get("vault_filename", "")))
+        if vault_meta.get("context"):
+            context_parts.append("vault_context: %s" % vault_meta["context"])
+        context_parts.append("hash: %s" % file_hash[:16])
+
+        token3_value = "\n".join(context_parts)
+
+        tags3 = "drop-viewer,image,contextual"
+        if vault_meta.get("slug"):
+            tags3 += ",vault:%s" % vault_meta["slug"]
+
+        # Contextual token: lower base temp, faster decay -- ephemeral interpretation
+        token3_id = _create_token_cli(
+            "image_context_%s" % hash_short, token3_value,
+            base_temp=60, tags=tags3,
+            references=token2_id or ""
+        )
+        print(f"[drop-register] token3 (context): {token3_id}")
+
+        # ── Persist caption + description back to vault DB ──
+        try:
+            if caption or describe_result:
+                conn = get_connection(get_fts_db_path())
+                updates = []
+                params = []
+                if caption:
+                    updates.append("caption = ?")
+                    params.append(caption)
+                if describe_result:
+                    updates.append("description = ?")
+                    params.append(describe_result)
+                if updates:
+                    params.append(file_hash)
+                    conn.execute(
+                        "UPDATE vault_images SET %s WHERE file_hash = ?" % ", ".join(updates),
+                        params,
+                    )
+                    conn.commit()
+        except Exception as e:
+            print(f"[drop-register] DB caption update failed (non-fatal): {e}")
+
+        return jsonify({
+            "token1_id": token1_id,
+            "token2_id": token2_id,
+            "token3_id": token3_id,
+            "file_hash": file_hash,
+            "recognized": recognized,
+            "caption": caption,
+            "description": describe_result,
+            "context_blurb": context_result,
+            "ocr": ocr_result,
+            "colors": colors_result,
+            "path": drop_path_str,
+            "vault": vault_meta if recognized else None,
+        })
+
+    except Exception as e:
+        print(f"[drop-register] error: {e}")
+        return jsonify({"error": str(e)}), 500
+
+
+@app.route("/api/image/inspect", methods=["POST"])
+def api_image_inspect():
+    """Run deeper inspection on an image by path or base64.
+
+    Accepts JSON: { "path": "/path/to/file" } or { "image": "<base64>" }
+    Optional: { "tools": ["describe", "ocr", "colors"] } (default: all)
+
+    Returns JSON with results for each requested tool.
+    """
+    import base64 as b64mod
+    data = request.get_json() or {}
+    image_path = data.get("path")
+    image_b64 = data.get("image")
+    tools = data.get("tools", ["describe", "ocr", "colors"])
+    results = {}
+
+    # Resolve image bytes
+    raw_b64 = None
+    if image_path and os.path.isfile(image_path):
+        with open(image_path, "rb") as f:
+            raw_b64 = b64mod.b64encode(f.read()).decode()
+    elif image_b64:
+        raw_b64 = image_b64
+        if "," in raw_b64 and raw_b64.index(",") < 100:
+            raw_b64 = raw_b64.split(",", 1)[1]
+
+    if not raw_b64:
+        return jsonify({"error": "no image found at path or in payload"}), 400
+
+    try:
+        c2d2_path = MAESTRO_ROOT / "tools" / "c2d2"
+        if str(c2d2_path) not in sys.path:
+            sys.path.insert(0, str(c2d2_path))
+        from ollama_client import describe_image
+    except Exception as e:
+        return jsonify({"error": "vision model unavailable: %s" % e}), 503
+
+    if "describe" in tools:
+        desc = describe_image(raw_b64, prompt=(
+            "Describe this image in detail. What do you see? "
+            "Include subjects, setting, colors, text, and mood. "
+            "2-3 sentences."
+        ), max_tokens=200)
+        results["describe"] = desc
+
+    if "ocr" in tools:
+        ocr = describe_image(raw_b64, prompt=(
+            "Read all visible text in this image. Return ONLY the text, "
+            "preserving line breaks. If no text is visible, say 'no text'."
+        ), max_tokens=300)
+        results["ocr"] = ocr
+
+    if "colors" in tools:
+        colors = describe_image(raw_b64, prompt=(
+            "Describe the color palette of this image in one line. "
+            "Name the dominant color, secondary colors, and overall warmth "
+            "(warm/cool/neutral). Example: 'Deep blue dominant, white accents, cool'"
+        ), max_tokens=60)
+        results["colors"] = colors
+
+    return jsonify(results)
+
+
 @app.route("/api/describe", methods=["POST"])
 def api_describe():
     """Describe images using C2D2 vision model.
