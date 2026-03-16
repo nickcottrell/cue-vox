@@ -90,6 +90,13 @@ body {
     margin: 0;
 }
 
+.case-study__colophon {
+    font-size: 0.8rem;
+    color: #aaa;
+    margin: 0;
+    text-align: center;
+}
+
 /* ============================================
    PRINT STYLES
    ============================================ */

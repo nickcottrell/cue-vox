@@ -35,10 +35,14 @@
         </div>
 
         {% if closing %}
-        <footer class="case-study__footer">
-            <p class="case-study__closing">{{ closing }}</p>
-        </footer>
+        <section class="case-study__closing">
+            <p>{{ closing }}</p>
+        </section>
         {% endif %}
+
+        <footer class="case-study__footer">
+            <p class="case-study__colophon">Gallery generated with Cue-Vault.</p>
+        </footer>
     </article>
 </body>
 </html>
