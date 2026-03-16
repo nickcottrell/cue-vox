@@ -2950,38 +2950,43 @@ def api_drop_register():
 
         # ── Index in vault DB for dedup/persistence ──
         try:
-            vault_lib = MAESTRO_ROOT / "cue-vault" / "app" / "lib"
-            if str(vault_lib) not in sys.path:
-                sys.path.insert(0, str(vault_lib))
-            from fts import get_connection, ensure_schema, ensure_registry_schema
-            from config import get_fts_db_path
-            conn = get_connection(get_fts_db_path())
-            ensure_schema(conn)
-            ensure_registry_schema(conn)
+            import sqlite3 as _sqlite3
+            vault_db = MAESTRO_ROOT / "cue-vault" / "vault.db"
+            if vault_db.exists():
+                _conn = _sqlite3.connect(str(vault_db))
+                _conn.row_factory = _sqlite3.Row
+                # Ensure registry columns exist
+                _existing_cols = {r[1] for r in _conn.execute("PRAGMA table_info(vault_images)").fetchall()}
+                for col, ctype in [("file_hash", "TEXT"), ("blob_path", "TEXT"), ("context", "TEXT"), ("caption", "TEXT")]:
+                    if col not in _existing_cols:
+                        _conn.execute("ALTER TABLE vault_images ADD COLUMN %s %s" % (col, ctype))
+                _conn.commit()
 
-            # Check if already indexed
-            existing = conn.execute(
-                "SELECT slug FROM vault_images WHERE file_hash = ? LIMIT 1",
-                (file_hash,),
-            ).fetchone()
+                # Check if already indexed by hash
+                existing = _conn.execute(
+                    "SELECT slug FROM vault_images WHERE file_hash = ? LIMIT 1",
+                    (file_hash,),
+                ).fetchone()
 
-            if not existing:
-                # Insert as a new dropped image
-                import mimetypes
-                mime = mimetypes.guess_type(filename)[0] or "image/png"
-                fext = ext.lstrip(".")
-                now_iso = datetime.now().isoformat(timespec="seconds") + "Z"
-                conn.execute(
-                    "INSERT OR IGNORE INTO vault_images "
-                    "(slug, filename, extension, file_size, indexed_at, port, file_hash, blob_path, rel_path) "
-                    "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
-                    ("_drops", filename, fext, len(raw_bytes), now_iso,
-                     "hot", file_hash, drop_path_str, "drops/" + drop_path.name),
-                )
-                conn.commit()
-                print(f"[drop-register] indexed in vault_images: {filename} ({file_hash[:12]})")
+                if not existing:
+                    fext = ext.lstrip(".")
+                    now_iso = datetime.now().isoformat(timespec="seconds") + "Z"
+                    _conn.execute(
+                        "INSERT OR IGNORE INTO vault_images "
+                        "(slug, filename, extension, file_size, indexed_at, port, file_hash, blob_path, rel_path) "
+                        "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                        ("_drops", filename, fext, len(raw_bytes), now_iso,
+                         "hot", file_hash, drop_path_str, "drops/" + drop_path.name),
+                    )
+                    _conn.commit()
+                    print(f"[drop-register] indexed in vault_images: {filename} ({file_hash[:12]})")
+                else:
+                    print(f"[drop-register] already indexed: {file_hash[:12]}")
+                _conn.close()
         except Exception as e:
+            import traceback
             print(f"[drop-register] vault indexing failed (non-fatal): {e}")
+            traceback.print_exc()
 
         # ── Token 1: immediate "processing" token ──
         hash_short = file_hash[:8]
@@ -2994,35 +2999,33 @@ def api_drop_register():
         )
         print(f"[drop-register] token1: {token1_id}")
 
-        # ── Vault lookup ──
+        # ── Vault lookup (direct sqlite3, no vault lib imports) ──
         recognized = False
         vault_meta = {}
         caption = ""
         try:
-            vault_lib = MAESTRO_ROOT / "cue-vault" / "app" / "lib"
-            if str(vault_lib) not in sys.path:
-                sys.path.insert(0, str(vault_lib))
-            from fts import get_connection, ensure_schema, ensure_registry_schema
-            from config import get_fts_db_path
-            conn = get_connection(get_fts_db_path())
-            ensure_schema(conn)
-            ensure_registry_schema(conn)
-            row = conn.execute(
-                "SELECT slug, filename, caption, context, description, port, blob_path "
-                "FROM vault_images WHERE file_hash = ? LIMIT 1",
-                (file_hash,),
-            ).fetchone()
-            if row:
-                recognized = True
-                vault_meta = {
-                    "slug": row["slug"],
-                    "vault_filename": row["filename"],
-                    "caption": row["caption"] or row["description"] or "",
-                    "context": row["context"] or "",
-                    "port": row["port"] or "cold",
-                    "blob_path": row["blob_path"] or "",
-                }
-                caption = vault_meta.get("caption", "")
+            import sqlite3 as _sqlite3
+            vault_db = MAESTRO_ROOT / "cue-vault" / "vault.db"
+            if vault_db.exists():
+                _vconn = _sqlite3.connect(str(vault_db))
+                _vconn.row_factory = _sqlite3.Row
+                row = _vconn.execute(
+                    "SELECT slug, filename, caption, context, description, port, blob_path "
+                    "FROM vault_images WHERE file_hash = ? LIMIT 1",
+                    (file_hash,),
+                ).fetchone()
+                if row:
+                    recognized = True
+                    vault_meta = {
+                        "slug": row["slug"],
+                        "vault_filename": row["filename"],
+                        "caption": row["caption"] or row["description"] or "",
+                        "context": row["context"] or "",
+                        "port": row["port"] or "cold",
+                        "blob_path": row["blob_path"] or "",
+                    }
+                    caption = vault_meta.get("caption", "")
+                _vconn.close()
         except Exception as e:
             print(f"[drop-register] vault lookup failed (non-fatal): {e}")
 
@@ -3129,22 +3132,26 @@ def api_drop_register():
         # ── Persist caption + description back to vault DB ──
         try:
             if caption or describe_result:
-                conn = get_connection(get_fts_db_path())
-                updates = []
-                params = []
-                if caption:
-                    updates.append("caption = ?")
-                    params.append(caption)
-                if describe_result:
-                    updates.append("description = ?")
-                    params.append(describe_result)
-                if updates:
-                    params.append(file_hash)
-                    conn.execute(
-                        "UPDATE vault_images SET %s WHERE file_hash = ?" % ", ".join(updates),
-                        params,
-                    )
-                    conn.commit()
+                import sqlite3 as _sqlite3
+                vault_db = MAESTRO_ROOT / "cue-vault" / "vault.db"
+                if vault_db.exists():
+                    _pconn = _sqlite3.connect(str(vault_db))
+                    updates = []
+                    params = []
+                    if caption:
+                        updates.append("caption = ?")
+                        params.append(caption)
+                    if describe_result:
+                        updates.append("description = ?")
+                        params.append(describe_result)
+                    if updates:
+                        params.append(file_hash)
+                        _pconn.execute(
+                            "UPDATE vault_images SET %s WHERE file_hash = ?" % ", ".join(updates),
+                            params,
+                        )
+                        _pconn.commit()
+                    _pconn.close()
         except Exception as e:
             print(f"[drop-register] DB caption update failed (non-fatal): {e}")
 
