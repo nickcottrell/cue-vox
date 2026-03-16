@@ -2617,18 +2617,23 @@ See VRGB_POLICY.md for complete policy.
 
 
 def get_image_context():
-    """Read active image_visual and image_context tokens for direct prompt injection.
+    """Read active image tokens, grouped by hash, for direct prompt injection.
 
-    Bypasses flux capacitor lag so Claude sees dropped images immediately.
+    Each dropped image produces 3 tokens (drop, visual, context) sharing a hash.
+    This groups them so Claude sees "Image 1: ..." not 3 separate entries.
     """
     tokens_dir = MAESTRO_ROOT / ".claude" / "tokens"
     if not tokens_dir.is_dir():
         return ""
 
-    sections = []
-    for pattern in ["image_visual_*.json", "image_context_*.json", "image_drop_*.json"]:
-        import glob as _glob
-        for path in sorted(_glob.glob(str(tokens_dir / pattern)), reverse=True):
+    import glob as _glob
+    import re as _re
+
+    # Collect tokens grouped by hash
+    by_hash = {}  # hash -> {drop: ..., visual: ..., context: ...}
+
+    for pattern in ["image_drop_*.json", "image_visual_*.json", "image_context_*.json"]:
+        for path in _glob.glob(str(tokens_dir / pattern)):
             try:
                 with open(path) as f:
                     token = json.load(f)
@@ -2637,16 +2642,47 @@ def get_image_context():
                 temp = token.get("temperature", 0)
                 if temp <= 0:
                     continue
+
                 label = token.get("label", "")
                 value = token.get("value", "")
-                sections.append("[%s (%.0f deg)] %s" % (label, temp, value))
+
+                # Extract hash from label: image_visual_256180a0 -> 256180a0
+                match = _re.search(r"image_(?:drop|visual|context)_([a-f0-9]+)", label)
+                if not match:
+                    continue
+                h = match.group(1)
+
+                if h not in by_hash:
+                    by_hash[h] = {}
+
+                if "image_drop" in label:
+                    by_hash[h]["drop"] = value
+                elif "image_visual" in label:
+                    by_hash[h]["visual"] = value
+                elif "image_context" in label:
+                    by_hash[h]["context"] = value
             except Exception:
                 continue
 
-    if not sections:
+    if not by_hash:
         return ""
 
-    return "[ACTIVE IMAGE TOKENS]\n" + "\n\n".join(sections[:6]) + "\n[/ACTIVE IMAGE TOKENS]"
+    # Build grouped output
+    lines = []
+    count = len(by_hash)
+    lines.append("[DROPPED IMAGES: %d image%s in context]" % (count, "s" if count != 1 else ""))
+
+    for i, (h, parts) in enumerate(list(by_hash.items())[:4]):
+        lines.append("")
+        lines.append("--- Image %d (hash: %s) ---" % (i + 1, h))
+        if parts.get("visual"):
+            lines.append(parts["visual"])
+        if parts.get("context"):
+            lines.append("interpretation: %s" % parts["context"].split("context: ", 1)[-1] if "context: " in parts["context"] else parts["context"])
+
+    lines.append("")
+    lines.append("[/DROPPED IMAGES]")
+    return "\n".join(lines)
 
 
 def inject_temporal_context(text):
