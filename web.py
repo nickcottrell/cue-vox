@@ -2672,13 +2672,52 @@ def get_image_context():
     count = len(by_hash)
     lines.append("[DROPPED IMAGES: %d image%s in context]" % (count, "s" if count != 1 else ""))
 
-    for i, (h, parts) in enumerate(list(by_hash.items())[:4]):
+    # Parse structured fields from each visual token
+    gallery_images = []
+    for i, (h, parts) in enumerate(list(by_hash.items())[:10]):
         lines.append("")
         lines.append("--- Image %d (hash: %s) ---" % (i + 1, h))
         if parts.get("visual"):
             lines.append(parts["visual"])
         if parts.get("context"):
-            lines.append("interpretation: %s" % parts["context"].split("context: ", 1)[-1] if "context: " in parts["context"] else parts["context"])
+            ctx = parts["context"]
+            if "context: " in ctx:
+                ctx = ctx.split("context: ", 1)[-1]
+            lines.append("interpretation: %s" % ctx)
+
+        # Extract filename and caption from visual token for gallery block
+        visual = parts.get("visual", "")
+        filename = ""
+        caption = ""
+        for vline in visual.split("\n"):
+            if vline.startswith("file: "):
+                filename = vline[6:].strip()
+            elif vline.startswith("caption: "):
+                caption = vline[9:].strip().strip('"')
+            elif vline.startswith("path: "):
+                # Extract hash-based filename from path
+                path_val = vline[6:].strip()
+                if "/drops/" in path_val:
+                    filename = path_val.split("/drops/")[-1]
+
+        if filename:
+            gallery_images.append({
+                "slug": "_drops",
+                "filename": filename,
+                "port": "hot",
+                "type": "image",
+                "caption": caption,
+            })
+
+    # Include a ready-to-use GALLERY block
+    if gallery_images:
+        lines.append("")
+        lines.append("READY-TO-USE GALLERY (copy this exactly when user asks to see the images):")
+        gallery_json = json.dumps({
+            "title": "Dropped Images",
+            "images": gallery_images,
+        })
+        lines.append("[GALLERY: %s]" % gallery_json)
 
     lines.append("")
     lines.append("[/DROPPED IMAGES]")
