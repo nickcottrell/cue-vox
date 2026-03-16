@@ -3507,19 +3507,10 @@ def case_study():
         elif img.get("src"):
             img["url"] = img["src"]
 
-    # Generate story
-    story = _generate_story(gallery_images, context)
-    if not story:
-        story = {
-            "title": gallery_json.get("title", "Untitled"),
-            "intro": "",
-            "slides": [{"narrative": img.get("caption", "")} for img in gallery_images],
-            "closing": "",
-        }
-
-    # Ensure slides array matches image count
-    while len(story.get("slides", [])) < len(gallery_images):
-        story["slides"].append({"narrative": ""})
+    # Use existing captions as narratives (no blocking LLM call)
+    title = gallery_json.get("title", "Gallery")
+    slides = [{"narrative": img.get("caption", "")} for img in gallery_images]
+    story = {"title": title, "intro": "", "slides": slides, "closing": ""}
 
     return render_template(
         "case-study.html",
