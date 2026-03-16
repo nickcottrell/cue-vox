@@ -4991,6 +4991,14 @@ function pinFromStream(tokenId) {
               if (data.caption) {
                 _persistCaption(galleryId, idx, data.caption);
               }
+              // Update gallery registry with real paths so case study works
+              var entry = galleryRegistry[galleryId];
+              if (entry && entry.images[idx]) {
+                var hashName = data.path.split("/").pop();
+                entry.images[idx].slug = "_drops";
+                entry.images[idx].filename = hashName;
+                entry.images[idx].port = "hot";
+              }
             }).catch(function(err) {
               console.error("[drop-viewer] register failed for " + fname + ":", err);
             });
