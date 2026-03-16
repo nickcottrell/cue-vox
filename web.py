@@ -3496,10 +3496,14 @@ def case_study():
     gallery_images = gallery_json.get("images", [])
     for img in gallery_images:
         if img.get("slug") and img.get("filename"):
-            port = img.get("port", "cold")
-            img["url"] = "/vault/{}/{}/{}".format(
-                port, img["slug"], img["filename"]
-            )
+            slug = img["slug"]
+            if slug in ("_drops", "_hot_loose", "_cold_loose"):
+                img["url"] = "/drops/{}".format(img["filename"])
+            else:
+                port = img.get("port", "cold")
+                img["url"] = "/vault/{}/{}/{}".format(
+                    port, slug, img["filename"]
+                )
         elif img.get("src"):
             img["url"] = img["src"]
 
