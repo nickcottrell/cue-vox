@@ -3705,6 +3705,12 @@ function resolveGalleryImageUrl(img) {
   }
   // Format 1: structured slug + filename (port-aware when available)
   if (img.slug && img.filename) {
+    // Dropped images served from /drops/ route
+    if (img.slug === "_drops" || img.slug === "_hot_loose" || img.slug === "_cold_loose") {
+      var url = "/drops/" + safeEncodeComponent(img.filename);
+      console.log("[gallery] resolved drops: " + url);
+      return url;
+    }
     var port = (img.port || "cold").toLowerCase();
     var url = "/vault/" + port + "/" + safeEncodeComponent(img.slug) + "/" + safeEncodeComponent(img.filename);
     console.log("[gallery] resolved slug+filename (" + port + "): " + url);
@@ -4967,16 +4973,20 @@ function pinFromStream(tokenId) {
                 console.warn("[drop-viewer] no data returned for " + fname);
                 return;
               }
-              console.log("[drop-viewer] === " + fname + " ===");
-              console.log("[drop-viewer]   token1 (drop):    " + data.token1_id);
-              console.log("[drop-viewer]   token2 (visual):  " + data.token2_id);
-              console.log("[drop-viewer]   token3 (context): " + data.token3_id);
-              console.log("[drop-viewer]   recognized: " + data.recognized);
+              var status = data.recognized ? "RECOGNIZED" : "NEW";
+              console.log("[drop-viewer] === " + fname + " === " + status + " ===");
+              if (data.recognized && data.vault) {
+                console.log("[drop-viewer]   vault: " + data.vault.slug + "/" + data.vault.vault_filename);
+                console.log("[drop-viewer]   port: " + data.vault.port);
+                if (data.vault.blob_path) console.log("[drop-viewer]   blob: " + data.vault.blob_path);
+              }
+              console.log("[drop-viewer]   hash: " + data.file_hash.substring(0, 16));
+              console.log("[drop-viewer]   tokens: drop=" + data.token1_id + " visual=" + data.token2_id + " context=" + data.token3_id);
               console.log("[drop-viewer]   caption: " + (data.caption || "(none)"));
-              console.log("[drop-viewer]   description: " + (data.description || "(none)").substring(0, 80));
-              console.log("[drop-viewer]   ocr: " + (data.ocr || "(none)").substring(0, 80));
-              console.log("[drop-viewer]   colors: " + (data.colors || "(none)"));
-              console.log("[drop-viewer]   context: " + (data.context_blurb || "(none)").substring(0, 80));
+              if (data.description) console.log("[drop-viewer]   description: " + data.description.substring(0, 100));
+              if (data.ocr && data.ocr !== "none") console.log("[drop-viewer]   ocr: " + data.ocr.substring(0, 100));
+              if (data.colors) console.log("[drop-viewer]   colors: " + data.colors);
+              if (data.context_blurb) console.log("[drop-viewer]   context: " + data.context_blurb.substring(0, 100));
               console.log("[drop-viewer]   path: " + data.path);
               if (data.caption) {
                 _persistCaption(galleryId, idx, data.caption);

@@ -2808,6 +2808,50 @@ def serve_vault_hot(slug, filename):
     return send_from_directory(directory, fname)
 
 
+@app.route("/drops/<path:filename>")
+def serve_drop(filename):
+    """Serve dropped image files by exact name or original filename lookup."""
+    drops_dir = MAESTRO_ROOT / "tools" / "cue-vox" / "drops"
+
+    # Try exact match first
+    fpath = drops_dir / filename
+    if fpath.exists():
+        real_path = fpath.resolve()
+        return send_from_directory(str(real_path.parent), real_path.name)
+
+    # Try matching by original filename: hash the lookup against vault DB
+    try:
+        import sqlite3 as _sqlite3
+        vault_db = MAESTRO_ROOT / "cue-vault" / "vault.db"
+        if vault_db.exists():
+            _conn = _sqlite3.connect(str(vault_db))
+            _conn.row_factory = _sqlite3.Row
+            row = _conn.execute(
+                "SELECT file_hash FROM vault_images WHERE filename = ? AND slug = '_drops' LIMIT 1",
+                (filename,),
+            ).fetchone()
+            _conn.close()
+            if row and row["file_hash"]:
+                ext = Path(filename).suffix or ".png"
+                hash_name = row["file_hash"][:16] + ext
+                fpath = drops_dir / hash_name
+                if fpath.exists():
+                    real_path = fpath.resolve()
+                    return send_from_directory(str(real_path.parent), real_path.name)
+    except Exception:
+        pass
+
+    # Try glob match on any file with same extension
+    import glob as _glob
+    ext = Path(filename).suffix or ""
+    for candidate in _glob.glob(str(drops_dir / ("*" + ext))):
+        if Path(candidate).name == filename:
+            real_path = Path(candidate).resolve()
+            return send_from_directory(str(real_path.parent), real_path.name)
+
+    return "Not found", 404
+
+
 @app.route("/vault-images/<slug>/<path:filename>")
 def serve_vault_image(slug, filename):
     """Legacy fallback -- checks both ports, cold first."""
@@ -2945,8 +2989,17 @@ def api_drop_register():
         drops_dir.mkdir(exist_ok=True)
         ext = Path(filename).suffix or ".png"
         drop_path = drops_dir / (file_hash[:16] + ext)
-        drop_path.write_bytes(raw_bytes)
+        if not drop_path.exists():
+            drop_path.write_bytes(raw_bytes)
         drop_path_str = str(drop_path)
+
+        # Symlink original filename -> hash-based file (so both names work)
+        orig_link = drops_dir / filename
+        if not orig_link.exists() and filename != drop_path.name:
+            try:
+                os.symlink(str(drop_path), str(orig_link))
+            except OSError:
+                pass
 
         # ── Index in vault DB for dedup/persistence ──
         try:
