@@ -954,6 +954,44 @@ def handle_emoji_reaction(data):
         except Exception as e:
             print("Emoji token creation failed: %s" % e)
 
+@socketio.on("mute_message")
+def handle_mute_message(data):
+    ts = (data or {}).get("timestamp", "")
+    text = (data or {}).get("text", "")
+    muted = (data or {}).get("muted", True)
+    preview = text[:80] if text else ""
+    action = "muted" if muted else "unmuted"
+    print("[mute] %s message at %s: %s" % (action, ts, preview))
+
+    # Log the mute event so the model can dull this context
+    ensure_log_dir()
+    log_file = LOG_DIR / ("%s.jsonl" % datetime.now().strftime("%Y-%m-%d"))
+    entry = {
+        "timestamp": datetime.now().strftime("%Y-%m-%dT%H:%M:%S.%f"),
+        "event": "message_muted" if muted else "message_unmuted",
+        "message_timestamp": ts,
+        "preview": preview,
+    }
+    with open(log_file, "a") as f:
+        f.write(json.dumps(entry) + "\n")
+
+    if muted and token_factory is not None:
+        try:
+            tags = ["mute"]
+            if _active_track:
+                tags.append("track:%s" % _active_track)
+            token_factory.create(
+                token_type="mute",
+                label="mute_%s" % ts,
+                value=preview,
+                thermal={"base_temp": 20, "cooling_rate": 5.0},
+                tags=tags,
+            )
+        except Exception as e:
+            print("Mute token creation failed: %s" % e)
+
+
+
 @socketio.on("request_hydration")
 def handle_request_hydration(data=None):
     if _hydrate_modifiers:
@@ -3520,6 +3558,115 @@ def case_study():
         closing=story.get("closing", ""),
         gallery_json=json.dumps(gallery_json),
         gallery_id=gallery_id,
+    )
+
+
+@app.route("/contact-sheet", methods=["POST"])
+def contact_sheet():
+    """Render a compact contact sheet grouped by category."""
+    payload = request.get_json(silent=True)
+    if not payload:
+        form_json = request.form.get("json", "{}")
+        try:
+            payload = json.loads(form_json)
+        except json.JSONDecodeError:
+            payload = {}
+
+    gallery_json = payload.get("gallery", {})
+    gallery_images = gallery_json.get("images", [])
+    title = gallery_json.get("title", "Contact Sheet")
+
+    _video_exts = {".mp4", ".mov", ".webm", ".m4v"}
+
+    # Look up tags and thumbnails from vault DB
+    import sqlite3 as _cs_sqlite3
+    _cs_db = os.path.join(MAESTRO_ROOT, "cue-vault", "vault.db")
+    _cs_lookup = {}
+    if os.path.isfile(_cs_db):
+        try:
+            _cs_conn = _cs_sqlite3.connect(_cs_db)
+            _cs_conn.row_factory = _cs_sqlite3.Row
+            for row in _cs_conn.execute(
+                "SELECT filename, slug, port, tags, context FROM vault_images"
+            ).fetchall():
+                key = (row["slug"], row["filename"], row["port"])
+                _cs_lookup[key] = {
+                    "tags": row["tags"] or "",
+                    "thumbnail": row["context"] or "",
+                }
+            _cs_conn.close()
+        except _cs_sqlite3.Error:
+            pass
+
+    # Category label mapping from tags
+    _tag_categories = [
+        ("hero-cut", "Hero Cuts"),
+        ("mini-cut", "Mini Cuts"),
+        ("talking-points", "Talking Points"),
+        ("master-reel", "Master Reels"),
+        ("extended-cut", "Extended Cut"),
+        ("short", "Short"),
+    ]
+
+    # Resolve URLs and group by category
+    groups = {}
+    for img in gallery_images:
+        slug = img.get("slug", "")
+        fname = img.get("filename", "")
+        port = img.get("port", "cold")
+        ext = os.path.splitext(fname)[1].lower() if fname else ""
+        is_video = ext in _video_exts or img.get("type") == "video"
+
+        # DB lookup for tags and thumbnail
+        db_row = _cs_lookup.get((slug, fname, port), {})
+        tags_str = db_row.get("tags", "")
+        db_thumb = db_row.get("thumbnail", "")
+
+        # Resolve main URL
+        if slug in ("_drops", "_hot_loose", "_cold_loose"):
+            url = "/drops/{}".format(fname)
+        else:
+            url = "/vault/{}/{}/{}".format(port, slug, fname)
+
+        # Resolve thumbnail URL for videos
+        thumb_url = None
+        thumb = img.get("thumbnail", "") or db_thumb
+        if thumb and is_video:
+            thumb_url = "/vault/{}/{}/{}".format(port, slug, thumb)
+
+        # Determine orientation from tags
+        orientation = "vertical" if "vertical" in tags_str else "horizontal"
+
+        # Category from tags or slug
+        category = slug
+        for tag, label in _tag_categories:
+            if tag in tags_str:
+                category = label
+                break
+
+        item = {
+            "filename": fname,
+            "url": url,
+            "thumb_url": thumb_url or url,
+            "caption": img.get("caption", ""),
+            "is_video": is_video,
+            "orientation": orientation,
+        }
+
+        if category not in groups:
+            groups[category] = []
+        groups[category].append(item)
+
+    # Sort categories by item count descending
+    categories = sorted(groups.items(), key=lambda kv: -len(kv[1]))
+    item_count = sum(len(v) for v in groups.values())
+
+    return render_template(
+        "contact-sheet.html",
+        title=title,
+        categories=categories,
+        item_count=item_count,
+        category_count=len(categories),
     )
 
 

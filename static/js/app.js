@@ -780,6 +780,51 @@ function addMessage(role, text, ttsChunks) {
   body.appendChild(reactions);
   } // end assistant-only reactions
 
+  // Card actions (user messages only): mute + pin
+  if (role === "user") {
+    var actions = document.createElement("ul");
+    actions.className = "card-actions";
+
+    // Mute button (circle with line)
+    (function(card) {
+      var muteLi = document.createElement("li");
+      var muteBtn = document.createElement("button");
+      muteBtn.className = "card-actions__btn";
+      muteBtn.setAttribute("data-state", "inactive");
+      muteBtn.setAttribute("aria-label", "Mute this message");
+      muteBtn.setAttribute("title", "mute");
+      var muteGlyph = document.createElement("span");
+      muteGlyph.className = "card-actions__mute-glyph";
+      muteBtn.appendChild(muteGlyph);
+      muteBtn.addEventListener("click", function() {
+        var state = muteBtn.getAttribute("data-state");
+        if (state === "inactive") {
+          card.classList.add("card--muted");
+          muteBtn.setAttribute("data-state", "active");
+          socket.emit("mute_message", {
+            timestamp: card.dataset.timestamp,
+            text: card.dataset.rawText,
+            muted: true
+          });
+        } else {
+          card.classList.remove("card--muted");
+          muteBtn.setAttribute("data-state", "inactive");
+          socket.emit("mute_message", {
+            timestamp: card.dataset.timestamp,
+            text: card.dataset.rawText,
+            muted: false
+          });
+        }
+      });
+      muteLi.appendChild(muteBtn);
+      actions.appendChild(muteLi);
+    })(messageCard);
+
+
+
+    body.appendChild(actions);
+  } // end user-only card actions
+
   messageCard.appendChild(header);
   messageCard.appendChild(body);
 
@@ -3698,6 +3743,35 @@ function isGalleryVideo(item) {
   return _galleryVideoExts.indexOf(fname.substring(dot).toLowerCase()) >= 0;
 }
 
+// Flip /vault/hot/ <-> /vault/cold/ for port-fallback on load error.
+// Returns the alternate URL, or "" if the URL is not a vault port URL.
+function flipVaultPort(url) {
+  if (url.indexOf("/vault/hot/") === 0) {
+    return url.replace("/vault/hot/", "/vault/cold/");
+  }
+  if (url.indexOf("/vault/cold/") === 0) {
+    return url.replace("/vault/cold/", "/vault/hot/");
+  }
+  return "";
+}
+
+// Attach to an img/video element: on first error, try the other port.
+function attachPortFallback(el, onFinalError) {
+  var tried = false;
+  el.addEventListener("error", function() {
+    if (!tried) {
+      tried = true;
+      var alt = flipVaultPort(el.src);
+      if (alt) {
+        console.log("[gallery] port fallback: " + el.src + " -> " + alt);
+        el.src = alt;
+        return;
+      }
+    }
+    if (onFinalError) onFinalError.call(el);
+  });
+}
+
 function resolveGalleryImageUrl(img) {
   if (!img) {
     console.warn("[gallery] resolveGalleryImageUrl called with null/undefined image");
@@ -3711,7 +3785,8 @@ function resolveGalleryImageUrl(img) {
       console.log("[gallery] resolved drops: " + url);
       return url;
     }
-    var port = (img.port || "cold").toLowerCase();
+    var rawPort = (img.port || "hot").toLowerCase();
+    var port = (rawPort === "hot" || rawPort === "cold") ? rawPort : "hot";
     var url = "/vault/" + port + "/" + safeEncodeComponent(img.slug) + "/" + safeEncodeComponent(img.filename);
     console.log("[gallery] resolved slug+filename (" + port + "): " + url);
     return url;
@@ -3845,6 +3920,23 @@ function createGalleryStrip(data) {
   });
   actions.appendChild(caseBtn);
 
+  // Contact sheet icon
+  var sheetBtn = document.createElement("button");
+  sheetBtn.className = "contact-sheet-icon";
+  sheetBtn.setAttribute("aria-label", "Open as contact sheet");
+  sheetBtn.setAttribute("title", "contact sheet");
+  sheetBtn.setAttribute("data-gallery-id", id);
+
+  var sheetGlyph = document.createElement("span");
+  sheetGlyph.className = "contact-sheet-icon__glyph";
+  sheetBtn.appendChild(sheetGlyph);
+
+  sheetBtn.addEventListener("click", function(e) {
+    e.stopPropagation();
+    openContactSheet(id, figure);
+  });
+  actions.appendChild(sheetBtn);
+
   // Pin icon
   var pinBtn = document.createElement("button");
   pinBtn.className = "pin-icon";
@@ -3888,16 +3980,30 @@ function createGalleryStrip(data) {
       var isVideo = isGalleryVideo(img);
       var thumb;
       if (isVideo) {
-        thumb = document.createElement("video");
-        thumb.className = "gallery-strip__thumb";
-        thumb.src = resolveGalleryImageUrl(img);
-        thumb.preload = "metadata";
-        thumb.muted = true;
-        thumb.playsInline = true;
-        thumb.onerror = function() {
-          console.error("[gallery] video thumbnail failed to load: " + this.src);
-          btn.classList.add("gallery-strip__item--error");
-        };
+        // Use thumbnail image if available, fall back to video element
+        if (img.thumbnail) {
+          thumb = document.createElement("img");
+          thumb.className = "gallery-strip__thumb";
+          var thumbImg = { slug: img.slug, filename: img.thumbnail, port: img.port };
+          thumb.src = resolveGalleryImageUrl(thumbImg);
+          thumb.alt = img.caption || img.filename || "";
+          thumb.loading = "lazy";
+          attachPortFallback(thumb, function() {
+            console.error("[gallery] video thumbnail image failed: " + this.src);
+            btn.classList.add("gallery-strip__item--error");
+          });
+        } else {
+          thumb = document.createElement("video");
+          thumb.className = "gallery-strip__thumb";
+          thumb.src = resolveGalleryImageUrl(img);
+          thumb.preload = "metadata";
+          thumb.muted = true;
+          thumb.playsInline = true;
+          attachPortFallback(thumb, function() {
+            console.error("[gallery] video thumbnail failed to load: " + this.src);
+            btn.classList.add("gallery-strip__item--error");
+          });
+        }
         btn.appendChild(thumb);
         var badge = document.createElement("span");
         badge.className = "gallery-strip__play-badge";
@@ -3909,12 +4015,12 @@ function createGalleryStrip(data) {
         thumb.src = resolveGalleryImageUrl(img);
         thumb.alt = img.caption || img.filename || "";
         thumb.loading = "lazy";
-        thumb.onerror = function() {
+        attachPortFallback(thumb, function() {
           console.error("[gallery] thumbnail failed to load: " + this.src);
           this.src = "";
           this.alt = "Image not found";
           btn.classList.add("gallery-strip__item--error");
-        };
+        });
         btn.appendChild(thumb);
       }
 
@@ -3947,11 +4053,16 @@ function createGalleryStrip(data) {
 }
 
 function openCaseStudy(galleryId, galleryFigure) {
+  console.log("[case-study] opening for gallery: " + galleryId);
   // Walk up to find the parent message card
   var card = galleryFigure.closest("article.card");
   var rawText = card ? (card.dataset.rawText || "") : "";
   var entry = galleryRegistry[galleryId];
-  if (!entry) return;
+  if (!entry) {
+    console.warn("[case-study] no registry entry for " + galleryId);
+    return;
+  }
+  console.log("[case-study] images:", JSON.stringify(entry.images).substring(0, 200));
 
   // Build payload
   var payload = JSON.stringify({
@@ -3964,6 +4075,36 @@ function openCaseStudy(galleryId, galleryFigure) {
   var form = document.createElement("form");
   form.method = "POST";
   form.action = "/case-study";
+  form.target = "_blank";
+  form.style.display = "none";
+
+  var input = document.createElement("input");
+  input.type = "hidden";
+  input.name = "json";
+  input.value = payload;
+  form.appendChild(input);
+
+  document.body.appendChild(form);
+  form.submit();
+  document.body.removeChild(form);
+}
+
+function openContactSheet(galleryId, galleryFigure) {
+  console.log("[contact-sheet] opening for gallery: " + galleryId);
+  var entry = galleryRegistry[galleryId];
+  if (!entry) {
+    console.warn("[contact-sheet] no registry entry for " + galleryId);
+    return;
+  }
+
+  var payload = JSON.stringify({
+    gallery: { images: entry.images, title: entry.title },
+    galleryId: galleryId
+  });
+
+  var form = document.createElement("form");
+  form.method = "POST";
+  form.action = "/contact-sheet";
   form.target = "_blank";
   form.style.display = "none";
 
@@ -4138,11 +4279,11 @@ function renderGallerySlide() {
     newEl.onloadeddata = function() {
       newEl.classList.add("gallery-lightbox__image--visible");
     };
-    newEl.onerror = function() {
+    attachPortFallback(newEl, function() {
       console.error("[gallery] lightbox video failed to load: " + this.src);
       newEl.classList.add("gallery-lightbox__image--visible");
       newEl.classList.add("gallery-lightbox__image--error");
-    };
+    });
     newEl.src = mediaSrc;
   } else {
     newEl = document.createElement("img");
@@ -4152,11 +4293,11 @@ function renderGallerySlide() {
     newEl.onload = function() {
       newEl.classList.add("gallery-lightbox__image--visible");
     };
-    newEl.onerror = function() {
+    attachPortFallback(newEl, function() {
       console.error("[gallery] lightbox image failed to load: " + this.src);
       newEl.classList.add("gallery-lightbox__image--visible");
       newEl.classList.add("gallery-lightbox__image--error");
-    };
+    });
     newEl.src = mediaSrc;
   }
   stage.replaceChild(newEl, oldEl);
