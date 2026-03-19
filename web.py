@@ -21,6 +21,7 @@ import time
 import math
 import re
 import sys
+import queue
 
 # Determine maestro root directory
 def find_maestro_root():
@@ -58,6 +59,30 @@ print(f"✓ Maestro root: {MAESTRO_ROOT}")
 # a Claude Code terminal.
 _CLAUDE_ENV_BLACKLIST = {"CLAUDECODE", "CLAUDE_CODE_ENTRYPOINT"}
 CLEAN_CLAUDE_ENV = {k: v for k, v in os.environ.items() if k not in _CLAUDE_ENV_BLACKLIST}
+
+# Claude subprocess command with MCP tools pre-authorized.
+# Without this, piped Claude sessions hit permission prompts that block silently.
+CLAUDE_CMD = [
+    "claude", "-p",
+    "--allowedTools",
+    "mcp__cue-vault__vault_search",
+    "mcp__cue-vault__vault_get",
+    "mcp__cue-vault__vault_filter",
+    "mcp__cue-vault__vault_list_tags",
+    "mcp__cue-vault__vault_list_eras",
+    "mcp__cue-vault__vault_status",
+    "mcp__cue-vault__vault_upcoming",
+    "mcp__cue-vault__vault_gallery",
+    "mcp__cue-vault__vault_list_galleries",
+    "mcp__cue-vault__vault_get_gallery",
+    "mcp__cue-vault__vault_search_images",
+    "mcp__cue-vault__vault_list_images",
+    "mcp__c2d2__llm_generate",
+    "mcp__c2d2__llm_summarize",
+    "mcp__c2d2__llm_summarize_json",
+    "mcp__c2d2__llm_status",
+    "mcp__c2d2__llm_security",
+]
 
 # Try to import CUE-MEM if available
 CUE_MEM_AVAILABLE = False
@@ -155,6 +180,117 @@ def get_whisper_model():
 # TTS process
 tts_process = None
 tts_interrupted = False
+
+# --- Speech queue: single consumer thread, FIFO, no overlaps ---
+_speech_queue = queue.Queue()
+
+# Try to import pyttsx3 as fallback TTS engine
+try:
+    import pyttsx3
+    _pyttsx3_available = True
+except ImportError:
+    _pyttsx3_available = False
+    print("[TTS] pyttsx3 not installed -- no fallback TTS available")
+
+
+def _say_with_fallback(text, timeout=30):
+    """Run macOS say command. If it produces no audible output, retry via pyttsx3."""
+    try:
+        start = time.time()
+        subprocess.run(["say", text], check=False, timeout=timeout)
+        elapsed = time.time() - start
+        # If say returned almost instantly for non-trivial text, it was silent
+        words = len(text.split())
+        expected_min = max(0.3, words * 0.15)  # rough floor: 0.15s per word
+        if elapsed < expected_min and words > 2:
+            print("[TTS] say returned in %.2fs for %d words -- likely silent, trying fallback" % (elapsed, words))
+            _speak_pyttsx3(text)
+    except subprocess.TimeoutExpired:
+        print("[TTS] say timed out after %ds" % timeout)
+    except Exception as e:
+        print("[TTS] say failed: %s -- trying fallback" % e)
+        _speak_pyttsx3(text)
+
+
+def _speak_pyttsx3(text):
+    """Fallback TTS via pyttsx3 (pure Python, no system audio daemon dependency)."""
+    if not _pyttsx3_available:
+        print("[TTS] pyttsx3 not available, skipping fallback")
+        return
+    try:
+        engine = pyttsx3.init()
+        engine.say(text)
+        engine.runAndWait()
+        engine.stop()
+    except Exception as e:
+        print("[TTS FALLBACK ERROR] pyttsx3 failed: %s" % e)
+
+
+def _speech_consumer():
+    """Daemon thread: pulls chunks from _speech_queue and speaks them one at a time."""
+    while True:
+        item = _speech_queue.get()
+        if item is None:
+            # Poison pill -- shut down
+            _speech_queue.task_done()
+            break
+        chunk_text, chunk_index, emit_events = item
+        try:
+            if not tts_interrupted:
+                if emit_events:
+                    socketio.emit("tts_chunk_start", {"index": chunk_index})
+                    socketio.sleep(0.05)
+                _say_with_fallback(chunk_text)
+        except Exception as e:
+            print("[TTS CONSUMER ERROR] %s" % e)
+        finally:
+            _speech_queue.task_done()
+        # Check after each chunk -- drain if interrupted
+        if tts_interrupted:
+            while not _speech_queue.empty():
+                try:
+                    _speech_queue.get_nowait()
+                    _speech_queue.task_done()
+                except queue.Empty:
+                    break
+            if emit_events:
+                socketio.emit("tts_chunk_done")
+
+
+# Start the consumer thread
+_speech_thread = threading.Thread(target=_speech_consumer, daemon=True)
+_speech_thread.start()
+
+
+def flush_speech_queue():
+    """Kill current speech and drain the queue. Call this instead of killall say."""
+    global tts_interrupted
+    tts_interrupted = True
+    # Kill any running say process
+    subprocess.run(["killall", "say"], stderr=subprocess.DEVNULL)
+    # Drain pending chunks
+    while not _speech_queue.empty():
+        try:
+            _speech_queue.get_nowait()
+            _speech_queue.task_done()
+        except queue.Empty:
+            break
+
+# Active Claude process -- set before communicate(), cleared after
+_active_claude_process = None
+_claude_voided = False
+
+
+def abort_claude():
+    """Kill the active Claude process if one is running. Called on void/mute."""
+    global _active_claude_process, _claude_voided
+    _claude_voided = True
+    proc = _active_claude_process
+    if proc and proc.poll() is None:
+        print("[VOID] Killing active Claude process (pid %d)" % proc.pid)
+        proc.kill()
+    flush_speech_queue()
+
 
 # Speech consumption tracking
 current_speech = None
@@ -442,30 +578,27 @@ def tts_chunk_split(text):
 
 
 def speak_chunked(text):
-    """Speak text in paragraph-sized chunks. Each chunk gets its own
-    30s timeout so long responses don't get cut off mid-sentence.
-    Emits tts_chunk_start so the frontend can highlight the active chunk.
-    Checks tts_interrupted between chunks so stop kills the whole queue."""
+    """Enqueue text as paragraph-sized chunks for the speech consumer thread.
+    Emits tts_chunk_start/done events via the consumer. FIFO ordering,
+    no overlapping audio. Use flush_speech_queue() to interrupt."""
     global tts_interrupted
     tts_interrupted = False
     chunks = tts_chunk_split(text)
     if not chunks:
         return
-    for i, chunk in enumerate(chunks):
-        if tts_interrupted:
-            break
-        emit("tts_chunk_start", {"index": i})
-        socketio.sleep(0.05)
-        try:
-            clean_chunk = strip_markdown_for_tts(chunk)
-            if not clean_chunk:
-                continue
-            subprocess.run(["say", clean_chunk], check=False, timeout=30)
-        except subprocess.TimeoutExpired:
-            print("[TTS] Chunk exceeded 30s, moving to next")
-        except Exception as e:
-            print("[TTS ERROR] %s" % e)
-    emit("tts_chunk_done")
+    clean_chunks = []
+    for chunk in chunks:
+        clean = strip_markdown_for_tts(chunk)
+        if clean:
+            clean_chunks.append(clean)
+    if not clean_chunks:
+        return
+    for i, clean_chunk in enumerate(clean_chunks):
+        _speech_queue.put((clean_chunk, i, True))
+    # Wait for all chunks to finish (or be flushed)
+    _speech_queue.join()
+    if not tts_interrupted:
+        emit("tts_chunk_done")
 
 
 def ensure_log_dir():
@@ -870,19 +1003,19 @@ if CUE_MEM_AVAILABLE:
     except ImportError as e:
         print("Modifier handlers not loaded: %s" % e)
 
-# Pin gallery: create a gallery token from a pinned gallery strip
+# Pin gallery: create a slim gallery token (slug reference, no image array)
 @socketio.on("pin_gallery")
 def handle_pin_gallery(data):
-    """Create a persistent gallery token when user pins a gallery strip."""
+    """Create a slim gallery token. Images live in vault.db, not the token."""
     try:
         gallery_id = data.get("gallery_id")
+        gallery_slug = data.get("gallery_slug", "")
         title = data.get("title", "Gallery")
-        images = data.get("images", [])
-        if not images:
-            emit("error", {"message": "No images to pin"})
+        image_count = data.get("image_count", len(data.get("images", [])))
+        if not gallery_slug and not image_count:
+            emit("error", {"message": "No gallery slug or images"})
             return
 
-        image_count = len(images)
         label = "gallery_%s" % re.sub(r"[^a-z0-9_]", "", title.lower().replace(" ", "_"))
 
         if token_factory is not None:
@@ -893,8 +1026,8 @@ def handle_pin_gallery(data):
                 tags=["gallery"],
                 extra_fields={
                     "title": title,
+                    "gallery_slug": gallery_slug,
                     "image_count": image_count,
-                    "images": images,
                 }
             )
         else:
@@ -907,13 +1040,14 @@ def handle_pin_gallery(data):
                 "label": label,
                 "value": "%s (%d images)" % (title, image_count),
                 "title": title,
+                "gallery_slug": gallery_slug,
                 "image_count": image_count,
-                "images": images,
                 "tags": ["gallery"],
                 "created_at": datetime.now().isoformat(),
                 "temperature": 75,
                 "base_temp": 75,
-                "cooling_rate": 5.0,
+                "half_life_hours": 168,
+                "floor_temp": 5,
             }
             token_path = TOKENS_DIR / ("%s.json" % token_id)
             token_path.write_text(json.dumps(token, indent=2))
@@ -925,11 +1059,11 @@ def handle_pin_gallery(data):
             "label": label,
             "value": "%s (%d images)" % (title, image_count),
             "title": title,
+            "gallery_slug": gallery_slug,
             "image_count": image_count,
-            "images": images,
             "gallery_id": gallery_id,
         })
-        print("[GALLERY] Pinned gallery token: %s (%d images)" % (token_id, image_count))
+        print("[GALLERY] Pinned gallery token: %s -> %s (%d images)" % (token_id, gallery_slug, image_count))
     except Exception as e:
         print("pin_gallery error: %s" % e)
         emit("error", {"message": str(e)})
@@ -962,6 +1096,11 @@ def handle_mute_message(data):
     preview = text[:80] if text else ""
     action = "muted" if muted else "unmuted"
     print("[mute] %s message at %s: %s" % (action, ts, preview))
+
+    # If muting while Claude is still thinking, kill the process immediately
+    if muted and _active_claude_process and _active_claude_process.poll() is None:
+        print("[VOID] Mute triggered while Claude is processing -- aborting")
+        abort_claude()
 
     # Log the mute event so the model can dull this context
     ensure_log_dir()
@@ -2836,6 +2975,17 @@ def _resolve_vault_image(slug, filename, port):
                 "WHERE slug = ? AND filename = ? AND port = ?",
                 (slug, fname, port),
             ).fetchone()
+
+            # Fallback: filename may contain a subfolder path (e.g. "subdir/file.jpg")
+            # In that case the real slug is the subfolder and the real filename is the leaf.
+            if not row and "/" in fname:
+                parts = fname.rsplit("/", 1)
+                row = conn.execute(
+                    "SELECT rel_path FROM vault_images "
+                    "WHERE slug = ? AND filename = ? AND port = ?",
+                    (parts[0], parts[1], port),
+                ).fetchone()
+
             conn.close()
         except sqlite3.Error as exc:
             print(f"[vault] DB error: {exc}")
@@ -2846,6 +2996,12 @@ def _resolve_vault_image(slug, filename, port):
             if full_path.is_file():
                 print(f"[vault] {port} resolved: {slug}/{fname} -> {row[0]}")
                 return str(full_path.parent), full_path.name
+
+    # Last resort: try direct filesystem path
+    direct = vault_root / slug / filename
+    if direct.is_file():
+        print(f"[vault] {port} direct: {slug}/{filename}")
+        return str(direct.parent), direct.name
 
     print(f"[vault] {port} miss: {slug}/{filename}")
     return None, None
@@ -3530,20 +3686,50 @@ def case_study():
     gallery_id = payload.get("galleryId", "")
     context = payload.get("context", "")
 
-    # Resolve image URLs
+    # Resolve image URLs and video thumbnails
+    _cs_video_exts = {".mp4", ".mov", ".webm", ".m4v"}
     gallery_images = gallery_json.get("images", [])
+
+    # Look up video thumbnails from vault DB
+    import sqlite3 as _cs2_sqlite3
+    _cs2_db = os.path.join(MAESTRO_ROOT, "cue-vault", "vault.db")
+    _cs2_lookup = {}
+    if os.path.isfile(_cs2_db):
+        try:
+            _cs2_conn = _cs2_sqlite3.connect(_cs2_db)
+            _cs2_conn.row_factory = _cs2_sqlite3.Row
+            for row in _cs2_conn.execute(
+                "SELECT filename, slug, port, context FROM vault_images"
+            ).fetchall():
+                key = (row["slug"], row["filename"], row["port"])
+                _cs2_lookup[key] = row["context"] or ""
+            _cs2_conn.close()
+        except _cs2_sqlite3.Error:
+            pass
+
     for img in gallery_images:
-        if img.get("slug") and img.get("filename"):
-            slug = img["slug"]
+        slug = img.get("slug", "")
+        fname = img.get("filename", "")
+        port = img.get("port", "cold")
+        ext = os.path.splitext(fname)[1].lower() if fname else ""
+        is_video = ext in _cs_video_exts or img.get("type") == "video"
+
+        if slug and fname:
             if slug in ("_drops", "_hot_loose", "_cold_loose"):
-                img["url"] = "/drops/{}".format(img["filename"])
+                img["url"] = "/drops/{}".format(fname)
             else:
-                port = img.get("port", "cold")
-                img["url"] = "/vault/{}/{}/{}".format(
-                    port, slug, img["filename"]
-                )
+                img["url"] = "/vault/{}/{}/{}".format(port, slug, fname)
         elif img.get("src"):
             img["url"] = img["src"]
+
+        # Resolve thumbnail for videos
+        if is_video:
+            img["is_video"] = True
+            thumb = img.get("thumbnail", "") or _cs2_lookup.get((slug, fname, port), "")
+            if thumb and slug:
+                img["thumb_url"] = "/vault/{}/{}/{}".format(port, slug, thumb)
+            else:
+                img["thumb_url"] = img.get("url", "")
 
     # Use existing captions as narratives (no blocking LLM call)
     title = gallery_json.get("title", "Gallery")
@@ -3637,12 +3823,17 @@ def contact_sheet():
         # Determine orientation from tags
         orientation = "vertical" if "vertical" in tags_str else "horizontal"
 
-        # Category from tags or slug
+        # Category: tags first, then VRGB semantic band, then slug
         category = slug
         for tag, label in _tag_categories:
             if tag in tags_str:
                 category = label
                 break
+        else:
+            # Fallback: use semantic band from gallery data (agent-assigned)
+            band = img.get("band", "")
+            if band:
+                category = band.title()
 
         item = {
             "filename": fname,
@@ -3670,6 +3861,125 @@ def contact_sheet():
     )
 
 
+@app.route("/api/gallery", methods=["POST"])
+def api_save_gallery():
+    """Persist a gallery to the vault registry."""
+    import sqlite3 as _gal_sqlite3
+    payload = request.get_json(silent=True) or {}
+    slug = payload.get("slug", "")
+    title = payload.get("title", "")
+    images = payload.get("images", [])
+    created_at = payload.get("created_at")
+    if not slug or not images:
+        return jsonify({"error": "slug and images required"}), 400
+    # Skip persist if images are still blob URLs (pre-registration drops)
+    if any("blob:" in (img.get("src", "") or "") for img in images):
+        if not any(img.get("slug") for img in images):
+            print("[gallery] skipping save (blob URLs, not yet registered): %s" % slug)
+            return jsonify({"ok": True, "slug": slug, "deferred": True})
+    db_path = MAESTRO_ROOT / "cue-vault" / "vault.db"
+    try:
+        conn = _gal_sqlite3.connect(str(db_path))
+        conn.execute("""
+            CREATE TABLE IF NOT EXISTS galleries (
+                slug TEXT PRIMARY KEY, title TEXT, images TEXT, created_at TEXT
+            )
+        """)
+        # Enrich video images with thumbnails from vault_images if missing
+        _vid_exts = {".mp4", ".mov", ".webm", ".m4v"}
+        for img in images:
+            fname = img.get("filename", "")
+            ext = os.path.splitext(fname)[1].lower() if fname else ""
+            if ext in _vid_exts and not img.get("thumbnail"):
+                row = conn.execute(
+                    "SELECT context FROM vault_images WHERE filename = ? LIMIT 1",
+                    (fname,),
+                ).fetchone()
+                if row and row[0]:
+                    img["thumbnail"] = row[0]
+                else:
+                    base = os.path.splitext(fname)[0]
+                    img["thumbnail"] = base + ".thumb.jpg"
+                if "type" not in img:
+                    img["type"] = "video"
+        conn.execute(
+            "INSERT OR REPLACE INTO galleries (slug, title, images, created_at) VALUES (?, ?, ?, ?)",
+            (slug, title, json.dumps(images), created_at or datetime.utcnow().isoformat(timespec="seconds") + "Z"),
+        )
+        conn.commit()
+        conn.close()
+    except _gal_sqlite3.Error as exc:
+        return jsonify({"error": str(exc)}), 500
+    print("[gallery] saved: %s (%d images)" % (slug, len(images)))
+    return jsonify({"ok": True, "slug": slug})
+
+
+@app.route("/api/galleries", methods=["GET"])
+def api_list_galleries():
+    """List galleries, newest first. Optional ?since= and ?until= ISO timestamps."""
+    import sqlite3 as _gal_sqlite3
+    since = request.args.get("since")
+    until = request.args.get("until")
+    limit = int(request.args.get("limit", 50))
+    db_path = MAESTRO_ROOT / "cue-vault" / "vault.db"
+    try:
+        conn = _gal_sqlite3.connect(str(db_path))
+        clauses = []
+        params = []
+        if since:
+            clauses.append("created_at >= ?")
+            params.append(since)
+        if until:
+            clauses.append("created_at <= ?")
+            params.append(until)
+        where = (" WHERE " + " AND ".join(clauses)) if clauses else ""
+        rows = conn.execute(
+            "SELECT slug, title, images, created_at FROM galleries"
+            + where + " ORDER BY created_at DESC LIMIT ?",
+            params + [limit],
+        ).fetchall()
+        conn.close()
+    except _gal_sqlite3.Error as exc:
+        return jsonify({"error": str(exc)}), 500
+    results = []
+    for slug, title, images_json, created_at in rows:
+        try:
+            imgs = json.loads(images_json)
+        except (ValueError, TypeError):
+            imgs = []
+        results.append({
+            "slug": slug, "title": title,
+            "image_count": len(imgs), "created_at": created_at,
+        })
+    return jsonify(results)
+
+
+@app.route("/api/gallery/<slug>", methods=["GET"])
+def api_get_gallery(slug):
+    """Fetch a single gallery by slug with full image list."""
+    import sqlite3 as _gal_sqlite3
+    db_path = MAESTRO_ROOT / "cue-vault" / "vault.db"
+    try:
+        conn = _gal_sqlite3.connect(str(db_path))
+        row = conn.execute(
+            "SELECT slug, title, images, created_at FROM galleries WHERE slug = ?",
+            (slug,),
+        ).fetchone()
+        conn.close()
+    except _gal_sqlite3.Error as exc:
+        return jsonify({"error": str(exc)}), 500
+    if not row:
+        return jsonify({"error": "not found"}), 404
+    try:
+        imgs = json.loads(row[2])
+    except (ValueError, TypeError):
+        imgs = []
+    return jsonify({
+        "slug": row[0], "title": row[1],
+        "images": imgs, "image_count": len(imgs), "created_at": row[3],
+    })
+
+
 @app.route("/api/regenerate-story", methods=["POST"])
 def api_regenerate_story():
     """Regenerate story narrative with user refinements as context."""
@@ -3690,7 +4000,7 @@ def handle_audio(data):
     try:
         # Handle any speech interruption and stop current speech
         handle_speech_interruption()
-        subprocess.run(['killall', 'say'], stderr=subprocess.DEVNULL)
+        flush_speech_queue()
 
         # Decode base64 audio
         audio_bytes = base64.b64decode(data['audio'].split(',')[1])
@@ -3761,10 +4071,12 @@ def handle_audio(data):
         enhanced_text = assemble_prompt_with_budget(context_sections, enhanced_text)
 
         # Send to Claude Code (run from parent maestro directory if exists)
+        global _active_claude_process, _claude_voided
+        _claude_voided = False
         cwd = MAESTRO_ROOT
 
         process = subprocess.Popen(
-            ['claude'],
+            CLAUDE_CMD,
             stdin=subprocess.PIPE,
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
@@ -3772,7 +4084,16 @@ def handle_audio(data):
             cwd=cwd,
             env=CLEAN_CLAUDE_ENV
         )
+        _active_claude_process = process
         stdout, stderr = process.communicate(input=enhanced_text)
+        _active_claude_process = None
+
+        if _claude_voided:
+            print("[VOID] Claude response discarded (message was voided)")
+            emit('state_change', {'state': 'idle'})
+            Path(temp_file.name).unlink()
+            return
+
         response = stdout.strip()
 
         if stderr and stderr.strip():
@@ -3817,7 +4138,7 @@ def handle_button_response(data):
     try:
         # Handle any speech interruption and stop current speech
         handle_speech_interruption()
-        subprocess.run(['killall', 'say'], stderr=subprocess.DEVNULL)
+        flush_speech_queue()
 
         answer = data['answer']  # "Yes" or "No"
 
@@ -3886,10 +4207,12 @@ CRITICAL: If the user responds "No" to a yes/no question, accept their answer as
 IMPORTANT: When speaking, say "Yes OR No" not "yes-no" or "yes slash no"."""
 
         # Send to Claude Code
+        global _active_claude_process, _claude_voided
+        _claude_voided = False
         cwd = MAESTRO_ROOT
 
         process = subprocess.Popen(
-            ['claude'],
+            CLAUDE_CMD,
             stdin=subprocess.PIPE,
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
@@ -3897,7 +4220,15 @@ IMPORTANT: When speaking, say "Yes OR No" not "yes-no" or "yes slash no"."""
             cwd=cwd,
             env=CLEAN_CLAUDE_ENV
         )
+        _active_claude_process = process
         stdout, stderr = process.communicate(input=enhanced_text)
+        _active_claude_process = None
+
+        if _claude_voided:
+            print("[VOID] Claude response discarded (button response was voided)")
+            emit('state_change', {'state': 'idle'})
+            return
+
         response = stdout.strip()
 
         # Log conversation (button answer as user input) with input length
@@ -3953,7 +4284,7 @@ def handle_approval_response(data):
     try:
         # Handle any speech interruption and stop current speech
         handle_speech_interruption()
-        subprocess.run(['killall', 'say'], stderr=subprocess.DEVNULL)
+        flush_speech_queue()
 
         decision = data['decision']  # "Approve" or "Deny"
         approval_data = data.get('approval_data', {})
@@ -4076,7 +4407,7 @@ def handle_input_response(data):
     try:
         # Handle any speech interruption and stop current speech
         handle_speech_interruption()
-        subprocess.run(['killall', 'say'], stderr=subprocess.DEVNULL)
+        flush_speech_queue()
 
         # Extract input data
         input_data = data.get('input') or data.get('choice')
@@ -4255,10 +4586,12 @@ def handle_input_response(data):
         enhanced_text = f"{flux_context}{summary_context}{speech_context}{variables_context}{history_context}[USER INPUT]\n{user_message}"
 
         # Send to Claude Code
+        global _active_claude_process, _claude_voided
+        _claude_voided = False
         cwd = MAESTRO_ROOT
 
         process = subprocess.Popen(
-            ['claude'],
+            CLAUDE_CMD,
             stdin=subprocess.PIPE,
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
@@ -4266,7 +4599,15 @@ def handle_input_response(data):
             cwd=cwd,
             env=CLEAN_CLAUDE_ENV
         )
+        _active_claude_process = process
         stdout, stderr = process.communicate(input=enhanced_text)
+        _active_claude_process = None
+
+        if _claude_voided:
+            print("[VOID] Claude response discarded (input response was voided)")
+            emit('state_change', {'state': 'idle'})
+            return
+
         response = stdout.strip()
 
         # Log conversation with input length
@@ -4303,7 +4644,7 @@ def handle_text_message(data):
     try:
         # Handle any speech interruption and stop current speech
         handle_speech_interruption()
-        subprocess.run(['killall', 'say'], stderr=subprocess.DEVNULL)
+        flush_speech_queue()
 
         text = data['text'].strip()
 
@@ -4337,10 +4678,12 @@ def handle_text_message(data):
         enhanced_text = assemble_prompt_with_budget(context_sections, enhanced_text)
 
         # Send to Claude Code (run from parent maestro directory if exists)
+        global _active_claude_process, _claude_voided
+        _claude_voided = False
         cwd = MAESTRO_ROOT
 
         process = subprocess.Popen(
-            ['claude'],
+            CLAUDE_CMD,
             stdin=subprocess.PIPE,
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
@@ -4348,7 +4691,15 @@ def handle_text_message(data):
             cwd=cwd,
             env=CLEAN_CLAUDE_ENV
         )
+        _active_claude_process = process
         stdout, stderr = process.communicate(input=enhanced_text)
+        _active_claude_process = None
+
+        if _claude_voided:
+            print("[VOID] Claude response discarded (text message was voided)")
+            emit('state_change', {'state': 'idle'})
+            return
+
         response = stdout.strip()
 
         # Log conversation with input length
@@ -4725,27 +5076,26 @@ def handle_narrate_caption(data):
     if not text:
         return
     # Kill any current speech first
-    subprocess.run(['killall', 'say'], stderr=subprocess.DEVNULL)
+    flush_speech_queue()
+    global tts_interrupted
+    tts_interrupted = False
+    _speech_queue.put((text, 0, False))
 
-    def _speak():
-        try:
-            subprocess.run(['say', text], check=False, timeout=120)
-        except Exception:
-            pass
-        socketio.emit('narration_done')
+    def _wait_done():
+        _speech_queue.join()
+        socketio.emit("narration_done")
 
-    threading.Thread(target=_speak, daemon=True).start()
+    threading.Thread(target=_wait_done, daemon=True).start()
 
 
 @socketio.on('interrupt')
 def handle_interrupt():
     """Stop current speech and cancel queued chunks"""
-    global tts_process, tts_interrupted
-    tts_interrupted = True
+    global tts_process
     if tts_process:
         tts_process.terminate()
         tts_process = None
-    subprocess.run(['killall', 'say'], stderr=subprocess.DEVNULL)
+    flush_speech_queue()
     emit('state_change', {'state': 'idle'})
 
 
@@ -5017,7 +5367,7 @@ def handle_cuesheet_launch(data):
         announce_text = doc.get("announce", "")
         if announce_text:
             socketio.emit("response", {"role": "assistant", "text": announce_text, "tts_chunks": [announce_text]})
-            subprocess.run(["say", announce_text], check=False, timeout=30)
+            _speech_queue.put((announce_text, 0, False))
 
         print("[CUESHEET] Launched: %s (%d tokens created)" % (sheet_name, len(created_tokens)))
 
@@ -5040,7 +5390,10 @@ def api_speak():
     if not text:
         return {"ok": False, "error": "no text"}, 400
     socketio.emit("response", {"role": "assistant", "text": text, "tts_chunks": [text]})
-    subprocess.run(["say", text], check=False, timeout=30)
+    global tts_interrupted
+    tts_interrupted = False
+    _speech_queue.put((text, 0, False))
+    _speech_queue.join()
     return {"ok": True}
 
 

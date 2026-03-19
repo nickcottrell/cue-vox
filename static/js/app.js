@@ -2171,17 +2171,22 @@ socket.on("token_created", function(data) {
     last_accessed: data.last_accessed || data.created_at
   };
 
-  // Gallery tokens: map IDs, store images, create modifier thumbnail, start thermal clock
+  // Gallery tokens: map IDs, store slug, create modifier thumbnail, start thermal clock
   if (data.type === "gallery" && data.gallery_id) {
     galleryTokenMap[data.gallery_id] = data.token_id;
     tokenGalleryMap[data.token_id] = data.gallery_id;
-    // Store images in registry for lightbox rehydration
-    tokenRegistry[data.token_id].images = data.images || [];
+    // Store slug and metadata (images come from galleryRegistry, not the token)
+    tokenRegistry[data.token_id].gallery_slug = data.gallery_slug || "";
     tokenRegistry[data.token_id].title = data.title || "Gallery";
     tokenRegistry[data.token_id].image_count = data.image_count || 0;
-    // Seed galleryRegistry so lightbox works
+    // galleryRegistry already has the images from render time
     if (!galleryRegistry[data.gallery_id]) {
-      galleryRegistry[data.gallery_id] = { images: data.images || [], title: data.title || "" };
+      // Fallback: if somehow missing, seed with whatever we have
+      var existingStrip = document.querySelector("[data-gallery-id='" + data.gallery_id + "']");
+      if (existingStrip) {
+        var slug = existingStrip.getAttribute("data-gallery-slug") || "";
+        galleryRegistry[data.gallery_id] = { images: [], title: data.title || "", slug: slug };
+      }
     }
     // Create the modifier thumbnail (purple dot + thermal countdown)
     createModifierThumbnail(data.token_id, null);
@@ -2189,6 +2194,11 @@ socket.on("token_created", function(data) {
     socket.emit("create_modifier", { token_id: data.token_id });
     // Track in pinnedGalleries for pin-icon state
     pinnedGalleries[data.gallery_id] = modifierTokens[data.token_id];
+    // Tag the existing gallery strip in chat so "View in Chat" can find it
+    var existingStrip = document.querySelector("[data-gallery-id='" + data.gallery_id + "']");
+    if (existingStrip) {
+      existingStrip.setAttribute("data-gallery-token-id", data.token_id);
+    }
     addCueCardToStream(data.token_id);
     return;
   }
@@ -2218,6 +2228,44 @@ socket.on("token_created", function(data) {
 // ============================================
 // Modifier Tokens - Thumbnail Management
 // ============================================
+
+// ============================================
+// Gallery "View in Chat" Logic
+// ============================================
+
+function isGalleryInRecentChat(tokenId) {
+  var cards = conversation.querySelectorAll(".card");
+  var total = cards.length;
+  var threshold = Math.max(0, total - 20);
+  for (var i = total - 1; i >= threshold; i--) {
+    var strip = cards[i].querySelector("[data-gallery-token-id='" + tokenId + "']");
+    if (strip) return true;
+  }
+  return false;
+}
+
+function updateGalleryViewBtn(tokenId, btn) {
+  if (!btn) return;
+  btn.style.display = isGalleryInRecentChat(tokenId) ? "none" : "block";
+}
+
+function reinjectGallery(tokenId) {
+  var data = tokenRegistry[tokenId];
+  if (!data || !data.images) return;
+
+  var strip = createGalleryStrip({ title: data.title || "Gallery", images: data.images });
+  if (!strip) return;
+
+  // Tag it so we can find it later
+  strip.setAttribute("data-gallery-token-id", tokenId);
+
+  // Wrap in a card and append to conversation
+  var card = document.createElement("div");
+  card.className = "card assistant";
+  card.appendChild(strip);
+  conversation.appendChild(card);
+  conversation.scrollTop = conversation.scrollHeight;
+}
 
 function createModifierThumbnail(tokenId, sourceCard) {
   var container = document.getElementById("pinnedTokens");
@@ -2261,6 +2309,27 @@ function createModifierThumbnail(tokenId, sourceCard) {
   info.appendChild(countdown);
 
   thumb.appendChild(info);
+
+  // "View in Chat" button for gallery tokens
+  if (data.type === "gallery") {
+    var viewBtn = document.createElement("button");
+    viewBtn.className = "pinned-thumbnail__view-btn";
+    viewBtn.textContent = "View in Chat";
+    viewBtn.style.display = "none";
+    info.appendChild(viewBtn);
+
+    viewBtn.addEventListener("click", function(e) {
+      e.stopPropagation();
+      reinjectGallery(tokenId);
+      viewBtn.style.display = "none";
+    });
+
+    // Check visibility on creation and periodically
+    updateGalleryViewBtn(tokenId, viewBtn);
+    thumb._viewBtnInterval = setInterval(function() {
+      updateGalleryViewBtn(tokenId, viewBtn);
+    }, 5000);
+  }
 
   // Click countdown = mint fresh modifier (renew), click elsewhere = lightbox
   thumb.addEventListener("click", function(e) {
@@ -2463,6 +2532,10 @@ function startThermalCountdown(tokenId) {
 
 function removeModifierThumbnail(tokenId) {
   var thumb = modifierTokens[tokenId];
+  // Clean up gallery view-btn interval
+  if (thumb && thumb._viewBtnInterval) {
+    clearInterval(thumb._viewBtnInterval);
+  }
   if (thumb && thumb.parentNode) {
     thumb.parentNode.removeChild(thumb);
   }
@@ -3034,9 +3107,15 @@ socket.on("hydrate_modifiers", function(data) {
       created_at: target.last_accessed || target.created_at
     };
     // Gallery rehydration: seed galleryRegistry so lightbox works after reload
+    // Images come from vault.db lookup (via modifier_handlers), not the token
     if (target.type === "gallery" && target.images) {
       var hydratedGalleryId = "hydrated_" + target.token_id;
-      galleryRegistry[hydratedGalleryId] = { images: target.images, title: target.title || target.label || "Gallery" };
+      var hydratedSlug = target.gallery_slug || "";
+      galleryRegistry[hydratedGalleryId] = {
+        images: target.images,
+        title: target.title || target.label || "Gallery",
+        slug: hydratedSlug
+      };
       galleryTokenMap[hydratedGalleryId] = target.token_id;
       tokenGalleryMap[target.token_id] = hydratedGalleryId;
       pinnedGalleries[hydratedGalleryId] = true;
@@ -3882,7 +3961,29 @@ function createGalleryStrip(data) {
     return null;
   }
 
-  galleryRegistry[id] = { images: images, title: data.title || "" };
+  // Generate a stable, human-readable gallery slug
+  var slugBase = (data.title || "gallery").toLowerCase()
+    .replace(/[^a-z0-9]+/g, "-").replace(/^-|-$/g, "");
+  var now = new Date();
+  var dateStamp = String(now.getMonth() + 1).padStart(2, "0")
+    + String(now.getDate()).padStart(2, "0")
+    + "-" + String(now.getHours()).padStart(2, "0")
+    + String(now.getMinutes()).padStart(2, "0");
+  var gallerySlug = slugBase + "-" + dateStamp;
+
+  galleryRegistry[id] = { images: images, title: data.title || "", slug: gallerySlug };
+
+  // Persist gallery to vault registry (fire and forget)
+  fetch("/api/gallery", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({
+      slug: gallerySlug,
+      title: data.title || "",
+      images: images,
+      created_at: now.toISOString()
+    })
+  }).catch(function(err) { console.error("[gallery] save failed:", err); });
 
   var figure = document.createElement("figure");
   var layout = images.length === 1 ? "gallery-hero"
@@ -3890,6 +3991,7 @@ function createGalleryStrip(data) {
              : "gallery-strip";
   figure.className = layout;
   figure.setAttribute("data-gallery-id", id);
+  figure.setAttribute("data-gallery-slug", gallerySlug);
 
   // Header bar: caption (left) + icons (right)
   var header = document.createElement("div");
@@ -3899,6 +4001,20 @@ function createGalleryStrip(data) {
   caption.className = "gallery-strip__title";
   caption.textContent = data.title || "";
   header.appendChild(caption);
+
+  // Copyable gallery ID badge
+  var idBadge = document.createElement("button");
+  idBadge.className = "gallery__id-badge";
+  idBadge.textContent = gallerySlug;
+  idBadge.setAttribute("title", "Copy gallery ID");
+  idBadge.addEventListener("click", function(e) {
+    e.stopPropagation();
+    navigator.clipboard.writeText(gallerySlug).then(function() {
+      idBadge.textContent = "copied";
+      setTimeout(function() { idBadge.textContent = gallerySlug; }, 1500);
+    });
+  });
+  header.appendChild(idBadge);
 
   var actions = document.createElement("div");
   actions.className = "gallery__actions";
@@ -3993,16 +4109,8 @@ function createGalleryStrip(data) {
             btn.classList.add("gallery-strip__item--error");
           });
         } else {
-          thumb = document.createElement("video");
-          thumb.className = "gallery-strip__thumb";
-          thumb.src = resolveGalleryImageUrl(img);
-          thumb.preload = "metadata";
-          thumb.muted = true;
-          thumb.playsInline = true;
-          attachPortFallback(thumb, function() {
-            console.error("[gallery] video thumbnail failed to load: " + this.src);
-            btn.classList.add("gallery-strip__item--error");
-          });
+          thumb = document.createElement("div");
+          thumb.className = "gallery-strip__thumb gallery-strip__thumb--video-placeholder";
         }
         btn.appendChild(thumb);
         var badge = document.createElement("span");
@@ -4263,23 +4371,51 @@ function renderGallerySlide() {
   document.getElementById("galleryPrev").style.display = images.length > 1 ? "" : "none";
   document.getElementById("galleryNext").style.display = images.length > 1 ? "" : "none";
 
-  // Replace the media element entirely -- prevents stale pixels / lingering playback
+  // Stop and clean up old media before replacing
   var oldEl = document.getElementById("galleryLightboxImage");
+  if (oldEl && oldEl.tagName === "VIDEO") {
+    oldEl.pause();
+    oldEl.removeAttribute("src");
+    oldEl.load();
+  }
   var stage = oldEl.parentNode;
   var newEl;
   var mediaSrc = resolveGalleryImageUrl(img);
+
+  // Show loading spinner while media loads
+  var spinner = stage.querySelector(".gallery-lightbox__spinner");
+  if (!spinner) {
+    spinner = document.createElement("div");
+    spinner.className = "gallery-lightbox__spinner";
+    stage.appendChild(spinner);
+  }
+  spinner.style.display = "";
 
   if (isGalleryVideo(img)) {
     newEl = document.createElement("video");
     newEl.className = "gallery-lightbox__image gallery-lightbox__video";
     newEl.id = "galleryLightboxImage";
     newEl.controls = true;
-    newEl.autoplay = true;
     newEl.playsInline = true;
-    newEl.onloadeddata = function() {
+    newEl.preload = "metadata";
+    // Use thumbnail as poster frame so something shows immediately
+    if (img.thumbnail) {
+      var posterImg = { slug: img.slug, filename: img.thumbnail, port: img.port };
+      newEl.poster = resolveGalleryImageUrl(posterImg);
+    }
+    newEl.oncanplay = function() {
+      spinner.style.display = "none";
       newEl.classList.add("gallery-lightbox__image--visible");
     };
+    // Timeout: if video stalls, show poster and controls anyway
+    var _videoTimeout = setTimeout(function() {
+      spinner.style.display = "none";
+      newEl.classList.add("gallery-lightbox__image--visible");
+    }, 4000);
+    newEl.addEventListener("canplay", function() { clearTimeout(_videoTimeout); });
     attachPortFallback(newEl, function() {
+      clearTimeout(_videoTimeout);
+      spinner.style.display = "none";
       console.error("[gallery] lightbox video failed to load: " + this.src);
       newEl.classList.add("gallery-lightbox__image--visible");
       newEl.classList.add("gallery-lightbox__image--error");
@@ -4291,9 +4427,11 @@ function renderGallerySlide() {
     newEl.id = "galleryLightboxImage";
     newEl.alt = img.caption || img.filename || "";
     newEl.onload = function() {
+      spinner.style.display = "none";
       newEl.classList.add("gallery-lightbox__image--visible");
     };
     attachPortFallback(newEl, function() {
+      spinner.style.display = "none";
       console.error("[gallery] lightbox image failed to load: " + this.src);
       newEl.classList.add("gallery-lightbox__image--visible");
       newEl.classList.add("gallery-lightbox__image--error");
@@ -4301,6 +4439,24 @@ function renderGallerySlide() {
     newEl.src = mediaSrc;
   }
   stage.replaceChild(newEl, oldEl);
+
+  // Prefetch next slide poster/thumbnail
+  if (images.length > 1) {
+    var nextIdx = (idx + 1) % images.length;
+    var nextImg = images[nextIdx];
+    if (nextImg) {
+      var prefetchUrl;
+      if (isGalleryVideo(nextImg) && nextImg.thumbnail) {
+        prefetchUrl = resolveGalleryImageUrl({ slug: nextImg.slug, filename: nextImg.thumbnail, port: nextImg.port });
+      } else if (!isGalleryVideo(nextImg)) {
+        prefetchUrl = resolveGalleryImageUrl(nextImg);
+      }
+      if (prefetchUrl) {
+        var prefetch = new Image();
+        prefetch.src = prefetchUrl;
+      }
+    }
+  }
 }
 
 function navigateGallery(direction) {
@@ -4353,10 +4509,12 @@ function pinGallery(galleryId) {
   var entry = galleryRegistry[galleryId];
   if (!entry) return;
 
-  // Emit to backend -- token_created handler builds the thumbnail
+  // Emit to backend -- slim token with gallery_slug for vault lookup
   socket.emit("pin_gallery", {
     gallery_id: galleryId,
+    gallery_slug: entry.slug || "",
     title: entry.title || "Gallery",
+    image_count: (entry.images || []).length,
     images: entry.images || []
   });
 }
@@ -5061,7 +5219,8 @@ function pinFromStream(tokenId) {
       images.push(item);
     }
 
-    var strip = createGalleryStrip({ images: images });
+    var dropTitle = mediaFiles.length + " Dropped " + (mediaFiles.length === 1 ? "Image" : "Images");
+    var strip = createGalleryStrip({ images: images, title: dropTitle });
     if (!strip) {
       console.warn("[drop-viewer] createGalleryStrip returned null");
       return;
@@ -5088,6 +5247,30 @@ function pinFromStream(tokenId) {
 
     // Get the gallery ID from the strip element
     var galleryId = strip.getAttribute("data-gallery-id");
+    var dropsPending = mediaFiles.length;
+
+    // Re-persist gallery to vault.db once all drops are registered with real paths
+    function _maybeRepersistDropGallery() {
+      dropsPending--;
+      if (dropsPending > 0) return;
+      var entry = galleryRegistry[galleryId];
+      if (!entry) return;
+      // Only re-persist if images now have real slugs (not blob URLs)
+      var resolved = entry.images.filter(function(img) { return img.slug && img.filename; });
+      if (resolved.length === 0) return;
+      var gallerySlug = entry.slug || "";
+      console.log("[drop-viewer] all registered, re-persisting gallery: " + gallerySlug);
+      fetch("/api/gallery", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          slug: gallerySlug,
+          title: entry.title || "",
+          images: entry.images,
+          created_at: new Date().toISOString()
+        })
+      }).catch(function(err) { console.error("[drop-viewer] re-persist failed:", err); });
+    }
 
     // Register each image: save, analyze, create token chain
     for (var k = 0; k < mediaFiles.length; k++) {
@@ -5112,6 +5295,7 @@ function pinFromStream(tokenId) {
           }).then(function(data) {
               if (!data) {
                 console.warn("[drop-viewer] no data returned for " + fname);
+                _maybeRepersistDropGallery();
                 return;
               }
               var status = data.recognized ? "RECOGNIZED" : "NEW";
@@ -5139,9 +5323,12 @@ function pinFromStream(tokenId) {
                 entry.images[idx].slug = "_drops";
                 entry.images[idx].filename = hashName;
                 entry.images[idx].port = "hot";
+                if (data.caption) entry.images[idx].caption = data.caption;
               }
+              _maybeRepersistDropGallery();
             }).catch(function(err) {
               console.error("[drop-viewer] register failed for " + fname + ":", err);
+              _maybeRepersistDropGallery();
             });
         };
         reader.readAsDataURL(mediaFiles[idx]);

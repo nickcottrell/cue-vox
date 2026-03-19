@@ -1282,6 +1282,25 @@ body {
   color: var(--text, #fff);
 }
 
+.pinned-thumbnail__view-btn {
+  display: none;
+  font-size: 10px;
+  line-height: 1;
+  color: #a855f7;
+  background: none;
+  border: 1px solid rgba(168, 85, 247, 0.3);
+  border-radius: 3px;
+  padding: 3px 6px;
+  margin: 4px 0 0 0;
+  cursor: pointer;
+  transition: background 0.2s ease, color 0.2s ease;
+}
+
+.pinned-thumbnail__view-btn:hover {
+  background: rgba(168, 85, 247, 0.15);
+  color: #c084fc;
+}
+
 /* ============================================
    LIGHTBOX MODAL
    ============================================ */
@@ -2013,6 +2032,10 @@ body {
   object-fit: cover;
 }
 
+.gallery-strip__thumb--video-placeholder {
+  background: #1a1a1a;
+}
+
 .gallery-strip__item--error .gallery-strip__thumb {
   display: none;
 }
@@ -2101,6 +2124,27 @@ body {
   align-items: center;
   justify-content: space-between;
   margin-bottom: var(--space-xs, 0.25rem);
+}
+
+.gallery__id-badge {
+  font-family: var(--font-family-mono, monospace);
+  font-size: 10px;
+  color: var(--text-secondary, #888);
+  background: none;
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  border-radius: 3px;
+  padding: 1px 6px;
+  cursor: pointer;
+  opacity: 0.4;
+  transition: opacity 0.2s ease, color 0.2s ease;
+  white-space: nowrap;
+  flex-shrink: 0;
+}
+
+.gallery__id-badge:hover {
+  opacity: 1;
+  color: var(--text, #fff);
+  border-color: rgba(255, 255, 255, 0.2);
 }
 
 .gallery__actions {
@@ -2459,6 +2503,27 @@ body {
   max-height: 80vh;
   border-radius: var(--radius-sm, 4px);
   outline: none;
+  background: #000;
+}
+
+/* Loading spinner for lightbox media */
+.gallery-lightbox__spinner {
+  position: absolute;
+  top: 50%;
+  left: 50%;
+  transform: translate(-50%, -50%);
+  width: 36px;
+  height: 36px;
+  border: 3px solid rgba(255, 255, 255, 0.15);
+  border-top-color: rgba(255, 255, 255, 0.7);
+  border-radius: 50%;
+  animation: gallery-spin 0.7s linear infinite;
+  z-index: 1;
+  pointer-events: none;
+}
+
+@keyframes gallery-spin {
+  to { transform: translate(-50%, -50%) rotate(360deg); }
 }
 
 /* ============================================
