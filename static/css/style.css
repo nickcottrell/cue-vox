@@ -1975,6 +1975,7 @@ body {
   position: relative;
   width: 100%;
   margin-top: var(--space-md, 0.75rem);
+  padding-left: var(--space-md, 0.75rem);
 }
 
 .gallery-strip__title {
@@ -2156,9 +2157,62 @@ body {
 
 .gallery__header .pin-icon,
 .gallery__header .case-study-icon,
-.gallery__header .contact-sheet-icon {
+.gallery__header .contact-sheet-icon,
+.gallery__header .transcription-icon {
   position: static;
   display: flex;
+}
+
+/* -- Transcription Icon (waveform glyph) -- */
+.transcription-icon {
+  position: absolute;
+  top: 0;
+  right: 88px;
+  width: 28px;
+  height: 28px;
+  background: none;
+  border: none;
+  cursor: pointer;
+  padding: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: 50%;
+  transition: all 0.2s ease;
+  opacity: 0.4;
+}
+
+.transcription-icon:hover {
+  opacity: 0.9;
+  background: rgba(255, 255, 255, 0.08);
+}
+
+.transcription-icon__glyph {
+  width: 14px;
+  height: 14px;
+  display: flex;
+  align-items: flex-end;
+  justify-content: center;
+  gap: 1.5px;
+}
+
+.transcription-icon__glyph::before,
+.transcription-icon__glyph::after {
+  content: "";
+  display: block;
+  width: 2px;
+  border-radius: 1px;
+  background: var(--text-secondary, #888);
+}
+
+.transcription-icon__glyph::before {
+  height: 6px;
+  box-shadow: -3.5px 2px 0 0 var(--text-secondary, #888);
+}
+
+.transcription-icon__glyph::after {
+  height: 10px;
+  box-shadow: 3.5px 2px 0 0 var(--text-secondary, #888);
 }
 
 /* -- Contact Sheet Icon (grid glyph) -- */

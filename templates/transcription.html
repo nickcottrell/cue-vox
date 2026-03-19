@@ -1,0 +1,101 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>{{ title }} - Transcription</title>
+
+    <link rel="stylesheet" href="https://nickcottrell.github.io/haberdash/haberdash.css">
+    <link rel="stylesheet" href="/static/css/transcription.css">
+</head>
+<body>
+    <article class="transcription">
+        <header class="transcription__header">
+            <div class="transcription__icon" aria-hidden="true">
+                <span></span><span></span><span></span><span></span><span></span>
+            </div>
+            <div>
+                <h1 class="transcription__title">{{ title }}</h1>
+                <p class="transcription__meta">{{ item_count }} clips</p>
+            </div>
+        </header>
+
+        <div class="transcription__timeline">
+            {% for item in items %}
+            <div class="transcription__entry">
+                <div class="transcription__figure">
+                    <span class="transcription__fig-label">Fig. {{ loop.index }}</span>
+                    <img class="transcription__thumb{% if item.get('orientation') == 'vertical' %} transcription__thumb--portrait{% endif %}"
+                         src="{{ item.get('thumb_url') or item.get('url', '') }}"
+                         alt="{{ item.get('caption', '') }}"
+                         loading="lazy">
+                    {% if item.get('duration') %}
+                    <span class="transcription__duration">{{ "%.0f"|format(item.get('duration', 0)) }}s</span>
+                    {% endif %}
+                </div>
+                <div class="transcription__content">
+                    <p class="transcription__filename">
+                        {% if item.get('is_video') %}<span class="transcription__video-badge">VID</span>{% endif %}
+                        {{ item.get('filename', '') }}
+                    </p>
+                    {% if item.get('caption') %}
+                    <p class="transcription__caption">{{ item.get('caption', '') }}</p>
+                    {% endif %}
+
+                    {% if item.get('segments') %}
+                    <div class="transcription__segments">
+                        {% for seg in item.get('segments', []) %}
+                        <div class="transcription__segment">
+                            <span class="transcription__timecode">{{ seg.get('start', '') }}</span>
+                            <span class="transcription__text">{{ seg.get('text', '') }}</span>
+                        </div>
+                        {% endfor %}
+                    </div>
+                    {% elif item.get('transcript_text') %}
+                    <div class="transcription__fulltext">
+                        <p>{{ item.get('transcript_text', '') }}</p>
+                    </div>
+                    {% endif %}
+                </div>
+            </div>
+            {% endfor %}
+        </div>
+
+        {% if transcriptions %}
+        <section class="transcription__dump">
+            <h2 class="transcription__dump-title">Full Transcriptions</h2>
+            <p class="transcription__dump-meta">{{ transcriptions|length }} clips with Whisper transcription data</p>
+
+            {% for tr in transcriptions %}
+            <div class="transcription__dump-clip">
+                <h3 class="transcription__dump-filename">{{ tr.get('filename', '') }}
+                    {% if tr.get('duration') %}
+                    <span class="transcription__duration">{{ "%.0f"|format(tr.get('duration', 0)) }}s</span>
+                    {% endif %}
+                </h3>
+
+                {% if tr.get('segments') %}
+                <div class="transcription__segments">
+                    {% for seg in tr.get('segments', []) %}
+                    <div class="transcription__segment">
+                        <span class="transcription__timecode">{{ seg.get('start', '') }}</span>
+                        <span class="transcription__text">{{ seg.get('text', '') }}</span>
+                    </div>
+                    {% endfor %}
+                </div>
+                {% elif tr.get('transcript_text') %}
+                <div class="transcription__fulltext">
+                    <p>{{ tr.get('transcript_text', '') }}</p>
+                </div>
+                {% endif %}
+            </div>
+            {% endfor %}
+        </section>
+        {% endif %}
+
+        <footer class="transcription__footer">
+            Transcription generated with Cue-Vault.
+        </footer>
+    </article>
+</body>
+</html>

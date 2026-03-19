@@ -1,0 +1,306 @@
+/* ============================================
+   TRANSCRIPTION - Timeline Layout
+   ============================================ */
+
+*, *::before, *::after {
+    box-sizing: border-box;
+}
+
+body {
+    margin: 0;
+    padding: 0;
+    background: #fff;
+    color: #1a1a1a;
+    font-family: var(--font-family-body, "Helvetica Neue", Helvetica, Arial, sans-serif);
+    font-size: 14px;
+    line-height: 1.4;
+    -webkit-font-smoothing: antialiased;
+}
+
+.transcription {
+    max-width: 900px;
+    margin: 0 auto;
+    padding: 2rem 1.5rem;
+}
+
+/* -- Header -- */
+.transcription__header {
+    display: flex;
+    align-items: center;
+    gap: 1rem;
+    margin-bottom: 1.5rem;
+    border-bottom: 2px solid #111;
+    padding-bottom: 0.75rem;
+}
+
+.transcription__title {
+    font-size: 13px;
+    font-weight: 400;
+    margin: 0 0 0.25rem;
+    color: #888;
+}
+
+.transcription__meta {
+    font-size: 0.75rem;
+    color: #888;
+    margin: 0;
+}
+
+/* -- Waveform Icon -- */
+.transcription__icon {
+    display: flex;
+    align-items: flex-end;
+    gap: 2px;
+    height: 20px;
+    flex-shrink: 0;
+}
+
+.transcription__icon span {
+    display: block;
+    width: 3px;
+    border-radius: 1.5px;
+    background: #555;
+}
+
+.transcription__icon span:nth-child(1) { height: 6px; }
+.transcription__icon span:nth-child(2) { height: 12px; }
+.transcription__icon span:nth-child(3) { height: 18px; }
+.transcription__icon span:nth-child(4) { height: 12px; }
+.transcription__icon span:nth-child(5) { height: 6px; }
+
+/* -- Timeline -- */
+.transcription__timeline {
+    position: relative;
+    padding-left: 1.5rem;
+}
+
+.transcription__timeline::before {
+    content: "";
+    position: absolute;
+    left: 0;
+    top: 0;
+    bottom: 0;
+    width: 2px;
+    background: #e0e0e0;
+}
+
+/* -- Entry Row -- */
+.transcription__entry {
+    display: flex;
+    gap: 1rem;
+    padding: 0.75rem 0;
+    position: relative;
+    break-inside: avoid;
+    page-break-inside: avoid;
+}
+
+.transcription__entry::before {
+    content: "";
+    position: absolute;
+    left: -1.5rem;
+    top: 1.25rem;
+    width: 8px;
+    height: 8px;
+    background: #555;
+    border-radius: 50%;
+    margin-left: -3px;
+}
+
+/* -- Figure (thumbnail + label) -- */
+.transcription__figure {
+    flex: 0 0 180px;
+    position: relative;
+}
+
+.transcription__fig-label {
+    display: inline-block;
+    font-size: 10px;
+    font-weight: 600;
+    background: #333;
+    color: #fff;
+    padding: 1px 6px;
+    border-radius: 2px;
+    margin-bottom: 4px;
+}
+
+.transcription__thumb {
+    width: 100%;
+    aspect-ratio: 16 / 9;
+    object-fit: cover;
+    display: block;
+    border-radius: 2px;
+    background: #f0f0f0;
+}
+
+.transcription__thumb--portrait {
+    aspect-ratio: 9 / 16;
+    object-fit: cover;
+}
+
+/* -- Content (text) -- */
+.transcription__content {
+    flex: 1;
+    min-width: 0;
+    padding-top: 1.25rem;
+}
+
+.transcription__filename {
+    font-size: 10px;
+    color: #888;
+    margin: 0 0 0.25rem;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+
+.transcription__caption {
+    font-size: 13px;
+    color: #333;
+    margin: 0 0 0.75rem;
+    line-height: 1.5;
+}
+
+/* -- Duration badge -- */
+.transcription__duration {
+    display: inline-block;
+    font-size: 10px;
+    color: #888;
+    margin-top: 4px;
+}
+
+/* -- Transcript Segments -- */
+.transcription__segments {
+    margin-top: 0.5rem;
+    border-left: 2px solid #e0e0e0;
+    padding-left: 0.75rem;
+}
+
+.transcription__segment {
+    display: flex;
+    gap: 0.5rem;
+    align-items: baseline;
+    margin-bottom: 0.35rem;
+    line-height: 1.5;
+}
+
+.transcription__timecode {
+    flex: 0 0 auto;
+    font-family: var(--font-family-mono, monospace);
+    font-size: 10px;
+    color: #aaa;
+    white-space: nowrap;
+}
+
+.transcription__text {
+    font-size: 13px;
+    color: #333;
+}
+
+/* -- Full text fallback (no segments) -- */
+.transcription__fulltext {
+    margin-top: 0.5rem;
+    border-left: 2px solid #e0e0e0;
+    padding-left: 0.75rem;
+}
+
+.transcription__fulltext p {
+    font-size: 13px;
+    color: #333;
+    line-height: 1.6;
+    margin: 0;
+}
+
+.transcription__no-transcript {
+    font-size: 11px;
+    color: #bbb;
+    font-style: italic;
+    margin: 0.5rem 0 0;
+}
+
+/* -- Video Badge -- */
+.transcription__video-badge {
+    display: inline-block;
+    font-size: 0.55rem;
+    background: #333;
+    color: #fff;
+    padding: 0 3px;
+    border-radius: 2px;
+    vertical-align: middle;
+    margin-right: 2px;
+    font-weight: 600;
+    letter-spacing: 0.02em;
+}
+
+/* -- Full Transcriptions Dump -- */
+.transcription__dump {
+    margin-top: 3rem;
+    border-top: 2px solid #111;
+    padding-top: 1.5rem;
+}
+
+.transcription__dump-title {
+    font-size: 15px;
+    font-weight: 600;
+    color: #333;
+    margin: 0 0 0.25rem;
+}
+
+.transcription__dump-meta {
+    font-size: 11px;
+    color: #888;
+    margin: 0 0 1.5rem;
+}
+
+.transcription__dump-clip {
+    margin-bottom: 2rem;
+    break-inside: avoid;
+    page-break-inside: avoid;
+}
+
+.transcription__dump-filename {
+    font-size: 12px;
+    font-weight: 600;
+    color: #555;
+    margin: 0 0 0.5rem;
+    padding-bottom: 0.25rem;
+    border-bottom: 1px solid #e0e0e0;
+}
+
+/* -- Footer -- */
+.transcription__footer {
+    margin-top: 2rem;
+    padding-top: 0.75rem;
+    border-top: 1px solid #ddd;
+    font-size: 0.7rem;
+    color: #aaa;
+    text-align: center;
+}
+
+/* ============================================
+   PRINT STYLES
+   ============================================ */
+@media print {
+    @page {
+        margin: 0.5in;
+        size: letter;
+    }
+
+    body {
+        background: white;
+        font-size: 9pt;
+    }
+
+    .transcription {
+        max-width: none;
+        padding: 0;
+    }
+
+    .transcription__entry {
+        break-inside: avoid;
+        page-break-inside: avoid;
+    }
+
+    .transcription__thumb {
+        border-radius: 0;
+    }
+}

@@ -3861,6 +3861,148 @@ def contact_sheet():
     )
 
 
+@app.route("/transcription", methods=["POST"])
+def transcription_view():
+    """Render a transcription timeline view for a gallery."""
+    payload = request.get_json(silent=True)
+    if not payload:
+        form_json = request.form.get("json", "{}")
+        try:
+            payload = json.loads(form_json)
+        except json.JSONDecodeError:
+            payload = {}
+
+    gallery_json = payload.get("gallery", {})
+    gallery_images = gallery_json.get("images", [])
+    title = gallery_json.get("title", "Transcription")
+
+    _video_exts = {".mp4", ".mov", ".webm", ".m4v"}
+
+    # Load ALL transcriptions from vault DB, indexed multiple ways for fuzzy matching
+    import sqlite3 as _tr_sqlite3
+    _tr_db = os.path.join(MAESTRO_ROOT, "cue-vault", "vault.db")
+    _tr_by_key = {}       # (slug, filename) -> data
+    _tr_by_stem = {}      # filename_stem (lowercase, no ext) -> data
+    _tr_all = []          # all transcription rows for dump section
+    if os.path.isfile(_tr_db):
+        try:
+            _tr_conn = _tr_sqlite3.connect(_tr_db)
+            _tr_conn.row_factory = _tr_sqlite3.Row
+            for row in _tr_conn.execute(
+                "SELECT slug, filename, transcript_text, segments, duration "
+                "FROM transcriptions"
+            ).fetchall():
+                data = {
+                    "slug": row["slug"],
+                    "filename": row["filename"],
+                    "transcript_text": row["transcript_text"] or "",
+                    "segments": row["segments"] or "[]",
+                    "duration": row["duration"] or 0,
+                }
+                _tr_by_key[(row["slug"], row["filename"])] = data
+                stem = os.path.splitext(row["filename"])[0].lower()
+                _tr_by_stem[stem] = data
+                if data["transcript_text"].strip():
+                    _tr_all.append(data)
+            _tr_conn.close()
+        except _tr_sqlite3.Error:
+            pass
+
+    # Tags for orientation detection
+    _tr_tags = {}
+    if os.path.isfile(_tr_db):
+        try:
+            _tr_conn = _tr_sqlite3.connect(_tr_db)
+            _tr_conn.row_factory = _tr_sqlite3.Row
+            for row in _tr_conn.execute(
+                "SELECT slug, filename, tags FROM vault_images"
+            ).fetchall():
+                _tr_tags[(row["slug"], row["filename"])] = row["tags"] or ""
+            _tr_conn.close()
+        except _tr_sqlite3.Error:
+            pass
+
+    # Collect gallery slugs for filtering transcriptions dump
+    gallery_slugs = set()
+
+    items = []
+    for img in gallery_images:
+        slug = img.get("slug", "")
+        fname = img.get("filename", "")
+        port = img.get("port", "cold")
+        ext = os.path.splitext(fname)[1].lower() if fname else ""
+        is_video = ext in _video_exts or img.get("type") == "video"
+        gallery_slugs.add(slug)
+
+        if slug in ("_drops", "_hot_loose", "_cold_loose"):
+            url = "/drops/{}".format(fname)
+        else:
+            url = "/vault/{}/{}/{}".format(port, slug, fname)
+
+        thumb_url = None
+        thumb = img.get("thumbnail", "")
+        if thumb and is_video:
+            thumb_url = "/vault/{}/{}/{}".format(port, slug, thumb)
+
+        tags_str = _tr_tags.get((slug, fname), "")
+        orientation = "vertical" if "vertical" in tags_str else "horizontal"
+
+        # Look up transcription: exact key first, then stem match
+        tr_data = _tr_by_key.get((slug, fname))
+        if not tr_data:
+            stem = os.path.splitext(fname)[0].lower()
+            tr_data = _tr_by_stem.get(stem, {})
+
+        transcript_text = tr_data.get("transcript_text", "") if tr_data else ""
+        segments_json = tr_data.get("segments", "[]") if tr_data else "[]"
+        try:
+            segments = json.loads(segments_json)
+        except (json.JSONDecodeError, TypeError):
+            segments = []
+
+        items.append({
+            "filename": fname,
+            "url": url,
+            "thumb_url": thumb_url or url,
+            "caption": img.get("caption", ""),
+            "is_video": is_video,
+            "orientation": orientation,
+            "transcript_text": transcript_text,
+            "segments": segments,
+            "duration": tr_data.get("duration", 0) if tr_data else 0,
+        })
+
+    # Collect transcriptions matching any filename in this gallery (case-insensitive)
+    gallery_stems = set()
+    for img in gallery_images:
+        fname = img.get("filename", "")
+        if fname:
+            gallery_stems.add(os.path.splitext(fname)[0].lower())
+
+    matched_transcriptions = []
+    for tr in _tr_all:
+        tr_stem = os.path.splitext(tr["filename"])[0].lower()
+        if tr_stem in gallery_stems:
+            try:
+                segs = json.loads(tr["segments"])
+            except (json.JSONDecodeError, TypeError):
+                segs = []
+            matched_transcriptions.append({
+                "filename": tr["filename"],
+                "transcript_text": tr["transcript_text"],
+                "segments": segs,
+                "duration": tr["duration"],
+            })
+
+    return render_template(
+        "transcription.html",
+        title=title,
+        items=items,
+        item_count=len(items),
+        transcriptions=matched_transcriptions,
+    )
+
+
 @app.route("/api/gallery", methods=["POST"])
 def api_save_gallery():
     """Persist a gallery to the vault registry."""

@@ -4053,6 +4053,23 @@ function createGalleryStrip(data) {
   });
   actions.appendChild(sheetBtn);
 
+  // Transcription icon
+  var transcBtn = document.createElement("button");
+  transcBtn.className = "transcription-icon";
+  transcBtn.setAttribute("aria-label", "Generate transcription PDF");
+  transcBtn.setAttribute("title", "transcription");
+  transcBtn.setAttribute("data-gallery-id", id);
+
+  var transcGlyph = document.createElement("span");
+  transcGlyph.className = "transcription-icon__glyph";
+  transcBtn.appendChild(transcGlyph);
+
+  transcBtn.addEventListener("click", function(e) {
+    e.stopPropagation();
+    openTranscription(id, figure);
+  });
+  actions.appendChild(transcBtn);
+
   // Pin icon
   var pinBtn = document.createElement("button");
   pinBtn.className = "pin-icon";
@@ -4213,6 +4230,36 @@ function openContactSheet(galleryId, galleryFigure) {
   var form = document.createElement("form");
   form.method = "POST";
   form.action = "/contact-sheet";
+  form.target = "_blank";
+  form.style.display = "none";
+
+  var input = document.createElement("input");
+  input.type = "hidden";
+  input.name = "json";
+  input.value = payload;
+  form.appendChild(input);
+
+  document.body.appendChild(form);
+  form.submit();
+  document.body.removeChild(form);
+}
+
+function openTranscription(galleryId, galleryFigure) {
+  console.log("[transcription] opening for gallery: " + galleryId);
+  var entry = galleryRegistry[galleryId];
+  if (!entry) {
+    console.warn("[transcription] no registry entry for " + galleryId);
+    return;
+  }
+
+  var payload = JSON.stringify({
+    gallery: { images: entry.images, title: entry.title },
+    galleryId: galleryId
+  });
+
+  var form = document.createElement("form");
+  form.method = "POST";
+  form.action = "/transcription";
   form.target = "_blank";
   form.style.display = "none";
 
