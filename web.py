@@ -2997,13 +2997,39 @@ def _resolve_vault_image(slug, filename, port):
                 print(f"[vault] {port} resolved: {slug}/{fname} -> {row[0]}")
                 return str(full_path.parent), full_path.name
 
+    # Thumbnail fallback: .thumb.jpg files live next to their parent video
+    # but do not have their own row in vault_images. Look up the parent video
+    # by stripping the .thumb.jpg suffix and resolving its rel_path.
+    if filename.endswith(".thumb.jpg"):
+        video_stem = filename.replace(".thumb.jpg", "")
+        _video_exts = [".mp4", ".mov", ".MOV", ".webm", ".m4v"]
+        for vext in _video_exts:
+            video_fname = video_stem + vext
+            for vf in (video_fname, _normalize_macos_filename(video_fname)):
+                try:
+                    conn = sqlite3.connect(str(db_path))
+                    row = conn.execute(
+                        "SELECT rel_path FROM vault_images "
+                        "WHERE slug = ? AND filename = ? AND port = ?",
+                        (slug, vf, port),
+                    ).fetchone()
+                    conn.close()
+                except sqlite3.Error:
+                    continue
+
+                if row and row[0]:
+                    thumb_path = vault_root / os.path.dirname(row[0]) / filename
+                    if thumb_path.is_file():
+                        print("[vault] %s thumb resolved: %s/%s -> %s" % (port, slug, filename, thumb_path))
+                        return str(thumb_path.parent), thumb_path.name
+
     # Last resort: try direct filesystem path
     direct = vault_root / slug / filename
     if direct.is_file():
-        print(f"[vault] {port} direct: {slug}/{filename}")
+        print("[vault] %s direct: %s/%s" % (port, slug, filename))
         return str(direct.parent), direct.name
 
-    print(f"[vault] {port} miss: {slug}/{filename}")
+    print("[vault] %s miss: %s/%s" % (port, slug, filename))
     return None, None
 
 
