@@ -60,28 +60,14 @@ print(f"✓ Maestro root: {MAESTRO_ROOT}")
 _CLAUDE_ENV_BLACKLIST = {"CLAUDECODE", "CLAUDE_CODE_ENTRYPOINT"}
 CLEAN_CLAUDE_ENV = {k: v for k, v in os.environ.items() if k not in _CLAUDE_ENV_BLACKLIST}
 
-# Claude subprocess command with MCP tools pre-authorized.
-# Without this, piped Claude sessions hit permission prompts that block silently.
+# Claude subprocess command. Wildcards pre-authorize all tools from each MCP
+# server so piped sessions never block on permission prompts.
 CLAUDE_CMD = [
     "claude", "-p",
     "--allowedTools",
-    "mcp__cue-vault__vault_search",
-    "mcp__cue-vault__vault_get",
-    "mcp__cue-vault__vault_filter",
-    "mcp__cue-vault__vault_list_tags",
-    "mcp__cue-vault__vault_list_eras",
-    "mcp__cue-vault__vault_status",
-    "mcp__cue-vault__vault_upcoming",
-    "mcp__cue-vault__vault_gallery",
-    "mcp__cue-vault__vault_list_galleries",
-    "mcp__cue-vault__vault_get_gallery",
-    "mcp__cue-vault__vault_search_images",
-    "mcp__cue-vault__vault_list_images",
-    "mcp__c2d2__llm_generate",
-    "mcp__c2d2__llm_summarize",
-    "mcp__c2d2__llm_summarize_json",
-    "mcp__c2d2__llm_status",
-    "mcp__c2d2__llm_security",
+    "mcp__cue-vault__*",
+    "mcp__c2d2__*",
+    "mcp__keeper__*",
 ]
 
 # Try to import CUE-MEM if available
@@ -154,8 +140,9 @@ socketio = SocketIO(app, cors_allowed_origins="*")
 
 @app.after_request
 def add_no_cache_headers(response):
-    if '/static/' in response.headers.get('Content-Location', '') or \
-       request.path.startswith('/static/'):
+    is_static = request.path.startswith('/static/')
+    is_html = response.content_type and 'text/html' in response.content_type
+    if is_static or is_html:
         response.headers['Cache-Control'] = 'no-cache, no-store, must-revalidate'
         response.headers['Pragma'] = 'no-cache'
         response.headers['Expires'] = '0'
@@ -2809,7 +2796,7 @@ def get_image_context():
     # Collect tokens grouped by hash
     by_hash = {}  # hash -> {drop: ..., visual: ..., context: ...}
 
-    for pattern in ["image_drop_*.json", "image_visual_*.json", "image_context_*.json"]:
+    for pattern in ["ctx_image_drop_*.json", "ctx_image_visual_*.json", "ctx_image_context_*.json"]:
         for path in _glob.glob(str(tokens_dir / pattern)):
             try:
                 with open(path) as f:
@@ -2939,6 +2926,16 @@ Examples of BAD responses (NEVER do this):
     return instructions.format(formatted=formatted, text=text)
 
 
+@app.after_request
+def _no_cache_static(response):
+    """Prevent browser caching of static assets during development."""
+    if "/static/" in request.path:
+        response.headers["Cache-Control"] = "no-store, no-cache, must-revalidate, max-age=0"
+        response.headers["Pragma"] = "no-cache"
+        response.headers["Expires"] = "0"
+    return response
+
+
 @app.route('/')
 def index():
     print("📄 Serving index.html")
@@ -2946,131 +2943,112 @@ def index():
     return render_template('index.html', cache_bust=int(_time.time()))
 
 
-def _normalize_macos_filename(filename):
-    """macOS screenshots use U+202F (narrow no-break space) before AM/PM.
-    URLs encode that as a regular space, so try the NNBSP variant as fallback."""
-    return re.sub(r" (AM|PM)\b", "\u202f\\1", filename)
+# Shared vault image resolver
+_vault_serve_lib = str(MAESTRO_ROOT / "cue-vault" / "app" / "lib")
+if _vault_serve_lib not in sys.path:
+    sys.path.insert(0, _vault_serve_lib)
+from serve import resolve_image as _vault_resolve_image
+
+_VAULT_DB = str(MAESTRO_ROOT / "cue-vault" / "vault.db")
+_VAULT_ROOT = str(MAESTRO_ROOT / "cue-vault")
 
 
 def _resolve_vault_image(slug, filename, port):
-    """Resolve image path via the vault index (vault.db).
-
-    The index stores rel_path for every image -- no hardcoded directory
-    assumptions. Reindex picks up any file tree changes automatically.
-    """
-    import sqlite3
-
-    db_path = MAESTRO_ROOT / "cue-vault" / "vault.db"
-    if not db_path.is_file():
-        print(f"[vault] DB missing: {db_path}")
-        return None, None
-
-    vault_root = MAESTRO_ROOT / "cue-vault" / ("COLD" if port == "cold" else "HOT")
-
-    for fname in (filename, _normalize_macos_filename(filename)):
-        try:
-            conn = sqlite3.connect(str(db_path))
-            row = conn.execute(
-                "SELECT rel_path FROM vault_images "
-                "WHERE slug = ? AND filename = ? AND port = ?",
-                (slug, fname, port),
-            ).fetchone()
-
-            # Fallback: filename may contain a subfolder path (e.g. "subdir/file.jpg")
-            # In that case the real slug is the subfolder and the real filename is the leaf.
-            if not row and "/" in fname:
-                parts = fname.rsplit("/", 1)
-                row = conn.execute(
-                    "SELECT rel_path FROM vault_images "
-                    "WHERE slug = ? AND filename = ? AND port = ?",
-                    (parts[0], parts[1], port),
-                ).fetchone()
-
-            conn.close()
-        except sqlite3.Error as exc:
-            print(f"[vault] DB error: {exc}")
-            return None, None
-
-        if row and row[0]:
-            full_path = vault_root / row[0]
-            if full_path.is_file():
-                print(f"[vault] {port} resolved: {slug}/{fname} -> {row[0]}")
-                return str(full_path.parent), full_path.name
-
-    # Thumbnail fallback: .thumb.jpg files live next to their parent video
-    # but do not have their own row in vault_images. Look up the parent video
-    # by stripping the .thumb.jpg suffix and resolving its rel_path.
-    if filename.endswith(".thumb.jpg"):
-        video_stem = filename.replace(".thumb.jpg", "")
-        _video_exts = [".mp4", ".mov", ".MOV", ".webm", ".m4v"]
-        for vext in _video_exts:
-            video_fname = video_stem + vext
-            for vf in (video_fname, _normalize_macos_filename(video_fname)):
-                try:
-                    conn = sqlite3.connect(str(db_path))
-                    row = conn.execute(
-                        "SELECT rel_path FROM vault_images "
-                        "WHERE slug = ? AND filename = ? AND port = ?",
-                        (slug, vf, port),
-                    ).fetchone()
-                    conn.close()
-                except sqlite3.Error:
-                    continue
-
-                if row and row[0]:
-                    thumb_path = vault_root / os.path.dirname(row[0]) / filename
-                    if thumb_path.is_file():
-                        print("[vault] %s thumb resolved: %s/%s -> %s" % (port, slug, filename, thumb_path))
-                        return str(thumb_path.parent), thumb_path.name
-
-    # Last resort: try direct filesystem path
-    direct = vault_root / slug / filename
-    if direct.is_file():
-        print("[vault] %s direct: %s/%s" % (port, slug, filename))
-        return str(direct.parent), direct.name
-
-    print("[vault] %s miss: %s/%s" % (port, slug, filename))
-    return None, None
-
-
-def _resolve_cold(slug, filename):
-    """Resolve file path within the cold port via vault index."""
-    return _resolve_vault_image(slug, filename, "cold")
-
-
-def _resolve_hot(slug, filename):
-    """Resolve file path within the hot port via vault index."""
-    return _resolve_vault_image(slug, filename, "hot")
+    """Resolve image path via shared vault resolver."""
+    return _vault_resolve_image(slug, filename, port, _VAULT_DB, _VAULT_ROOT)
 
 
 @app.route("/vault/cold/<slug>/<path:filename>")
 def serve_vault_cold(slug, filename):
     """Serve data from the cold port."""
-    print(f"[vault] request: /vault/cold/{slug}/{filename}")
-    directory, fname = _resolve_cold(slug, filename)
+    directory, fname = _resolve_vault_image(slug, filename, "cold")
     if directory is None:
-        print(f"[vault] 404: /vault/cold/{slug}/{filename}")
         return "Not found", 404
-    print(f"[vault] 200: /vault/cold/{slug}/{filename}")
     return send_from_directory(directory, fname)
 
 
 @app.route("/vault/hot/<slug>/<path:filename>")
 def serve_vault_hot(slug, filename):
     """Serve data from the hot port."""
-    print(f"[vault] request: /vault/hot/{slug}/{filename}")
-    directory, fname = _resolve_hot(slug, filename)
+    directory, fname = _resolve_vault_image(slug, filename, "hot")
     if directory is None:
-        print(f"[vault] 404: /vault/hot/{slug}/{filename}")
         return "Not found", 404
-    print(f"[vault] 200: /vault/hot/{slug}/{filename}")
     return send_from_directory(directory, fname)
+
+
+def _serve_keeper_file(slug, filename, device=None):
+    """Resolve a keeper file (keyframe or source video) and serve it."""
+    import sys as _sys
+    _sys.path.insert(0, str(MAESTRO_ROOT / "tools" / "keeper"))
+    from discovery import get_volume_path, list_keepers
+
+    keepers = list_keepers()
+    candidates = []
+    if device:
+        candidates = [k for k in keepers
+                      if k.get("device_id", "").startswith(device)]
+    else:
+        candidates = keepers
+
+    for k in candidates:
+        vp = get_volume_path(k.get("device_id", ""))
+        if vp is None:
+            continue
+
+        # Try keyframe in analysis directory
+        kf_dir = os.path.join(vp, ".kept", "analysis", slug, "keyframes")
+        fpath = os.path.join(kf_dir, filename)
+        if os.path.isfile(fpath):
+            return send_from_directory(kf_dir, filename)
+
+        # Try source file via manifest lookup
+        manifest_path = os.path.join(vp, ".kept", "manifest.json")
+        if not os.path.isfile(manifest_path):
+            continue
+        with open(manifest_path, "r") as f:
+            manifest = json.load(f)
+        for fh, entry in manifest.get("entries", {}).items():
+            if not fh.startswith(slug):
+                continue
+            rel_path = entry.get("path", "")
+            if os.path.basename(rel_path) == filename:
+                abs_path = os.path.join(vp, rel_path)
+                if os.path.isfile(abs_path):
+                    return send_from_directory(
+                        os.path.dirname(abs_path),
+                        os.path.basename(abs_path),
+                        conditional=True,
+                    )
+            break
+
+    return None
+
+
+@app.route("/vault/keeper/<device>/<slug>/<path:filename>")
+def serve_keeper_image(device, slug, filename):
+    """Serve keyframe from a specific keeper device."""
+    try:
+        result = _serve_keeper_file(slug, filename, device=device)
+        return result if result else ("Not found", 404)
+    except Exception as exc:
+        return "Keeper image error: %s" % exc, 500
+
+
+@app.route("/vault/keeper/<slug>/<path:filename>")
+def serve_keeper_image_any(slug, filename):
+    """Serve keyframe by scanning all mounted keepers (no device specified)."""
+    try:
+        result = _serve_keeper_file(slug, filename)
+        return result if result else ("Not found", 404)
+    except Exception as exc:
+        return "Keeper image error: %s" % exc, 500
 
 
 @app.route("/drops/<path:filename>")
 def serve_drop(filename):
-    """Serve dropped image files by exact name or original filename lookup."""
-    drops_dir = MAESTRO_ROOT / "tools" / "cue-vox" / "drops"
+    """Serve dropped image files from HOT/_drops."""
+    # Drops now live in cue-vault/HOT/_drops
+    drops_dir = MAESTRO_ROOT / "cue-vault" / "HOT" / "_drops"
 
     # Try exact match first
     fpath = drops_dir / filename
@@ -3078,7 +3056,7 @@ def serve_drop(filename):
         real_path = fpath.resolve()
         return send_from_directory(str(real_path.parent), real_path.name)
 
-    # Try matching by original filename: hash the lookup against vault DB
+    # Try matching by original filename via vault DB
     try:
         import sqlite3 as _sqlite3
         vault_db = MAESTRO_ROOT / "cue-vault" / "vault.db"
@@ -3100,29 +3078,14 @@ def serve_drop(filename):
     except Exception:
         pass
 
-    # Try glob match on any file with same extension
-    import glob as _glob
-    ext = Path(filename).suffix or ""
-    for candidate in _glob.glob(str(drops_dir / ("*" + ext))):
-        if Path(candidate).name == filename:
-            real_path = Path(candidate).resolve()
-            return send_from_directory(str(real_path.parent), real_path.name)
+    # Legacy fallback: old drops dir
+    legacy_dir = MAESTRO_ROOT / "tools" / "cue-vox" / "drops"
+    fpath = legacy_dir / filename
+    if fpath.exists():
+        real_path = fpath.resolve()
+        return send_from_directory(str(real_path.parent), real_path.name)
 
     return "Not found", 404
-
-
-@app.route("/vault-images/<slug>/<path:filename>")
-def serve_vault_image(slug, filename):
-    """Legacy fallback -- checks both ports, cold first."""
-    print(f"[vault] request (legacy): /vault-images/{slug}/{filename}")
-    directory, fname = _resolve_cold(slug, filename)
-    if directory is None:
-        directory, fname = _resolve_hot(slug, filename)
-    if directory is None:
-        print(f"[vault] 404 (legacy): /vault-images/{slug}/{filename}")
-        return "Not found", 404
-    print(f"[vault] 200 (legacy): /vault-images/{slug}/{filename}")
-    return send_from_directory(directory, fname)
 
 
 @app.route("/api/recognize", methods=["POST"])
@@ -3188,33 +3151,58 @@ def api_recognize():
 
 
 def _create_token_cli(label, value, token_type="text_input", base_temp=70, tags="", references=""):
-    """Create a token via the createtoken CLI and emit socket event. Returns token_id or None."""
-    cue_mem_cli = MAESTRO_ROOT / "cue-mem" / "cli" / "createtoken"
-    cmd = [str(cue_mem_cli), label, value, "--type", token_type, "--base-temp", str(base_temp)]
-    if tags:
-        cmd.extend(["--tags", tags])
+    """Create a token directly (no CLI shelling) and emit socket event. Returns token_id or None."""
+    import hashlib as _ht
+    tokens_dir = MAESTRO_ROOT / ".claude" / "tokens"
+    tokens_dir.mkdir(parents=True, exist_ok=True)
+
+    now_iso = datetime.now(tz=__import__("datetime").timezone.utc).isoformat()
+    ts = str(int(datetime.now().timestamp()))
+    token_id = "ctx_%s_%s" % (label, ts)
+
+    tag_list = [t.strip() for t in tags.split(",") if t.strip()] if tags else []
+
+    token = {
+        "token_id": token_id,
+        "label": label,
+        "value": value,
+        "type": token_type,
+        "status": "active",
+        "temperature": base_temp,
+        "base_temp": base_temp,
+        "tags": tag_list,
+        "created_at": now_iso,
+    }
     if references:
-        cmd.extend(["--references", references])
+        token["references"] = references
+
+    # Content hash for chain integrity
+    canonical = json.dumps(
+        {"token_id": token_id, "value": value, "temperature": base_temp, "created_at": now_iso},
+        sort_keys=True, separators=(",", ":"),
+    ).encode("utf-8")
+    token["content_hash"] = _ht.sha256(canonical).hexdigest()
+
     try:
-        result = subprocess.run(cmd, capture_output=True, text=True, timeout=10)
-        for line in result.stdout.strip().split("\n"):
-            if line.startswith("Created token:"):
-                token_id = line.replace("Created token: ", "").strip()
-                # Emit to connected clients so cue-stream updates
-                tag_list = [t.strip() for t in tags.split(",")] if tags else []
-                socketio.emit("token_created", {
-                    "token_id": token_id,
-                    "type": token_type,
-                    "label": label,
-                    "value": value,
-                    "tags": tag_list,
-                    "temperature": base_temp,
-                    "base_temp": base_temp,
-                    "created_at": datetime.now().isoformat(),
-                })
-                return token_id
+        out_path = tokens_dir / ("%s.json" % token_id)
+        with open(str(out_path), "w", encoding="utf-8") as f:
+            json.dump(token, f, ensure_ascii=False, indent=2, sort_keys=True)
+            f.write("\n")
+        print("[token-direct] created %s" % token_id)
+
+        socketio.emit("token_created", {
+            "token_id": token_id,
+            "type": token_type,
+            "label": label,
+            "value": value,
+            "tags": tag_list,
+            "temperature": base_temp,
+            "base_temp": base_temp,
+            "created_at": now_iso,
+        })
+        return token_id
     except Exception as e:
-        print(f"[token-cli] creation failed: {e}")
+        print("[token-direct] creation failed: %s" % e)
     return None
 
 
@@ -3243,36 +3231,30 @@ def api_drop_register():
         raw_bytes = base64.b64decode(raw_b64)
         file_hash = hashlib.sha256(raw_bytes).hexdigest()
 
-        # Save to drops folder
-        drops_dir = MAESTRO_ROOT / "tools" / "cue-vox" / "drops"
-        drops_dir.mkdir(exist_ok=True)
+        # Save to HOT/_drops (file lives in the vault from the moment it is dropped)
+        hot_drops_dir = MAESTRO_ROOT / "cue-vault" / "HOT" / "_drops"
+        hot_drops_dir.mkdir(parents=True, exist_ok=True)
         ext = Path(filename).suffix or ".png"
-        drop_path = drops_dir / (file_hash[:16] + ext)
+        drop_path = hot_drops_dir / (file_hash[:16] + ext)
         if not drop_path.exists():
             drop_path.write_bytes(raw_bytes)
         drop_path_str = str(drop_path)
 
         # Symlink original filename -> hash-based file (so both names work)
-        orig_link = drops_dir / filename
+        orig_link = hot_drops_dir / filename
         if not orig_link.exists() and filename != drop_path.name:
             try:
                 os.symlink(str(drop_path), str(orig_link))
             except OSError:
                 pass
 
-        # ── Index in vault DB for dedup/persistence ──
+        # ── Index in vault DB ──
         try:
             import sqlite3 as _sqlite3
             vault_db = MAESTRO_ROOT / "cue-vault" / "vault.db"
             if vault_db.exists():
                 _conn = _sqlite3.connect(str(vault_db))
                 _conn.row_factory = _sqlite3.Row
-                # Ensure registry columns exist
-                _existing_cols = {r[1] for r in _conn.execute("PRAGMA table_info(vault_images)").fetchall()}
-                for col, ctype in [("file_hash", "TEXT"), ("blob_path", "TEXT"), ("context", "TEXT"), ("caption", "TEXT")]:
-                    if col not in _existing_cols:
-                        _conn.execute("ALTER TABLE vault_images ADD COLUMN %s %s" % (col, ctype))
-                _conn.commit()
 
                 # Check if already indexed by hash
                 existing = _conn.execute(
@@ -3283,21 +3265,22 @@ def api_drop_register():
                 if not existing:
                     fext = ext.lstrip(".")
                     now_iso = datetime.now().isoformat(timespec="seconds") + "Z"
+                    rel = "_drops/" + drop_path.name
                     _conn.execute(
                         "INSERT OR IGNORE INTO vault_images "
                         "(slug, filename, extension, file_size, indexed_at, port, file_hash, blob_path, rel_path) "
                         "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
                         ("_drops", filename, fext, len(raw_bytes), now_iso,
-                         "hot", file_hash, drop_path_str, "drops/" + drop_path.name),
+                         "hot", file_hash, drop_path_str, rel),
                     )
                     _conn.commit()
-                    print(f"[drop-register] indexed in vault_images: {filename} ({file_hash[:12]})")
+                    print("[drop-register] indexed in vault_images: %s (%s)" % (filename, file_hash[:12]))
                 else:
-                    print(f"[drop-register] already indexed: {file_hash[:12]}")
+                    print("[drop-register] already indexed: %s" % file_hash[:12])
                 _conn.close()
         except Exception as e:
             import traceback
-            print(f"[drop-register] vault indexing failed (non-fatal): {e}")
+            print("[drop-register] vault indexing failed (non-fatal): %s" % e)
             traceback.print_exc()
 
         # ── Token 1: immediate "processing" token ──
@@ -3697,40 +3680,57 @@ def _generate_story(images, context=""):
         return None
 
 
-@app.route("/case-study", methods=["POST"])
-def case_study():
-    """Render a print-ready case study with generated narrative."""
-    payload = request.get_json(silent=True)
-    if not payload:
-        form_json = request.form.get("json", "{}")
+_VX_VIDEO_EXTS = {".mp4", ".mov", ".webm", ".m4v"}
+
+
+def _vx_ratio_label(ar, tags_str=""):
+    """Convert a numeric aspect ratio to a human-readable label."""
+    if ar and ar > 0:
+        if abs(ar - 16 / 9) < 0.15:
+            return "16:9"
+        if abs(ar - 9 / 16) < 0.08:
+            return "9:16"
+        if abs(ar - 4 / 3) < 0.1:
+            return "4:3"
+        if abs(ar - 3 / 4) < 0.08:
+            return "3:4"
+        if abs(ar - 1.0) < 0.08:
+            return "1:1"
+        if abs(ar - 21 / 9) < 0.15:
+            return "21:9"
+        return "{:.2f}:1".format(ar)
+    # Fallback from tags
+    if "vertical" in tags_str:
+        return "9:16"
+    return ""
+
+
+def _vx_resolve_images(gallery_images):
+    """Shared resolver for all vault export endpoints.
+
+    Enriches each image dict in-place with: url, is_video, thumb_url,
+    orientation, aspect_label, duration.
+    """
+    import sqlite3 as _vx_sqlite3
+    _vx_db = os.path.join(MAESTRO_ROOT, "cue-vault", "vault.db")
+    _vx_lookup = {}
+    _vx_tags = {}
+    if os.path.isfile(_vx_db):
         try:
-            payload = json.loads(form_json)
-        except json.JSONDecodeError:
-            payload = {}
-
-    gallery_json = payload.get("gallery", {})
-    gallery_id = payload.get("galleryId", "")
-    context = payload.get("context", "")
-
-    # Resolve image URLs and video thumbnails
-    _cs_video_exts = {".mp4", ".mov", ".webm", ".m4v"}
-    gallery_images = gallery_json.get("images", [])
-
-    # Look up video thumbnails from vault DB
-    import sqlite3 as _cs2_sqlite3
-    _cs2_db = os.path.join(MAESTRO_ROOT, "cue-vault", "vault.db")
-    _cs2_lookup = {}
-    if os.path.isfile(_cs2_db):
-        try:
-            _cs2_conn = _cs2_sqlite3.connect(_cs2_db)
-            _cs2_conn.row_factory = _cs2_sqlite3.Row
-            for row in _cs2_conn.execute(
-                "SELECT filename, slug, port, context FROM vault_images"
+            conn = _vx_sqlite3.connect(_vx_db)
+            conn.row_factory = _vx_sqlite3.Row
+            for row in conn.execute(
+                "SELECT filename, slug, port, context, tags, aspect_ratio "
+                "FROM vault_images"
             ).fetchall():
                 key = (row["slug"], row["filename"], row["port"])
-                _cs2_lookup[key] = row["context"] or ""
-            _cs2_conn.close()
-        except _cs2_sqlite3.Error:
+                _vx_lookup[key] = {
+                    "thumbnail": row["context"] or "",
+                    "aspect_ratio": row["aspect_ratio"],
+                }
+                _vx_tags[key] = row["tags"] or ""
+            conn.close()
+        except _vx_sqlite3.Error:
             pass
 
     for img in gallery_images:
@@ -3738,8 +3738,12 @@ def case_study():
         fname = img.get("filename", "")
         port = img.get("port", "cold")
         ext = os.path.splitext(fname)[1].lower() if fname else ""
-        is_video = ext in _cs_video_exts or img.get("type") == "video"
+        is_video = ext in _VX_VIDEO_EXTS or img.get("type") == "video"
+        db_key = (slug, fname, port)
+        db_row = _vx_lookup.get(db_key, {})
+        tags_str = _vx_tags.get(db_key, "")
 
+        # URL
         if slug and fname:
             if slug in ("_drops", "_hot_loose", "_cold_loose"):
                 img["url"] = "/drops/{}".format(fname)
@@ -3748,69 +3752,107 @@ def case_study():
         elif img.get("src"):
             img["url"] = img["src"]
 
-        # Resolve thumbnail for videos
+        # Video detection + thumbnail
         if is_video:
             img["is_video"] = True
-            thumb = img.get("thumbnail", "") or _cs2_lookup.get((slug, fname, port), "")
+            thumb = img.get("thumbnail", "") or db_row.get("thumbnail", "")
             if thumb and slug:
                 img["thumb_url"] = "/vault/{}/{}/{}".format(port, slug, thumb)
             else:
                 img["thumb_url"] = img.get("url", "")
 
-    # Use existing captions as narratives (no blocking LLM call)
-    title = gallery_json.get("title", "Gallery")
+        # Aspect ratio: probe actual file dimensions
+        ar = db_row.get("aspect_ratio")
+        if not ar or ar <= 0:
+            # Probe the displayable file (thumbnail for video, image for stills)
+            probe_file = None
+            if is_video:
+                thumb_name = img.get("thumbnail", "") or db_row.get("thumbnail", "")
+                if thumb_name and slug:
+                    resolved = _resolve_vault_image(slug, thumb_name, port)
+                    if resolved[0]:
+                        probe_file = os.path.join(resolved[0], resolved[1])
+            else:
+                if slug and fname:
+                    resolved = _resolve_vault_image(slug, fname, port)
+                    if resolved[0]:
+                        probe_file = os.path.join(resolved[0], resolved[1])
+
+            if probe_file and os.path.isfile(probe_file):
+                try:
+                    from PIL import Image as _PILImage
+                    with _PILImage.open(probe_file) as pim:
+                        w, h = pim.size
+                        if h > 0:
+                            ar = w / h
+                except Exception:
+                    ar = None
+
+        img["aspect_label"] = _vx_ratio_label(ar, tags_str)
+
+    return gallery_images
+
+
+def _vx_load_gallery(gallery_slug):
+    """Load a gallery from vault.db by slug. Returns (title, images) or (None, None)."""
+    import sqlite3 as _lg_sqlite3
+    db_path = os.path.join(MAESTRO_ROOT, "cue-vault", "vault.db")
+    if not os.path.isfile(db_path):
+        return None, None
+    try:
+        conn = _lg_sqlite3.connect(db_path)
+        row = conn.execute(
+            "SELECT title, images FROM galleries WHERE slug = ?", (gallery_slug,)
+        ).fetchone()
+        conn.close()
+        if not row:
+            return None, None
+        return row[0], json.loads(row[1])
+    except (_lg_sqlite3.Error, json.JSONDecodeError):
+        return None, None
+
+
+@app.route("/case-study/<gallery_slug>")
+def case_study(gallery_slug):
+    """Render a print-ready case study from vault.db gallery slug."""
+    title, images = _vx_load_gallery(gallery_slug)
+    if title is None:
+        return "Gallery not found", 404
+    gallery_images = _vx_resolve_images(images)
+
     slides = [{"narrative": img.get("caption", "")} for img in gallery_images]
-    story = {"title": title, "intro": "", "slides": slides, "closing": ""}
 
     return render_template(
         "case-study.html",
-        title=story.get("title", "Untitled"),
-        intro=story.get("intro", ""),
-        slides=list(zip(gallery_images, story.get("slides", []))),
-        closing=story.get("closing", ""),
-        gallery_json=json.dumps(gallery_json),
-        gallery_id=gallery_id,
+        title=title,
+        slides=list(zip(gallery_images, slides)),
+        closing="",
     )
 
 
-@app.route("/contact-sheet", methods=["POST"])
-def contact_sheet():
-    """Render a compact contact sheet grouped by category."""
-    payload = request.get_json(silent=True)
-    if not payload:
-        form_json = request.form.get("json", "{}")
-        try:
-            payload = json.loads(form_json)
-        except json.JSONDecodeError:
-            payload = {}
+@app.route("/contact-sheet/<gallery_slug>")
+def contact_sheet(gallery_slug):
+    """Render a compact contact sheet from vault.db gallery slug."""
+    title, images = _vx_load_gallery(gallery_slug)
+    if title is None:
+        return "Gallery not found", 404
+    gallery_images = _vx_resolve_images(images)
 
-    gallery_json = payload.get("gallery", {})
-    gallery_images = gallery_json.get("images", [])
-    title = gallery_json.get("title", "Contact Sheet")
-
-    _video_exts = {".mp4", ".mov", ".webm", ".m4v"}
-
-    # Look up tags and thumbnails from vault DB
     import sqlite3 as _cs_sqlite3
     _cs_db = os.path.join(MAESTRO_ROOT, "cue-vault", "vault.db")
-    _cs_lookup = {}
+    _cs_tags = {}
     if os.path.isfile(_cs_db):
         try:
             _cs_conn = _cs_sqlite3.connect(_cs_db)
             _cs_conn.row_factory = _cs_sqlite3.Row
             for row in _cs_conn.execute(
-                "SELECT filename, slug, port, tags, context FROM vault_images"
+                "SELECT filename, slug, port, tags FROM vault_images"
             ).fetchall():
-                key = (row["slug"], row["filename"], row["port"])
-                _cs_lookup[key] = {
-                    "tags": row["tags"] or "",
-                    "thumbnail": row["context"] or "",
-                }
+                _cs_tags[(row["slug"], row["filename"], row["port"])] = row["tags"] or ""
             _cs_conn.close()
         except _cs_sqlite3.Error:
             pass
 
-    # Category label mapping from tags
     _tag_categories = [
         ("hero-cut", "Hero Cuts"),
         ("mini-cut", "Mini Cuts"),
@@ -3820,61 +3862,27 @@ def contact_sheet():
         ("short", "Short"),
     ]
 
-    # Resolve URLs and group by category
     groups = {}
     for img in gallery_images:
         slug = img.get("slug", "")
         fname = img.get("filename", "")
         port = img.get("port", "cold")
-        ext = os.path.splitext(fname)[1].lower() if fname else ""
-        is_video = ext in _video_exts or img.get("type") == "video"
+        tags_str = _cs_tags.get((slug, fname, port), "")
 
-        # DB lookup for tags and thumbnail
-        db_row = _cs_lookup.get((slug, fname, port), {})
-        tags_str = db_row.get("tags", "")
-        db_thumb = db_row.get("thumbnail", "")
-
-        # Resolve main URL
-        if slug in ("_drops", "_hot_loose", "_cold_loose"):
-            url = "/drops/{}".format(fname)
-        else:
-            url = "/vault/{}/{}/{}".format(port, slug, fname)
-
-        # Resolve thumbnail URL for videos
-        thumb_url = None
-        thumb = img.get("thumbnail", "") or db_thumb
-        if thumb and is_video:
-            thumb_url = "/vault/{}/{}/{}".format(port, slug, thumb)
-
-        # Determine orientation from tags
-        orientation = "vertical" if "vertical" in tags_str else "horizontal"
-
-        # Category: tags first, then VRGB semantic band, then slug
         category = slug
         for tag, label in _tag_categories:
             if tag in tags_str:
                 category = label
                 break
         else:
-            # Fallback: use semantic band from gallery data (agent-assigned)
             band = img.get("band", "")
             if band:
                 category = band.title()
 
-        item = {
-            "filename": fname,
-            "url": url,
-            "thumb_url": thumb_url or url,
-            "caption": img.get("caption", ""),
-            "is_video": is_video,
-            "orientation": orientation,
-        }
-
         if category not in groups:
             groups[category] = []
-        groups[category].append(item)
+        groups[category].append(img)
 
-    # Sort categories by item count descending
     categories = sorted(groups.items(), key=lambda kv: -len(kv[1]))
     item_count = sum(len(v) for v in groups.values())
 
@@ -3887,29 +3895,18 @@ def contact_sheet():
     )
 
 
-@app.route("/transcription", methods=["POST"])
-def transcription_view():
-    """Render a transcription timeline view for a gallery."""
-    payload = request.get_json(silent=True)
-    if not payload:
-        form_json = request.form.get("json", "{}")
-        try:
-            payload = json.loads(form_json)
-        except json.JSONDecodeError:
-            payload = {}
+@app.route("/transcription/<gallery_slug>")
+def transcription_view(gallery_slug):
+    """Render a transcription timeline from vault.db gallery slug."""
+    title, images = _vx_load_gallery(gallery_slug)
+    if title is None:
+        return "Gallery not found", 404
+    gallery_images = _vx_resolve_images(images)
 
-    gallery_json = payload.get("gallery", {})
-    gallery_images = gallery_json.get("images", [])
-    title = gallery_json.get("title", "Transcription")
-
-    _video_exts = {".mp4", ".mov", ".webm", ".m4v"}
-
-    # Load ALL transcriptions from vault DB, indexed multiple ways for fuzzy matching
     import sqlite3 as _tr_sqlite3
     _tr_db = os.path.join(MAESTRO_ROOT, "cue-vault", "vault.db")
-    _tr_by_key = {}       # (slug, filename) -> data
-    _tr_by_stem = {}      # filename_stem (lowercase, no ext) -> data
-    _tr_all = []          # all transcription rows for dump section
+    _tr_by_key = {}
+    _tr_by_stem = {}
     if os.path.isfile(_tr_db):
         try:
             _tr_conn = _tr_sqlite3.connect(_tr_db)
@@ -3919,8 +3916,6 @@ def transcription_view():
                 "FROM transcriptions"
             ).fetchall():
                 data = {
-                    "slug": row["slug"],
-                    "filename": row["filename"],
                     "transcript_text": row["transcript_text"] or "",
                     "segments": row["segments"] or "[]",
                     "duration": row["duration"] or 0,
@@ -3928,104 +3923,63 @@ def transcription_view():
                 _tr_by_key[(row["slug"], row["filename"])] = data
                 stem = os.path.splitext(row["filename"])[0].lower()
                 _tr_by_stem[stem] = data
-                if data["transcript_text"].strip():
-                    _tr_all.append(data)
             _tr_conn.close()
         except _tr_sqlite3.Error:
             pass
 
-    # Tags for orientation detection
-    _tr_tags = {}
-    if os.path.isfile(_tr_db):
+    # Build keeper transcript lookup for images with port=keeper
+    def _keeper_transcript(slug):
+        """Read transcript.txt from keeper analysis dir, scanning all mounted keepers."""
         try:
-            _tr_conn = _tr_sqlite3.connect(_tr_db)
-            _tr_conn.row_factory = _tr_sqlite3.Row
-            for row in _tr_conn.execute(
-                "SELECT slug, filename, tags FROM vault_images"
-            ).fetchall():
-                _tr_tags[(row["slug"], row["filename"])] = row["tags"] or ""
-            _tr_conn.close()
-        except _tr_sqlite3.Error:
+            import sys as _ks
+            _ks.path.insert(0, str(MAESTRO_ROOT / "tools" / "keeper"))
+            from discovery import list_keepers, get_volume_path
+            for k in list_keepers():
+                vp = get_volume_path(k.get("device_id", ""))
+                if vp is None:
+                    continue
+                tx_path = os.path.join(vp, ".kept", "analysis", slug, "transcript.txt")
+                if os.path.isfile(tx_path):
+                    with open(tx_path, "r", encoding="utf-8") as f:
+                        return f.read()
+        except Exception:
             pass
-
-    # Collect gallery slugs for filtering transcriptions dump
-    gallery_slugs = set()
+        return ""
 
     items = []
     for img in gallery_images:
         slug = img.get("slug", "")
         fname = img.get("filename", "")
-        port = img.get("port", "cold")
-        ext = os.path.splitext(fname)[1].lower() if fname else ""
-        is_video = ext in _video_exts or img.get("type") == "video"
-        gallery_slugs.add(slug)
+        port = img.get("port", "")
 
-        if slug in ("_drops", "_hot_loose", "_cold_loose"):
-            url = "/drops/{}".format(fname)
-        else:
-            url = "/vault/{}/{}/{}".format(port, slug, fname)
-
-        thumb_url = None
-        thumb = img.get("thumbnail", "")
-        if thumb and is_video:
-            thumb_url = "/vault/{}/{}/{}".format(port, slug, thumb)
-
-        tags_str = _tr_tags.get((slug, fname), "")
-        orientation = "vertical" if "vertical" in tags_str else "horizontal"
-
-        # Look up transcription: exact key first, then stem match
         tr_data = _tr_by_key.get((slug, fname))
         if not tr_data:
             stem = os.path.splitext(fname)[0].lower()
             tr_data = _tr_by_stem.get(stem, {})
 
         transcript_text = tr_data.get("transcript_text", "") if tr_data else ""
+
+        # Fallback to keeper transcript if vault.db has nothing
+        if not transcript_text and port == "keeper":
+            transcript_text = _keeper_transcript(slug)
+
         segments_json = tr_data.get("segments", "[]") if tr_data else "[]"
         try:
             segments = json.loads(segments_json)
         except (json.JSONDecodeError, TypeError):
             segments = []
 
-        items.append({
-            "filename": fname,
-            "url": url,
-            "thumb_url": thumb_url or url,
-            "caption": img.get("caption", ""),
-            "is_video": is_video,
-            "orientation": orientation,
-            "transcript_text": transcript_text,
-            "segments": segments,
-            "duration": tr_data.get("duration", 0) if tr_data else 0,
-        })
-
-    # Collect transcriptions matching any filename in this gallery (case-insensitive)
-    gallery_stems = set()
-    for img in gallery_images:
-        fname = img.get("filename", "")
-        if fname:
-            gallery_stems.add(os.path.splitext(fname)[0].lower())
-
-    matched_transcriptions = []
-    for tr in _tr_all:
-        tr_stem = os.path.splitext(tr["filename"])[0].lower()
-        if tr_stem in gallery_stems:
-            try:
-                segs = json.loads(tr["segments"])
-            except (json.JSONDecodeError, TypeError):
-                segs = []
-            matched_transcriptions.append({
-                "filename": tr["filename"],
-                "transcript_text": tr["transcript_text"],
-                "segments": segs,
-                "duration": tr["duration"],
-            })
+        item = dict(img)
+        item["transcript_text"] = transcript_text
+        item["segments"] = segments
+        item["duration"] = tr_data.get("duration", 0) if tr_data else 0
+        items.append(item)
 
     return render_template(
         "transcription.html",
         title=title,
         items=items,
         item_count=len(items),
-        transcriptions=matched_transcriptions,
     )
 
 
