@@ -5288,6 +5288,42 @@ def handle_cuesheet_list(data=None):
         emit("cuesheet_list_result", {"sheets": [], "error": str(e)})
 
 
+@app.route("/api/cuesheet/launch", methods=["POST"])
+def api_cuesheet_launch():
+    """HTTP endpoint to launch a cue-sheet by path.
+
+    Used by maestro for auto-launch on chip activate.
+    Reads the YAML, fires the announce via TTS, emits to connected clients.
+    """
+    from flask import request as flask_request
+    data = flask_request.get_json(silent=True) or {}
+    sheet_path = data.get("path", "")
+    if not sheet_path:
+        return {"error": "Missing path"}, 400
+
+    p = Path(sheet_path)
+    if not p.exists():
+        return {"error": "Not found: %s" % sheet_path}, 404
+
+    try:
+        import yaml as _yaml
+        with open(p) as fh:
+            doc = _yaml.safe_load(fh) or {}
+
+        announce_text = doc.get("announce", "")
+        if announce_text:
+            socketio.emit("response", {"role": "assistant", "text": announce_text, "tts_chunks": [announce_text]})
+            _speech_queue.put((announce_text, 0, False))
+
+        sheet_name = doc.get("name", p.stem)
+        socketio.emit("cuesheet_launched", {"name": sheet_name, "path": str(p)})
+        print("[CUESHEET] Auto-launched: %s" % sheet_name)
+        return {"ok": True, "name": sheet_name, "announced": bool(announce_text)}
+    except Exception as e:
+        print("api_cuesheet_launch error: %s" % e)
+        return {"error": str(e)}, 500
+
+
 @socketio.on('cuesheet_launch')
 def handle_cuesheet_launch(data):
     """Launch a cue-sheet: parse YAML, create token constellation, hydrate UI"""
