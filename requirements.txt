@@ -1,3 +1,4 @@
 flask
 flask-socketio
 openai-whisper
+pyttsx3

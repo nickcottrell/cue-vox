@@ -1,122 +1,41 @@
-# cue-vox
+# Cue-Vox
 
-**Give Claude a voice.**
+**Voice interface for the constellation. The conversational surface where certainty and uncertainty meet.**
 
----
+## Role in the Constellation
 
-## What Is This?
+Cue-Vox is how the operator talks to the system. Voice input captures intent at every level of certainty -- firm decisions, vague hunches, exploratory questions, confident directives. The voice interface does not judge the certainty level. It captures, structures, and routes.
 
-**cue-vox** is an open source voice interface for Claude Code. A localhost web interface that lets you talk to Claude using your voice.
+Cue-Vox is the "writer" instance. It creates conversation summary tokens, manages CueSheet execution, handles structured input (sliders, yes/no gates, approval cards), and surfaces visual context (galleries, drops, thermal landscape). The terminal Claude (ninja mode) is the "reader" -- ephemeral, tactical, precise.
 
-**Features:**
-- Push-to-talk voice input (hold SPACE)
-- Local speech-to-text via Whisper
-- Full Claude Code integration with file system access
-- Text-to-speech via macOS `say`
-- Visual state feedback (colored dot)
-- Conversation history display
-- Interrupt capability (press SPACE during response)
-- Custom theming via [Spectra VRGB Color Picker](https://d103b89icpzdo3.cloudfront.net/color-picker.html)
+Together they form the TNG analogy: Cue-Vox is Deanna Troi (empath, conversational). Ninja Claude is Geordi La Forge (engineering, tactical).
 
----
+## Certainty Layer
 
-## Status
+**Variable.** Cue-Vox captures the full spectrum. A slider input might express high urgency (near-certain) or low confidence (near-uncertain). A voice command might be a firm directive or an exploratory question. The voice interface is the primary ingest point for human certainty signals.
 
-✅ **Functional** - Core features working
+## Core Capabilities
 
----
+- **Voice I/O** -- Whisper transcription + TTS output
+- **CueSheet execution** -- interactive and pipeline mode orchestration
+- **Structured inputs** -- sliders (VRGB-encoded), yes/no gates, text input, approval cards
+- **Drop viewer** -- drag-and-drop image ingest with C2D2 vision analysis
+- **Token management** -- creates conversation summaries, modifier tokens, activity tokens
+- **Socket.IO** -- real-time communication between UI and backend
+- **Gallery rendering** -- vault-backed image galleries in conversation
 
-## Quick Start
+## Architecture
 
-```bash
-# 1. Install dependencies
-pip install -r requirements.txt
+Flask web application serving on localhost. Runs Claude Code as a subprocess from the parent directory (maestro root). Static assets served with no-cache headers.
 
-# 2. Run server
-python3 web.py
+## Key Components
 
-# 3. Open browser
-open http://localhost:3000
+- `web.py` -- main Flask server (routes, socket handlers, token management)
+- `executors/cuesheet_executor.py` -- CueSheet execution with thermal, VRGB, budget, policy, trust, and hook integrations
+- `static/js/app.js` -- frontend application (drop viewer, gallery strips, slider UI)
+- `static/css/` -- Haberdash-themed styles
+- `templates/` -- Jinja2 templates
 
-# 4. Hold SPACE to talk, release to process
-```
+## Deployable Anywhere
 
-See [INSTALL.md](INSTALL.md) for detailed setup instructions.
-
----
-
-## Security Notice
-
-**This is a local development tool for personal use.**
-
-- Runs on localhost:3000 without authentication
-- Provides voice access to Claude Code with file system permissions
-- All local users can access the interface when server is running
-- Voice input is transcribed and passed directly to Claude CLI
-
-**Recommendations:**
-- Only run on trusted machines
-- Kill server when not in use if others have access to your machine
-- Not intended for production, multi-user, or untrusted environments
-- Review `.claude/settings.local.json.sample` for permission configuration
-
----
-
-## Requirements
-
-- macOS (for `say` command)
-- Python 3.8+
-- Microphone access
-- Claude Code CLI installed (`claude`)
-- ~150MB for Whisper base model (downloads on first use)
-
----
-
-## How It Works
-
-1. **Browser** → Records audio via MediaRecorder API
-2. **Flask server** → Receives audio, transcribes with Whisper
-3. **Claude CLI** → Processes transcription from parent directory (maestro)
-4. **macOS say** → Speaks response
-5. **Browser** → Updates conversation UI
-
----
-
-## Theming
-
-Customize the interface colors using the [Spectra VRGB Color Picker](https://d103b89icpzdo3.cloudfront.net/color-picker.html).
-
-1. Open the color picker and design your theme
-2. Click "Export CSS"
-3. Paste the generated tokens into `static/css/cue-vox-theme.css`
-4. Reload the interface
-
-All UI colors, including state indicators, will update automatically to match your theme.
-
----
-
-## Related Projects
-
-**[cue-spec](https://github.com/nickcottrell/cue-spec)** - Specification for "cues" as collaborative workflow templates. Defines the ontology of what a cue is: direction with agency intact.
-
----
-
-## License
-
-Apache 2.0
-
-**Disclaimer:** This software is provided "AS IS" without warranty of any kind. Users assume all risks associated with its use.
-
----
-
-## Development Mode
-
-For UI development without affecting your main workflow:
-
-```bash
-# Run dev server on port 3001
-./dev.sh
-```
-
-This runs cue-vox in standalone mode (no maestro directory dependency) for testing UI changes.
-
+Cue-Vox is an open source project that can be deployed in ANY Claude Code project, not just maestro. When running, it executes Claude commands from the parent directory, enabling voice-controlled workflow automation in any repo.

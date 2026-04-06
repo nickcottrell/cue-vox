@@ -1,0 +1,212 @@
+/* ============================================
+   VAULT EXPORT - Shared Library
+   Reusable atoms for all PDF export formats
+   ============================================ */
+
+/* -- Reset -- */
+*, *::before, *::after {
+    box-sizing: border-box;
+}
+
+body {
+    margin: 0;
+    padding: 0;
+    -webkit-font-smoothing: antialiased;
+}
+
+/* -- Header -- */
+.vx-header {
+    display: flex;
+    align-items: center;
+    gap: 1rem;
+    margin-bottom: 1.5rem;
+    border-bottom: 2px solid #111;
+    padding-bottom: 0.75rem;
+}
+
+.vx-title {
+    font-family: var(--font-family-heading, "Helvetica Neue", Helvetica, Arial, sans-serif);
+    font-size: 15px;
+    font-weight: 600;
+    line-height: 1.2;
+    margin: 0 0 0.25rem;
+    color: #111;
+}
+
+.vx-meta {
+    font-size: 0.75rem;
+    color: #888;
+    margin: 0;
+}
+
+
+/* -- Figure (media + badges + caption) -- */
+.vx-figure {
+    position: relative;
+    margin: 0;
+}
+
+.vx-figure__image {
+    width: 100%;
+    height: auto;
+    display: block;
+    border-radius: 2px;
+    background: #f0f0f0;
+}
+
+.vx-figure__caption {
+    font-size: 0.9rem;
+    color: #555;
+    margin-top: 0.5rem;
+    line-height: 1.5;
+}
+
+/* -- Badges -- */
+.vx-badges {
+    position: absolute;
+    top: 0.35rem;
+    left: 0.35rem;
+    display: flex;
+    gap: 3px;
+    flex-wrap: wrap;
+}
+
+.vx-badge {
+    display: inline-block;
+    font-size: 0.55rem;
+    font-weight: 600;
+    letter-spacing: 0.02em;
+    text-transform: uppercase;
+    padding: 1px 4px;
+    border-radius: 2px;
+    line-height: 1.4;
+}
+
+.vx-badge--video {
+    background: rgba(0, 0, 0, 0.65);
+    color: #fff;
+}
+
+.vx-badge--ratio {
+    background: rgba(0, 0, 0, 0.5);
+    color: #fff;
+    font-family: var(--font-family-mono, monospace);
+    letter-spacing: 0;
+}
+
+.vx-badge--duration {
+    background: rgba(0, 0, 0, 0.5);
+    color: #fff;
+    font-family: var(--font-family-mono, monospace);
+    letter-spacing: 0;
+}
+
+/* -- Filename label -- */
+.vx-filename {
+    font-size: 10px;
+    color: #888;
+    margin: 0.2rem 0 0;
+    line-height: 1.3;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+
+.vx-desc {
+    font-size: 10px;
+    color: #999;
+    margin: 0;
+    line-height: 1.2;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+
+/* -- Footer -- */
+.vx-footer {
+    margin-top: 3rem;
+    padding-top: 1.5rem;
+    border-top: 2px solid #111;
+}
+
+/* -- Report Brief -- */
+.vx-report-brief {
+    margin-bottom: 1.5rem;
+}
+
+.vx-report-brief__title {
+    font-family: var(--font-family-heading, "Helvetica Neue", Helvetica, Arial, sans-serif);
+    font-size: 11px;
+    font-weight: 600;
+    text-transform: uppercase;
+    letter-spacing: 0.05em;
+    color: #888;
+    margin: 0 0 0.5rem;
+}
+
+.vx-report-brief__desc {
+    font-size: 13px;
+    color: #555;
+    line-height: 1.6;
+    margin: 0 0 0.75rem;
+}
+
+.vx-report-brief__cta {
+    font-size: 13px;
+    font-style: italic;
+    color: #333;
+    margin: 0;
+}
+
+.vx-report-brief__starters {
+    font-size: 12px;
+    color: #777;
+    line-height: 1.6;
+    margin: 0.75rem 0 0;
+    padding-left: 1.25rem;
+}
+
+.vx-report-brief__starters li {
+    margin-bottom: 0.25rem;
+}
+
+.vx-colophon {
+    font-size: 0.65rem;
+    color: #bbb;
+    margin: 0;
+    font-style: italic;
+}
+
+/* ============================================
+   PRINT BASE
+   ============================================ */
+@media print {
+    @page {
+        margin: 0.5in;
+        size: letter;
+    }
+
+    body {
+        background: white;
+        font-size: 9pt;
+    }
+
+    .vx-figure {
+        break-inside: avoid;
+        page-break-inside: avoid;
+    }
+
+    .vx-figure__image {
+        border-radius: 0;
+    }
+
+    .vx-badge {
+        -webkit-print-color-adjust: exact;
+        print-color-adjust: exact;
+    }
+
+    a {
+        color: inherit;
+        text-decoration: none;
+    }
+}

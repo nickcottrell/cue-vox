@@ -6,17 +6,19 @@
     <title>{{ title }} - Transcription</title>
 
     <link rel="stylesheet" href="https://nickcottrell.github.io/haberdash/haberdash.css">
+    <link rel="stylesheet" href="/static/css/vx-glyphs.css">
+    <link rel="stylesheet" href="/static/css/vault-export.css">
     <link rel="stylesheet" href="/static/css/transcription.css">
 </head>
 <body>
     <article class="transcription">
-        <header class="transcription__header">
-            <div class="transcription__icon" aria-hidden="true">
+        <header class="vx-header">
+            <div class="vx-glyph vx-glyph--waveform" aria-hidden="true">
                 <span></span><span></span><span></span><span></span><span></span>
             </div>
             <div>
-                <h1 class="transcription__title">{{ title }}</h1>
-                <p class="transcription__meta">{{ item_count }} clips</p>
+                <h1 class="vx-title">{{ title }}</h1>
+                <p class="vx-meta">{{ item_count }} clips</p>
             </div>
         </header>
 
@@ -25,35 +27,46 @@
             <div class="transcription__entry">
                 <div class="transcription__figure">
                     <span class="transcription__fig-label">Fig. {{ loop.index }}</span>
-                    <img class="transcription__thumb{% if item.get('orientation') == 'vertical' %} transcription__thumb--portrait{% endif %}"
-                         src="{{ item.get('thumb_url') or item.get('url', '') }}"
-                         alt="{{ item.get('caption', '') }}"
-                         loading="lazy">
-                    {% if item.get('duration') %}
-                    <span class="transcription__duration">{{ "%.0f"|format(item.get('duration', 0)) }}s</span>
-                    {% endif %}
+                    <figure class="vx-figure">
+                        <img class="vx-figure__image"
+                             src="{{ item.get("thumb_url") or item.get("url", "") }}"
+                             alt="{{ item.get("caption", "") }}"
+                             loading="lazy">
+                        <div class="vx-badges">
+                            {% if item.get("is_video") %}
+                            <span class="vx-badge vx-badge--video">VID</span>
+                            {% endif %}
+                            {% if item.get("aspect_label") %}
+                            <span class="vx-badge vx-badge--ratio">{{ item.get("aspect_label") }}</span>
+                            {% endif %}
+                            {% if item.get("duration") %}
+                            <span class="vx-badge vx-badge--duration">{{ "%.0f"|format(item.get("duration", 0)) }}s</span>
+                            {% endif %}
+                        </div>
+                    </figure>
                 </div>
                 <div class="transcription__content">
-                    <p class="transcription__filename">
-                        {% if item.get('is_video') %}<span class="transcription__video-badge">VID</span>{% endif %}
-                        {{ item.get('filename', '') }}
-                    </p>
-                    {% if item.get('caption') %}
-                    <p class="transcription__caption">{{ item.get('caption', '') }}</p>
+                    <p class="vx-filename">{{ item.get("filename", "") }}</p>
+                    {% if item.get("caption") %}
+                    <p class="transcription__caption">{{ item.get("caption", "") }}</p>
                     {% endif %}
 
-                    {% if item.get('segments') %}
+                    {% if item.get("segments") or item.get("transcript_text") %}
+                    <p class="transcription__disclaimer">Auto-transcribed — expect rough edges. Names, brands, and technical terms are especially likely to be off. Please flag the correct spelling of any details as we refine the cuts.</p>
+                    {% endif %}
+
+                    {% if item.get("segments") %}
                     <div class="transcription__segments">
-                        {% for seg in item.get('segments', []) %}
+                        {% for seg in item.get("segments", []) %}
                         <div class="transcription__segment">
-                            <span class="transcription__timecode">{{ seg.get('start', '') }}</span>
-                            <span class="transcription__text">{{ seg.get('text', '') }}</span>
+                            <span class="transcription__timecode">{{ seg.get("start", "") }}</span>
+                            <span class="transcription__text">{{ seg.get("text", "") }}</span>
                         </div>
                         {% endfor %}
                     </div>
-                    {% elif item.get('transcript_text') %}
+                    {% elif item.get("transcript_text") %}
                     <div class="transcription__fulltext">
-                        <p>{{ item.get('transcript_text', '') }}</p>
+                        <p>{{ item.get("transcript_text", "") }}</p>
                     </div>
                     {% endif %}
                 </div>
@@ -61,40 +74,18 @@
             {% endfor %}
         </div>
 
-        {% if transcriptions %}
-        <section class="transcription__dump">
-            <h2 class="transcription__dump-title">Full Transcriptions</h2>
-            <p class="transcription__dump-meta">{{ transcriptions|length }} clips with Whisper transcription data</p>
-
-            {% for tr in transcriptions %}
-            <div class="transcription__dump-clip">
-                <h3 class="transcription__dump-filename">{{ tr.get('filename', '') }}
-                    {% if tr.get('duration') %}
-                    <span class="transcription__duration">{{ "%.0f"|format(tr.get('duration', 0)) }}s</span>
-                    {% endif %}
-                </h3>
-
-                {% if tr.get('segments') %}
-                <div class="transcription__segments">
-                    {% for seg in tr.get('segments', []) %}
-                    <div class="transcription__segment">
-                        <span class="transcription__timecode">{{ seg.get('start', '') }}</span>
-                        <span class="transcription__text">{{ seg.get('text', '') }}</span>
-                    </div>
-                    {% endfor %}
-                </div>
-                {% elif tr.get('transcript_text') %}
-                <div class="transcription__fulltext">
-                    <p>{{ tr.get('transcript_text', '') }}</p>
-                </div>
-                {% endif %}
-            </div>
-            {% endfor %}
-        </section>
-        {% endif %}
-
-        <footer class="transcription__footer">
-            Transcription generated with Cue-Vault.
+        <footer class="vx-footer">
+            <section class="vx-report-brief">
+                <h2 class="vx-report-brief__title">Transcription Report</h2>
+                <p class="vx-report-brief__desc">A timeline of video clips with their spoken-word transcriptions. Each entry shows the thumbnail, timecodes, and full dialog. Review what was said, find key moments, or check where the conversation lives.</p>
+                <p class="vx-report-brief__cta">Talk this over with your favorite agent.</p>
+                <ul class="vx-report-brief__starters">
+                    <li>What are the key talking points across these clips?</li>
+                    <li>Which moments would work best as pull quotes or social clips?</li>
+                    <li>Are there any gaps in the conversation that need a reshoot?</li>
+                </ul>
+            </section>
+            <p class="vx-colophon">Transcriptions were generated by AI and may contain misheard words or creative interpretations. Cue-Vault by Brand Magical.</p>
         </footer>
     </article>
 </body>

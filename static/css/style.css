@@ -992,6 +992,91 @@ body {
 }
 
 /* ============================================
+   CHIP CARD
+   ============================================ */
+
+.chip-card {
+  padding: var(--space-md, 0.75rem);
+  background: var(--surface-secondary, rgba(255, 255, 255, 0.03));
+  border-left: 3px solid var(--text-secondary, #888);
+  border-radius: var(--radius-sm, 4px);
+}
+
+.chip-card__header {
+  display: flex;
+  align-items: center;
+  gap: var(--space-sm, 0.5rem);
+}
+
+.chip-card__swatch {
+  width: 12px;
+  height: 12px;
+  border-radius: 50%;
+  flex-shrink: 0;
+  box-shadow: 0 0 4px currentColor;
+}
+
+.chip-card__label {
+  font-weight: var(--font-weight-bold, 700);
+  font-size: var(--font-size-md, 1rem);
+  letter-spacing: 0.05em;
+}
+
+.chip-card__mode {
+  font-size: var(--font-size-sm, 0.875rem);
+  padding: 2px 8px;
+  border-radius: var(--radius-sm, 4px);
+  background: rgba(255, 255, 255, 0.06);
+  color: var(--text-secondary, #888);
+}
+
+.chip-card__mode[data-mode="activated"] {
+  color: var(--state-speaking, #00ff00);
+  background: rgba(0, 255, 0, 0.08);
+}
+
+.chip-card__mode[data-mode="mounted"] {
+  color: var(--state-transcribing, #ffd700);
+  background: rgba(255, 215, 0, 0.08);
+}
+
+.chip-card__mode[data-mode="inactive"] {
+  color: var(--text-secondary, #888);
+}
+
+.chip-card__details {
+  display: flex;
+  align-items: center;
+  gap: var(--space-md, 0.75rem);
+  margin-top: var(--space-xs, 0.25rem);
+  font-size: var(--font-size-sm, 0.875rem);
+  color: var(--text-secondary, #888);
+}
+
+.chip-card__band {
+  font-weight: var(--font-weight-bold, 700);
+  opacity: 0.7;
+}
+
+.chip-card__model {
+  font-family: monospace;
+  font-size: 0.8rem;
+  opacity: 0.5;
+}
+
+.chip-card__vault {
+  margin-top: var(--space-xs, 0.25rem);
+  font-size: var(--font-size-sm, 0.875rem);
+  color: var(--text-secondary, #888);
+  opacity: 0.6;
+}
+
+.chip-card__vault[data-mounted="true"] {
+  color: var(--state-transcribing, #ffd700);
+  opacity: 0.8;
+}
+
+/* ============================================
    CANVAS INSTRUCTIONS
    ============================================ */
 
@@ -1006,6 +1091,20 @@ body {
   max-width: 90%;
   line-height: 1.6;
   opacity: 0.7;
+}
+
+/* ============================================
+   MIC TOGGLE (DEMO MODE)
+   ============================================ */
+
+[data-mic-off] .canvas__instructions {
+  color: var(--state-error, #e64c4c);
+  opacity: 1;
+  font-weight: 600;
+}
+
+[data-mic-off] .state-dot__inner[data-state="idle"] {
+  background: var(--state-error, #e64c4c);
 }
 
 /* ============================================
@@ -1071,11 +1170,12 @@ body {
   border-color: var(--primary, #fff);
 }
 
-/* -- Case Study Icon -- */
-.case-study-icon {
+/* -- Export Icon Buttons (shared base) -- */
+.case-study-icon,
+.contact-sheet-icon,
+.transcription-icon {
   position: absolute;
   top: 0;
-  right: 32px;
   width: 28px;
   height: 28px;
   border: none;
@@ -1088,40 +1188,19 @@ body {
   border-radius: 50%;
   transition: all 0.2s ease;
   opacity: 0.4;
+  --vx-glyph-color: var(--text-secondary, #888);
 }
 
-.case-study-icon:hover {
+.case-study-icon:hover,
+.contact-sheet-icon:hover,
+.transcription-icon:hover {
   opacity: 0.9;
   background: rgba(255, 255, 255, 0.08);
 }
 
-.case-study-icon__glyph {
-  width: 14px;
-  height: 16px;
-  border: 2px solid var(--text-secondary, #888);
-  border-radius: 2px;
-  position: relative;
-  transition: all 0.2s ease;
-}
-
-.case-study-icon__glyph::before,
-.case-study-icon__glyph::after {
-  content: "";
-  position: absolute;
-  left: 2px;
-  right: 2px;
-  height: 1.5px;
-  background: var(--text-secondary, #888);
-  border-radius: 1px;
-}
-
-.case-study-icon__glyph::before {
-  top: 3px;
-}
-
-.case-study-icon__glyph::after {
-  top: 7px;
-}
+.case-study-icon { right: 32px; }
+.contact-sheet-icon { right: 60px; }
+.transcription-icon { right: 88px; }
 
 /* ============================================
    PINNED TOKENS CONTAINER
@@ -2163,106 +2242,6 @@ body {
   display: flex;
 }
 
-/* -- Transcription Icon (waveform glyph) -- */
-.transcription-icon {
-  position: absolute;
-  top: 0;
-  right: 88px;
-  width: 28px;
-  height: 28px;
-  background: none;
-  border: none;
-  cursor: pointer;
-  padding: 0;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  border-radius: 50%;
-  transition: all 0.2s ease;
-  opacity: 0.4;
-}
-
-.transcription-icon:hover {
-  opacity: 0.9;
-  background: rgba(255, 255, 255, 0.08);
-}
-
-.transcription-icon__glyph {
-  width: 14px;
-  height: 14px;
-  display: flex;
-  align-items: flex-end;
-  justify-content: center;
-  gap: 1.5px;
-}
-
-.transcription-icon__glyph::before,
-.transcription-icon__glyph::after {
-  content: "";
-  display: block;
-  width: 2px;
-  border-radius: 1px;
-  background: var(--text-secondary, #888);
-}
-
-.transcription-icon__glyph::before {
-  height: 6px;
-  box-shadow: -3.5px 2px 0 0 var(--text-secondary, #888);
-}
-
-.transcription-icon__glyph::after {
-  height: 10px;
-  box-shadow: 3.5px 2px 0 0 var(--text-secondary, #888);
-}
-
-/* -- Contact Sheet Icon (grid glyph) -- */
-.contact-sheet-icon {
-  position: absolute;
-  top: 0;
-  right: 60px;
-  width: 28px;
-  height: 28px;
-  background: none;
-  border: none;
-  cursor: pointer;
-  padding: 0;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  border-radius: 50%;
-  transition: all 0.2s ease;
-  opacity: 0.4;
-}
-
-.contact-sheet-icon:hover {
-  opacity: 0.9;
-  background: rgba(255, 255, 255, 0.08);
-}
-
-.contact-sheet-icon__glyph {
-  width: 14px;
-  height: 14px;
-  display: grid;
-  grid-template-columns: 1fr 1fr;
-  grid-template-rows: 1fr 1fr;
-  gap: 2px;
-}
-
-.contact-sheet-icon__glyph::before,
-.contact-sheet-icon__glyph::after {
-  content: "";
-  background: var(--text-secondary, #888);
-  border-radius: 1px;
-}
-
-/* Two extra cells via box-shadow on the pseudo-elements */
-.contact-sheet-icon__glyph::before {
-  box-shadow: calc(100% + 2px) 0 0 0 var(--text-secondary, #888);
-}
-
-.contact-sheet-icon__glyph::after {
-  box-shadow: calc(100% + 2px) 0 0 0 var(--text-secondary, #888);
-}
 
 .gallery-hero {
   position: relative;
@@ -2560,6 +2539,13 @@ body {
   background: #000;
 }
 
+/* Vertical video/image in lightbox -- constrain width so it fills height */
+[data-orientation="vertical"] .gallery-lightbox__image,
+[data-orientation="vertical"] .gallery-lightbox__video {
+  max-width: min(45vw, 50vh);
+  max-height: 85vh;
+}
+
 /* Loading spinner for lightbox media */
 .gallery-lightbox__spinner {
   position: absolute;
@@ -2648,6 +2634,8 @@ body {
 .cue-card__dot[data-type="cuesheet_receipt"]  { background: #10b981; }
 .cue-card__dot[data-type="timing"]           { background: var(--text-secondary, #888); opacity: 0.3; }
 .cue-card__dot[data-type="model_signal"]     { background: var(--state-transcribing, #ffd700); opacity: 0.4; }
+.cue-card__dot[data-type="chip_op"]          { background: var(--chip-root-color, #888); opacity: 0.7; }
+.cue-card__dot[data-type="chip_status"]      { background: var(--chip-root-color, #888); opacity: 0.7; }
 
 .cue-card__label {
   flex: 1;

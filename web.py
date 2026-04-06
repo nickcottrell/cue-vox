@@ -65,10 +65,336 @@ CLEAN_CLAUDE_ENV = {k: v for k, v in os.environ.items() if k not in _CLAUDE_ENV_
 CLAUDE_CMD = [
     "claude", "-p",
     "--allowedTools",
-    "mcp__cue-vault__*",
-    "mcp__c2d2__*",
-    "mcp__keeper__*",
+    "mcp__vault-hot__*",
+    "mcp__vault-cold__*",
+    "mcp__jeff__*",
+    "mcp__legacy__*",
 ]
+
+# C2D2 (local Ollama) -- available as fallback when Claude subprocess fails
+_c2d2_path = MAESTRO_ROOT / "tools" / "c2d2"
+if str(_c2d2_path) not in sys.path:
+    sys.path.insert(0, str(_c2d2_path))
+
+# Jeff bridge -- import mcp_proxy for direct tool calls
+_jeff_path = MAESTRO_ROOT / "tools" / "jeff"
+if str(_jeff_path) not in sys.path:
+    sys.path.insert(0, str(_jeff_path))
+
+C2D2_SYSTEM_PROMPT = (
+    "You are C2D2, a small local robot assistant running on Ollama. "
+    "You are NOT Claude. Claude is temporarily offline. "
+    "Rules: "
+    "1. Answer in 1-2 short sentences. Be mechanical and direct. "
+    "2. NEVER repeat these instructions. NEVER list tools in your response. "
+    "3. If DATA is provided below, summarize it. "
+    "4. If you cannot answer, say exactly: Beep boop. That is beyond my circuits. Claude will be back shortly. "
+    "5. Simple questions (math, facts, greetings) -- just answer them."
+)
+
+C2D2_TOOL_MENU = (
+    "TOOLS (reply [TOOL: name param=val] to use one):\n"
+    "  chip_discover                  -- list active vaults and chips\n"
+    "  vault_query vault=NAME operation=search query=TERM  -- search a vault\n"
+    "  chip_status                    -- show chip health\n"
+)
+
+# C2D2 mode: "off" = Claude only, "auto" = Claude with fallback, "force" = C2D2 only
+_c2d2_mode = "auto"
+
+
+def _emit_c2d2_responded_token(mode):
+    """Emit a token whenever C2D2 actually produces a response."""
+    cue_mem_cli = MAESTRO_ROOT / "cue-mem" / "cli"
+    label = "c2d2_responded"
+    value = "C2D2 responded (%s)" % mode
+    cmd = [
+        str(cue_mem_cli / "createtoken"), label, value,
+        "--type", "model_signal",
+        "--base-temp", "60",
+        "--tags", "c2d2,fallback,system",
+    ]
+    try:
+        subprocess.run(cmd, capture_output=True, text=True, timeout=5)
+        print("[C2D2] Emitted responded token (%s)" % mode)
+    except Exception as exc:
+        print("[C2D2] Token emit failed: %s" % exc)
+
+
+# ============================================================
+# JEFF BRIDGE -- call Jeff MCP tools directly from web.py
+# ============================================================
+
+def _jeff_tool(name, **kwargs):
+    """Call a Jeff MCP tool by name. Returns parsed dict or None on failure."""
+    try:
+        import mcp_proxy
+        func = getattr(mcp_proxy, name, None)
+        if not func:
+            print("[JEFF-BRIDGE] Unknown tool: %s" % name)
+            return None
+        raw = func(**kwargs) if kwargs else func()
+        return json.loads(raw) if isinstance(raw, str) else raw
+    except Exception as exc:
+        print("[JEFF-BRIDGE] %s failed: %s" % (name, exc))
+        return None
+
+
+# ============================================================
+# CLAUDE HEALTH CHECK -- C2D2 pings Claude on request
+# ============================================================
+
+def _check_claude_health():
+    """Ping Claude subprocess with a minimal prompt. Returns health dict."""
+    result = {"service": "claude", "status": "unknown", "error": None}
+    try:
+        process = subprocess.Popen(
+            ["claude", "-p"],
+            stdin=subprocess.PIPE,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+            cwd=str(MAESTRO_ROOT),
+            env=CLEAN_CLAUDE_ENV,
+        )
+        stdout, stderr = process.communicate(input="reply with exactly: pong", timeout=30)
+        if process.returncode == 0 and stdout.strip():
+            result["status"] = "ok"
+            result["response"] = stdout.strip()[:100]
+        else:
+            result["status"] = "error"
+            result["error"] = "exit code %d" % process.returncode
+            if stderr and stderr.strip():
+                result["error"] += ": %s" % stderr.strip()[:200]
+    except subprocess.TimeoutExpired:
+        process.kill()
+        result["status"] = "timeout"
+        result["error"] = "Claude did not respond within 30 seconds"
+    except FileNotFoundError:
+        result["status"] = "not_found"
+        result["error"] = "claude command not found on PATH"
+    except Exception as exc:
+        result["status"] = "error"
+        result["error"] = str(exc)[:200]
+    print("[C2D2] Claude health check: %s" % result["status"])
+    return result
+
+
+# ============================================================
+# TIER 0 -- hardcoded keyword patterns (model never decides)
+# ============================================================
+
+_TIER0_PATTERNS = [
+    # (keywords_any, tool_name, tool_kwargs, description)
+    (
+        ["what's active", "whats active", "what vaults", "what's mounted", "whats mounted",
+         "list vaults", "show vaults", "active vaults"],
+        "chip_discover", {},
+        "active vaults and chips",
+    ),
+    (
+        ["chip status", "chip health", "chip info"],
+        "chip_status", {},
+        "chip status",
+    ),
+]
+
+_CLAUDE_CHECK_KEYWORDS = [
+    "is claude up", "is claude working", "is claude alive", "is claude running",
+    "check claude", "claude status", "ping claude", "claude health",
+    "is claude ok", "is claude down",
+]
+
+
+def _tier0_match(user_text):
+    """Check user text against tier 0 patterns. Returns (data_dict, description) or (None, None)."""
+    lower = user_text.lower()
+
+    # Claude health check (by request only)
+    for kw in _CLAUDE_CHECK_KEYWORDS:
+        if kw in lower:
+            data = _check_claude_health()
+            return (data, "Claude health check")
+
+    # Static patterns
+    for keywords, tool_name, tool_kwargs, desc in _TIER0_PATTERNS:
+        for kw in keywords:
+            if kw in lower:
+                data = _jeff_tool(tool_name, **tool_kwargs)
+                if data:
+                    return (data, desc)
+                break
+
+    # Dynamic: "search X in Y" or "find X in Y"
+    import re
+    search_match = re.search(r"(?:search|find|look for)\s+(.+?)\s+in\s+(\w+)", lower)
+    if search_match:
+        query = search_match.group(1).strip()
+        vault = search_match.group(2).strip()
+        data = _jeff_tool("vault_query", vault=vault, operation="search", query=query)
+        if data:
+            return (data, "search results for '%s' in %s" % (query, vault))
+
+    return (None, None)
+
+
+# ============================================================
+# TIER 1 -- tool-use parser (model requests, we execute)
+# ============================================================
+
+def _parse_tool_tag(response_text):
+    """Parse [TOOL: name param=val ...] from C2D2 output. Returns (name, kwargs) or (None, None)."""
+    import re
+    match = re.search(r"\[TOOL:\s*(\w+)(.*?)\]", response_text)
+    if not match:
+        return (None, None)
+
+    tool_name = match.group(1)
+    params_str = match.group(2).strip()
+    kwargs = {}
+    if params_str:
+        for pair in re.finditer(r"(\w+)=(\S+)", params_str):
+            kwargs[pair.group(1)] = pair.group(2)
+
+    return (tool_name, kwargs)
+
+
+_C2D2_ALLOWED_TOOLS = {"chip_discover", "vault_query", "chip_status"}
+
+
+def _tier1_tool_round(response_text):
+    """If C2D2 requested a tool, execute it and return the result string. Otherwise None."""
+    tool_name, kwargs = _parse_tool_tag(response_text)
+    if not tool_name:
+        return None
+    if tool_name not in _C2D2_ALLOWED_TOOLS:
+        return "[Tool '%s' not available]" % tool_name
+
+    data = _jeff_tool(tool_name, **kwargs)
+    if data is None:
+        return "[Tool '%s' returned no data]" % tool_name
+
+    return json.dumps(data, indent=2)
+
+
+# ============================================================
+# C2D2 PROMPT + CALL
+# ============================================================
+
+def _build_c2d2_prompt(user_text, prefetched_data=None, prefetched_desc=None):
+    """Build a minimal prompt for C2D2. No flux, no engagement, no context bloat."""
+    parts = [C2D2_SYSTEM_PROMPT, "", C2D2_TOOL_MENU]
+    if prefetched_data:
+        parts.append("DATA (%s):" % (prefetched_desc or "query result"))
+        parts.append(json.dumps(prefetched_data, indent=2)[:3000])
+        parts.append("")
+        parts.append("Summarize this data for the user in 2-3 sentences.")
+        parts.append("")
+    parts.append("User: %s" % user_text)
+    return "\n".join(parts)
+
+
+def _call_c2d2(user_text):
+    """Full C2D2 pipeline: tier 0 prefetch -> generate -> tier 1 tool round -> final answer."""
+    from ollama_client import generate
+
+    # Tier 0: check for hardcoded patterns and prefetch data
+    prefetched, desc = _tier0_match(user_text)
+
+    # Build slim prompt
+    prompt = _build_c2d2_prompt(user_text, prefetched_data=prefetched, prefetched_desc=desc)
+    print("[C2D2] Prompt length: %d chars (prefetch: %s)" % (len(prompt), desc or "none"))
+
+    # First generation pass
+    response = generate(prompt, max_tokens=512, timeout=60)
+    if not response:
+        return ""
+
+    # Tier 1: if model requested a tool, execute and do one more pass
+    tool_result = _tier1_tool_round(response)
+    if tool_result:
+        print("[C2D2] Tier 1 tool call detected, executing round-trip")
+        followup_prompt = "%s\n\nTool result:\n%s\n\nSummarize this for the user in 2-3 sentences." % (
+            prompt, tool_result[:3000]
+        )
+        response = generate(followup_prompt, max_tokens=512, timeout=60) or response
+
+    # Strip any remaining [TOOL: ...] tags from final output
+    import re
+    response = re.sub(r"\[TOOL:.*?\]", "", response).strip()
+
+    return response
+
+
+def _call_claude_or_fallback(prompt_text, raw_user_text=""):
+    """Route prompt based on _c2d2_mode.
+
+    Returns (response_text, used_c2d2).
+    raw_user_text: the original user input (pre-context-injection), used for C2D2 slim prompt.
+    """
+    global _active_claude_process, _claude_voided
+
+    # -- Force mode: skip Claude entirely, use slim C2D2 path --
+    if _c2d2_mode == "force":
+        try:
+            print("[C2D2] Force mode -- routing to local model")
+            c2d2_input = raw_user_text or prompt_text
+            response = _call_c2d2(c2d2_input)
+            if response:
+                _emit_c2d2_responded_token("force")
+                return (response, True)
+        except Exception as exc:
+            print("[C2D2] Force mode failed: %s" % exc)
+        return ("", True)
+
+    # -- Normal Claude path --
+    try:
+        process = subprocess.Popen(
+            CLAUDE_CMD,
+            stdin=subprocess.PIPE,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+            cwd=MAESTRO_ROOT,
+            env=CLEAN_CLAUDE_ENV,
+        )
+        _active_claude_process = process
+        stdout, stderr = process.communicate(input=prompt_text)
+        _active_claude_process = None
+
+        if _claude_voided:
+            return (None, False)
+
+        response = stdout.strip()
+
+        if stderr and stderr.strip():
+            print("[CLAUDE STDERR] %s" % stderr.strip()[:500])
+
+        if response:
+            return (response, False)
+
+        print("[CLAUDE] Empty response. Exit code: %d. Prompt length: %d chars"
+              % (process.returncode, len(prompt_text)))
+    except Exception as exc:
+        _active_claude_process = None
+        print("[CLAUDE] Subprocess failed: %s" % exc)
+
+    # -- Auto fallback to C2D2 --
+    if _c2d2_mode != "auto":
+        return ("", False)
+
+    try:
+        print("[C2D2-FALLBACK] Primary unavailable, using local model")
+        c2d2_input = raw_user_text or prompt_text
+        response = _call_c2d2(c2d2_input)
+        if response:
+            _emit_c2d2_responded_token("auto")
+            return (response, True)
+    except Exception as fallback_exc:
+        print("[C2D2-FALLBACK] Also failed: %s" % fallback_exc)
+
+    return ("", False)
+
 
 # Try to import CUE-MEM if available
 CUE_MEM_AVAILABLE = False
@@ -2943,19 +3269,86 @@ def index():
     return render_template('index.html', cache_bust=int(_time.time()))
 
 
-# Shared vault image resolver
-_vault_serve_lib = str(MAESTRO_ROOT / "cue-vault" / "app" / "lib")
-if _vault_serve_lib not in sys.path:
-    sys.path.insert(0, _vault_serve_lib)
-from serve import resolve_image as _vault_resolve_image
+# Vault image resolver -- searches all vault HOT directories
+_VAULT_SEARCH_PATHS = [
+    MAESTRO_ROOT / "vault-hot" / "HOT",
+    MAESTRO_ROOT / "vault-cold" / "HOT",
+]
+# Add chip vault HOT dirs
+for _chip_dir in sorted(MAESTRO_ROOT.glob("chip-*")):
+    for _vault_dir in sorted(_chip_dir.glob("vault-*")):
+        _hot = _vault_dir / "HOT"
+        if _hot.is_dir():
+            _VAULT_SEARCH_PATHS.append(_hot)
 
-_VAULT_DB = str(MAESTRO_ROOT / "cue-vault" / "vault.db")
-_VAULT_ROOT = str(MAESTRO_ROOT / "cue-vault")
+
+def _resolve_vault_image(slug, filename, port=None):
+    """Resolve image path by searching all vault HOT directories.
+
+    Searches multiple patterns:
+      HOT/{slug}/{filename}
+      HOT/{slug}/images/{filename}
+      HOT/**/{slug}/{filename}
+      HOT/**/{slug}/images/{filename}
+
+    Returns (directory, filename) tuple for use with send_from_directory,
+    or (None, None) if not found.
+    """
+    for search_path in _VAULT_SEARCH_PATHS:
+        # Direct: HOT/slug/filename
+        candidate = search_path / slug / filename
+        if candidate.exists():
+            resolved = candidate.resolve()
+            return str(resolved.parent), resolved.name
+        # With images subdir: HOT/slug/images/filename
+        candidate = search_path / slug / "images" / filename
+        if candidate.exists():
+            resolved = candidate.resolve()
+            return str(resolved.parent), resolved.name
+        # Nested: HOT/*/slug/filename (e.g. career/bittorrent)
+        for subdir in search_path.iterdir():
+            if not subdir.is_dir() or subdir.name.startswith("."):
+                continue
+            candidate = subdir / slug / filename
+            if candidate.exists():
+                resolved = candidate.resolve()
+                return str(resolved.parent), resolved.name
+            candidate = subdir / slug / "images" / filename
+            if candidate.exists():
+                resolved = candidate.resolve()
+                return str(resolved.parent), resolved.name
+    return None, None
 
 
-def _resolve_vault_image(slug, filename, port):
-    """Resolve image path via shared vault resolver."""
-    return _vault_resolve_image(slug, filename, port, _VAULT_DB, _VAULT_ROOT)
+def _find_vault_dbs():
+    """Return list of all vault.db paths across local vaults and chips."""
+    dbs = []
+    for name in ["vault-hot", "vault-cold"]:
+        db = MAESTRO_ROOT / name / "vault.db"
+        if db.exists():
+            dbs.append(db)
+    for chip_dir in sorted(MAESTRO_ROOT.glob("chip-*")):
+        for vault_dir in sorted(chip_dir.glob("vault-*")):
+            db = vault_dir / "vault.db"
+            if db.exists():
+                dbs.append(db)
+    return dbs
+
+
+def _query_all_vaults(query, params=()):
+    """Run a query against all vault databases, return first match."""
+    import sqlite3 as _sq3
+    for db_path in _find_vault_dbs():
+        try:
+            conn = _sq3.connect(str(db_path))
+            conn.row_factory = _sq3.Row
+            rows = conn.execute(query, params).fetchall()
+            conn.close()
+            if rows:
+                return [dict(r) for r in rows]
+        except _sq3.OperationalError:
+            continue
+    return []
 
 
 @app.route("/vault/cold/<slug>/<path:filename>")
@@ -3047,8 +3440,7 @@ def serve_keeper_image_any(slug, filename):
 @app.route("/drops/<path:filename>")
 def serve_drop(filename):
     """Serve dropped image files from HOT/_drops."""
-    # Drops now live in cue-vault/HOT/_drops
-    drops_dir = MAESTRO_ROOT / "cue-vault" / "HOT" / "_drops"
+    drops_dir = MAESTRO_ROOT / "vault-hot" / "HOT" / "_drops"
 
     # Try exact match first
     fpath = drops_dir / filename
@@ -3059,7 +3451,7 @@ def serve_drop(filename):
     # Try matching by original filename via vault DB
     try:
         import sqlite3 as _sqlite3
-        vault_db = MAESTRO_ROOT / "cue-vault" / "vault.db"
+        vault_db = MAESTRO_ROOT / "vault-cold" / "vault.db"
         if vault_db.exists():
             _conn = _sqlite3.connect(str(vault_db))
             _conn.row_factory = _sqlite3.Row
@@ -3100,7 +3492,7 @@ def api_recognize():
     """
     import hashlib
     try:
-        vault_lib = MAESTRO_ROOT / "cue-vault" / "app" / "lib"
+        vault_lib = MAESTRO_ROOT / "tools" / "vault-template" / "app" / "lib"
         if str(vault_lib) not in sys.path:
             sys.path.insert(0, str(vault_lib))
         from fts import get_connection, ensure_schema, ensure_registry_schema
@@ -3232,7 +3624,7 @@ def api_drop_register():
         file_hash = hashlib.sha256(raw_bytes).hexdigest()
 
         # Save to HOT/_drops (file lives in the vault from the moment it is dropped)
-        hot_drops_dir = MAESTRO_ROOT / "cue-vault" / "HOT" / "_drops"
+        hot_drops_dir = MAESTRO_ROOT / "vault-hot" / "HOT" / "_drops"
         hot_drops_dir.mkdir(parents=True, exist_ok=True)
         ext = Path(filename).suffix or ".png"
         drop_path = hot_drops_dir / (file_hash[:16] + ext)
@@ -3251,7 +3643,7 @@ def api_drop_register():
         # ── Index in vault DB ──
         try:
             import sqlite3 as _sqlite3
-            vault_db = MAESTRO_ROOT / "cue-vault" / "vault.db"
+            vault_db = MAESTRO_ROOT / "vault-cold" / "vault.db"
             if vault_db.exists():
                 _conn = _sqlite3.connect(str(vault_db))
                 _conn.row_factory = _sqlite3.Row
@@ -3300,7 +3692,7 @@ def api_drop_register():
         caption = ""
         try:
             import sqlite3 as _sqlite3
-            vault_db = MAESTRO_ROOT / "cue-vault" / "vault.db"
+            vault_db = MAESTRO_ROOT / "vault-cold" / "vault.db"
             if vault_db.exists():
                 _vconn = _sqlite3.connect(str(vault_db))
                 _vconn.row_factory = _sqlite3.Row
@@ -3428,7 +3820,7 @@ def api_drop_register():
         try:
             if caption or describe_result:
                 import sqlite3 as _sqlite3
-                vault_db = MAESTRO_ROOT / "cue-vault" / "vault.db"
+                vault_db = MAESTRO_ROOT / "vault-cold" / "vault.db"
                 if vault_db.exists():
                     _pconn = _sqlite3.connect(str(vault_db))
                     updates = []
@@ -3712,7 +4104,7 @@ def _vx_resolve_images(gallery_images):
     orientation, aspect_label, duration.
     """
     import sqlite3 as _vx_sqlite3
-    _vx_db = os.path.join(MAESTRO_ROOT, "cue-vault", "vault.db")
+    _vx_db = os.path.join(MAESTRO_ROOT, "vault-cold", "vault.db")
     _vx_lookup = {}
     _vx_tags = {}
     if os.path.isfile(_vx_db):
@@ -3796,7 +4188,7 @@ def _vx_resolve_images(gallery_images):
 def _vx_load_gallery(gallery_slug):
     """Load a gallery from vault.db by slug. Returns (title, images) or (None, None)."""
     import sqlite3 as _lg_sqlite3
-    db_path = os.path.join(MAESTRO_ROOT, "cue-vault", "vault.db")
+    db_path = os.path.join(MAESTRO_ROOT, "vault-cold", "vault.db")
     if not os.path.isfile(db_path):
         return None, None
     try:
@@ -3839,7 +4231,7 @@ def contact_sheet(gallery_slug):
     gallery_images = _vx_resolve_images(images)
 
     import sqlite3 as _cs_sqlite3
-    _cs_db = os.path.join(MAESTRO_ROOT, "cue-vault", "vault.db")
+    _cs_db = os.path.join(MAESTRO_ROOT, "vault-cold", "vault.db")
     _cs_tags = {}
     if os.path.isfile(_cs_db):
         try:
@@ -3904,7 +4296,7 @@ def transcription_view(gallery_slug):
     gallery_images = _vx_resolve_images(images)
 
     import sqlite3 as _tr_sqlite3
-    _tr_db = os.path.join(MAESTRO_ROOT, "cue-vault", "vault.db")
+    _tr_db = os.path.join(MAESTRO_ROOT, "vault-cold", "vault.db")
     _tr_by_key = {}
     _tr_by_stem = {}
     if os.path.isfile(_tr_db):
@@ -3999,7 +4391,7 @@ def api_save_gallery():
         if not any(img.get("slug") for img in images):
             print("[gallery] skipping save (blob URLs, not yet registered): %s" % slug)
             return jsonify({"ok": True, "slug": slug, "deferred": True})
-    db_path = MAESTRO_ROOT / "cue-vault" / "vault.db"
+    db_path = MAESTRO_ROOT / "vault-cold" / "vault.db"
     try:
         conn = _gal_sqlite3.connect(str(db_path))
         conn.execute("""
@@ -4043,7 +4435,7 @@ def api_list_galleries():
     since = request.args.get("since")
     until = request.args.get("until")
     limit = int(request.args.get("limit", 50))
-    db_path = MAESTRO_ROOT / "cue-vault" / "vault.db"
+    db_path = MAESTRO_ROOT / "vault-cold" / "vault.db"
     try:
         conn = _gal_sqlite3.connect(str(db_path))
         clauses = []
@@ -4080,7 +4472,7 @@ def api_list_galleries():
 def api_get_gallery(slug):
     """Fetch a single gallery by slug with full image list."""
     import sqlite3 as _gal_sqlite3
-    db_path = MAESTRO_ROOT / "cue-vault" / "vault.db"
+    db_path = MAESTRO_ROOT / "vault-cold" / "vault.db"
     try:
         conn = _gal_sqlite3.connect(str(db_path))
         row = conn.execute(
@@ -4192,36 +4584,18 @@ def handle_audio(data):
         # Assemble with budget enforcement to prevent "Prompt is too long" errors
         enhanced_text = assemble_prompt_with_budget(context_sections, enhanced_text)
 
-        # Send to Claude Code (run from parent maestro directory if exists)
-        global _active_claude_process, _claude_voided
+        # Send to Claude Code with C2D2 fallback
         _claude_voided = False
-        cwd = MAESTRO_ROOT
+        response, used_fallback = _call_claude_or_fallback(enhanced_text, raw_user_text=text)
 
-        process = subprocess.Popen(
-            CLAUDE_CMD,
-            stdin=subprocess.PIPE,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
-            text=True,
-            cwd=cwd,
-            env=CLEAN_CLAUDE_ENV
-        )
-        _active_claude_process = process
-        stdout, stderr = process.communicate(input=enhanced_text)
-        _active_claude_process = None
-
-        if _claude_voided:
+        if response is None:
             print("[VOID] Claude response discarded (message was voided)")
             emit('state_change', {'state': 'idle'})
             Path(temp_file.name).unlink()
             return
 
-        response = stdout.strip()
-
-        if stderr and stderr.strip():
-            print("[CLAUDE STDERR] %s" % stderr.strip()[:500])
-        if not response:
-            print("[CLAUDE] Empty response. Exit code: %d. Prompt length: %d chars" % (process.returncode, len(enhanced_text)))
+        if used_fallback:
+            emit('fallback_active', {'backend': 'c2d2'})
 
         # Log conversation with input length
         _, clean_response, snr_hex = log_conversation(text, response, input_length=input_word_count)
@@ -4328,30 +4702,17 @@ CRITICAL: If the user responds "No" to a yes/no question, accept their answer as
 
 IMPORTANT: When speaking, say "Yes OR No" not "yes-no" or "yes slash no"."""
 
-        # Send to Claude Code
-        global _active_claude_process, _claude_voided
+        # Send to Claude Code with C2D2 fallback
         _claude_voided = False
-        cwd = MAESTRO_ROOT
+        response, used_fallback = _call_claude_or_fallback(enhanced_text, raw_user_text=answer)
 
-        process = subprocess.Popen(
-            CLAUDE_CMD,
-            stdin=subprocess.PIPE,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
-            text=True,
-            cwd=cwd,
-            env=CLEAN_CLAUDE_ENV
-        )
-        _active_claude_process = process
-        stdout, stderr = process.communicate(input=enhanced_text)
-        _active_claude_process = None
-
-        if _claude_voided:
+        if response is None:
             print("[VOID] Claude response discarded (button response was voided)")
             emit('state_change', {'state': 'idle'})
             return
 
-        response = stdout.strip()
+        if used_fallback:
+            emit('fallback_active', {'backend': 'c2d2'})
 
         # Log conversation (button answer as user input) with input length
         _, clean_response, snr_hex = log_conversation(answer, response, input_length=input_word_count)
@@ -4707,30 +5068,17 @@ def handle_input_response(data):
         # Prepare input for Claude with all context
         enhanced_text = f"{flux_context}{summary_context}{speech_context}{variables_context}{history_context}[USER INPUT]\n{user_message}"
 
-        # Send to Claude Code
-        global _active_claude_process, _claude_voided
+        # Send to Claude Code with C2D2 fallback
         _claude_voided = False
-        cwd = MAESTRO_ROOT
+        response, used_fallback = _call_claude_or_fallback(enhanced_text, raw_user_text=str(user_message))
 
-        process = subprocess.Popen(
-            CLAUDE_CMD,
-            stdin=subprocess.PIPE,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
-            text=True,
-            cwd=cwd,
-            env=CLEAN_CLAUDE_ENV
-        )
-        _active_claude_process = process
-        stdout, stderr = process.communicate(input=enhanced_text)
-        _active_claude_process = None
-
-        if _claude_voided:
+        if response is None:
             print("[VOID] Claude response discarded (input response was voided)")
             emit('state_change', {'state': 'idle'})
             return
 
-        response = stdout.strip()
+        if used_fallback:
+            emit('fallback_active', {'backend': 'c2d2'})
 
         # Log conversation with input length
         _, clean_response, snr_hex = log_conversation(user_message, response, input_length=input_word_count)
@@ -4799,30 +5147,17 @@ def handle_text_message(data):
         # Assemble with budget enforcement to prevent "Prompt is too long" errors
         enhanced_text = assemble_prompt_with_budget(context_sections, enhanced_text)
 
-        # Send to Claude Code (run from parent maestro directory if exists)
-        global _active_claude_process, _claude_voided
+        # Send to Claude Code with C2D2 fallback
         _claude_voided = False
-        cwd = MAESTRO_ROOT
+        response, used_fallback = _call_claude_or_fallback(enhanced_text, raw_user_text=text)
 
-        process = subprocess.Popen(
-            CLAUDE_CMD,
-            stdin=subprocess.PIPE,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
-            text=True,
-            cwd=cwd,
-            env=CLEAN_CLAUDE_ENV
-        )
-        _active_claude_process = process
-        stdout, stderr = process.communicate(input=enhanced_text)
-        _active_claude_process = None
-
-        if _claude_voided:
+        if response is None:
             print("[VOID] Claude response discarded (text message was voided)")
             emit('state_change', {'state': 'idle'})
             return
 
-        response = stdout.strip()
+        if used_fallback:
+            emit('fallback_active', {'backend': 'c2d2'})
 
         # Log conversation with input length
         _, clean_response, snr_hex = log_conversation(text, response, input_length=input_word_count)
@@ -5237,51 +5572,128 @@ def catch_all(event, data=None):
 
 @socketio.on('cuesheet_list')
 def handle_cuesheet_list(data=None):
-    """List available cue-sheets from the cue-sheets directory"""
+    """List available cue-sheets from cue-sheets dir + active vault volumes"""
     try:
-        sheets_dir = MAESTRO_ROOT / "cue-sheets"
-        if not sheets_dir.is_dir():
-            emit("cuesheet_list_result", {"sheets": []})
-            return
-
         import yaml as _yaml
+
+        def _parse_sheet(f, source_tag=None):
+            """Parse a cuesheet yaml file into a menu entry dict."""
+            with open(f) as fh:
+                doc = _yaml.safe_load(fh) or {}
+            cue_count = len(doc.get("cues", []) or doc.get("steps", []))
+            entry = {
+                "path": str(f),
+                "filename": f.name,
+                "name": doc.get("name", f.stem),
+                "description": doc.get("description", ""),
+                "icon": doc.get("icon", ""),
+                "order": doc.get("order", 999),
+                "input_count": len(doc.get("inputs", [])),
+                "cue_count": cue_count,
+                "is_child": bool(doc.get("parent")),
+                "is_stub": not doc.get("description") and cue_count == 0,
+            }
+            if doc.get("panel"):
+                entry["panel"] = doc["panel"]
+            if source_tag:
+                entry["source"] = source_tag
+            return entry
+
         sheets = []
-        for f in sorted(sheets_dir.iterdir()):
-            if f.suffix != ".yaml":
-                continue
-            try:
-                with open(f) as fh:
-                    doc = _yaml.safe_load(fh) or {}
-                # Skip child sheets -- only top-level sheets appear in the do menu
-                if doc.get("parent"):
+        all_sheets = []
+
+        # --- 1. Legacy cue-sheets/ directory ---
+        sheets_dir = MAESTRO_ROOT / "cue-sheets"
+        if sheets_dir.is_dir():
+            for f in sorted(sheets_dir.iterdir()):
+                if f.suffix != ".yaml":
                     continue
-                entry = {
-                    "path": str(f),
-                    "filename": f.name,
-                    "name": doc.get("name", f.stem),
-                    "description": doc.get("description", ""),
-                    "icon": doc.get("icon", ""),
-                    "order": doc.get("order", 999),
-                    "input_count": len(doc.get("inputs", [])),
-                    "cue_count": len(doc.get("cues", []))
-                }
-                if doc.get("panel"):
-                    entry["panel"] = doc["panel"]
-                sheets.append(entry)
-            except Exception:
-                continue
+                try:
+                    all_sheets.append({"path": str(f), "filename": f.name})
+                    entry = _parse_sheet(f)
+                    if not entry["is_child"]:
+                        sheets.append(entry)
+                except Exception:
+                    continue
+
+        # --- 2. Active vault volumes (via Jeff) ---
+        jeff_dir = MAESTRO_ROOT / "tools" / "jeff"
+        active_file = jeff_dir / ".jeff-volumes-active.json"
+        volumes_file = jeff_dir / "volumes.json"
+        if active_file.is_file() and volumes_file.is_file():
+            import json as _json
+            with open(active_file) as fh:
+                active_names = _json.load(fh)
+            with open(volumes_file) as fh:
+                volumes_cfg = {v["name"]: v for v in _json.load(fh)}
+
+            # Also scan /Volumes/ for physical chips
+            _vol_scan = Path("/Volumes")
+            if _vol_scan.is_dir():
+                _known = {v["path"] for v in volumes_cfg.values()}
+                for _d in sorted(_vol_scan.iterdir()):
+                    _hb = _d / "heartbeat.json"
+                    if not _hb.is_file() or _d.name == "Macintosh HD":
+                        continue
+                    if str(_d) in _known:
+                        continue
+                    try:
+                        with open(_hb) as _fh:
+                            _chip = _json.load(_fh)
+                        _label = _chip.get("label", _d.name)
+                        _name = "sd:%s" % _label.lower()
+                        volumes_cfg[_name] = {
+                            "name": _name,
+                            "type": "chip",
+                            "path": str(_d),
+                        }
+                    except Exception:
+                        continue
+
+            for vol_name in active_names:
+                vol = volumes_cfg.get(vol_name)
+                if not vol:
+                    continue
+                _vp = Path(vol["path"])
+                vol_path = _vp if _vp.is_absolute() else MAESTRO_ROOT / _vp
+                if not vol_path.is_dir():
+                    continue
+
+                # Collect vault dirs: chips have vault-* subdirs, locals ARE the vault
+                vault_dirs = []
+                if vol.get("type") == "chip":
+                    vault_dirs = [d for d in sorted(vol_path.iterdir())
+                                  if d.is_dir() and d.name.startswith("vault-")]
+                else:
+                    vault_dirs = [vol_path]
+
+                for vdir in vault_dirs:
+                    # Root cue-sheet.yaml
+                    root_cs = vdir / "cue-sheet.yaml"
+                    if root_cs.is_file():
+                        try:
+                            tag = vol_name + ":" + vdir.name
+                            all_sheets.append({"path": str(root_cs), "filename": root_cs.name})
+                            entry = _parse_sheet(root_cs, source_tag=tag)
+                            if not entry["is_child"] and not entry["is_stub"]:
+                                sheets.append(entry)
+                        except Exception:
+                            continue
+
+                    # Child cue-sheets in cue-sheets/ subdir
+                    children_dir = vdir / "cue-sheets"
+                    if children_dir.is_dir():
+                        for f in sorted(children_dir.iterdir()):
+                            if f.suffix != ".yaml":
+                                continue
+                            try:
+                                all_sheets.append({"path": str(f), "filename": f.name})
+                                entry = _parse_sheet(f, source_tag=vol_name + ":" + vdir.name)
+                                # children stay children -- don't add to top-level
+                            except Exception:
+                                continue
 
         emit("cuesheet_list_result", {"sheets": sheets})
-
-        # Also emit ALL sheets (including children) for panel path cache
-        all_sheets = []
-        for f in sorted(sheets_dir.iterdir()):
-            if f.suffix != ".yaml":
-                continue
-            try:
-                all_sheets.append({"path": str(f), "filename": f.name})
-            except Exception:
-                continue
         emit("cuesheet_children_result", {"sheets": all_sheets})
     except Exception as e:
         print("cuesheet_list error: %s" % e)
@@ -5553,6 +5965,68 @@ def api_speak():
     _speech_queue.put((text, 0, False))
     _speech_queue.join()
     return {"ok": True}
+
+
+@app.route('/api/chip/op', methods=['POST'])
+def api_chip_op():
+    """Log a Jeff chip operation to cue-stream.
+
+    Called by Jeff MCP proxy after each tool call.
+    Emits a token_created event with type chip_op so it appears in the stream.
+    """
+    data = request.json or {}
+    op = data.get("op", "unknown")
+    label = data.get("label", "?")
+    root_color = data.get("root_color", "#888888")
+    summary = data.get("summary", "")
+    chip_data = data.get("chip_data", {})
+
+    from datetime import datetime, timezone
+    now_iso = datetime.now(timezone.utc).isoformat()
+    token_id = "chip_op_%s_%s" % (op, now_iso.replace(":", "").replace("-", "")[:15])
+
+    display_label = "%s %s" % (label, summary or op)
+
+    socketio.emit("token_created", {
+        "token_id": token_id,
+        "type": "chip_op",
+        "label": display_label,
+        "value": op,
+        "chip_op": op,
+        "chip_data": chip_data,
+        "root_color": root_color,
+        "tags": ["chip:%s" % label.lower()],
+        "temperature": 70,
+        "base_temp": 50,
+        "cooling_rate": 8.0,
+        "created_at": now_iso,
+    })
+    return {"ok": True, "token_id": token_id}
+
+
+@app.route('/api/c2d2/status', methods=['GET'])
+def api_c2d2_status():
+    """Check C2D2 mode and reachability."""
+    from ollama_client import is_available
+    return {
+        "mode": _c2d2_mode,
+        "reachable": is_available(),
+    }
+
+
+@app.route('/api/c2d2/mode', methods=['POST'])
+def api_c2d2_mode():
+    """Set C2D2 mode. POST {"mode": "off"|"auto"|"force"} or cycle if omitted."""
+    global _c2d2_mode
+    data = request.get_json(silent=True) or {}
+    if "mode" in data and data["mode"] in ("off", "auto", "force"):
+        _c2d2_mode = data["mode"]
+    else:
+        cycle = {"off": "auto", "auto": "force", "force": "off"}
+        _c2d2_mode = cycle[_c2d2_mode]
+    print("[C2D2] Mode set to %s" % _c2d2_mode)
+    socketio.emit("c2d2_mode", {"mode": _c2d2_mode})
+    return {"mode": _c2d2_mode}
 
 
 @socketio.on('speak')

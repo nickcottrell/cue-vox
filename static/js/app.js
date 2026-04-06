@@ -27,6 +27,7 @@ let stateTimerInterval = null;
 let stateStartTime = Date.now();
 let recordingTimeout = null;
 var RECORDING_LIMIT_MS = 30000;
+let micEnabled = true;
 
 // Pull history state
 var pullHistory = { loaded: false, timestamps: {} };
@@ -169,8 +170,20 @@ document.addEventListener('keydown', (e) => {
   // Don't trigger if typing in any text input or textarea
   if (e.target === drawerTextInput || e.target.matches('textarea, input[type="text"]')) return;
 
+  // Mic toggle: M key (when not in text input)
+  if (e.code === 'KeyM' && !e.metaKey && !e.ctrlKey && !e.altKey) {
+    toggleMic();
+    return;
+  }
+
   if (e.code === 'Space' && !isRecording) {
     e.preventDefault();
+
+    // Block recording when mic is disabled (demo mode)
+    if (!micEnabled) {
+      console.log('🔇 Mic disabled -- press M to re-enable');
+      return;
+    }
 
     // Block recording when gallery lightbox is open
     if (galleryLightboxOpen) return;
@@ -234,6 +247,30 @@ document.addEventListener('keyup', (e) => {
     stopRecording();
   }
 });
+
+// ============================================
+// Mic Toggle (Demo Mode)
+// ============================================
+
+function toggleMic() {
+  micEnabled = !micEnabled;
+  var instructions = document.querySelector('.canvas__instructions');
+  var body = document.body;
+
+  if (micEnabled) {
+    body.removeAttribute('data-mic-off');
+    if (instructions) {
+      instructions.textContent = 'Hold SPACE to talk \u2022 Release to process';
+    }
+    console.log('🎙️ Mic enabled');
+  } else {
+    body.setAttribute('data-mic-off', '');
+    if (instructions) {
+      instructions.textContent = 'MIC OFF \u2022 Press M to re-enable';
+    }
+    console.log('🔇 Mic disabled (demo mode)');
+  }
+}
 
 // ============================================
 // Text Input
@@ -960,6 +997,18 @@ const widgetRegistry = {
     return createCueCard(cueData);
   },
 
+  // CHIP: JSON -> chip status card (read-only)
+  CHIP: function(data) {
+    var chipData;
+    try {
+      chipData = JSON.parse(data);
+    } catch (e) {
+      console.error("[chip] failed to parse CHIP JSON: " + e.message);
+      return null;
+    }
+    return createChipCard(chipData);
+  },
+
   // GALLERY: JSON -> inline thumbnail strip with lightbox
   GALLERY: function(data) {
     var galleryData;
@@ -1088,7 +1137,7 @@ function renderMessageContent(container, text) {
 
   // Find structured tags with bracket-balanced matching
   // Simple regex fails when JSON payload contains ] (e.g. arrays in choice options)
-  var tagStartRegex = /\[(YES_NO|INPUT|APPROVAL|DOCUMENT|CUE|GALLERY|CITATIONS):\s*/g;
+  var tagStartRegex = /\[(YES_NO|INPUT|APPROVAL|DOCUMENT|CUE|GALLERY|CHIP|CITATIONS):\s*/g;
 
   var matches = [];
   var match;
@@ -2097,6 +2146,76 @@ function handleCueResponse(decision, buttonGroup, cueData) {
   socket.emit("text_message", { text: response });
 }
 
+// ============================================
+// CHIP Card Widget
+// ============================================
+
+function createChipCard(chipData) {
+  var container = document.createElement("div");
+  container.className = "structured-question chip-card";
+  if (chipData.root_color) {
+    container.style.borderLeftColor = chipData.root_color;
+  }
+
+  // Header row: swatch + label + mode badge
+  var header = document.createElement("div");
+  header.className = "chip-card__header";
+
+  var swatch = document.createElement("span");
+  swatch.className = "chip-card__swatch";
+  swatch.style.backgroundColor = chipData.root_color || "#888";
+  header.appendChild(swatch);
+
+  var label = document.createElement("span");
+  label.className = "chip-card__label";
+  label.textContent = chipData.label || "unknown";
+  header.appendChild(label);
+
+  var mode = document.createElement("span");
+  mode.className = "chip-card__mode";
+  mode.setAttribute("data-mode", chipData.mode || "unknown");
+  mode.textContent = chipData.mode || "unknown";
+  header.appendChild(mode);
+
+  container.appendChild(header);
+
+  // Details row: band + model
+  var details = document.createElement("div");
+  details.className = "chip-card__details";
+
+  if (chipData.band) {
+    var bandEl = document.createElement("span");
+    bandEl.className = "chip-card__band";
+    bandEl.textContent = chipData.band;
+    details.appendChild(bandEl);
+  }
+
+  if (chipData.model) {
+    var modelEl = document.createElement("span");
+    modelEl.className = "chip-card__model";
+    modelEl.textContent = chipData.model;
+    details.appendChild(modelEl);
+  }
+
+  container.appendChild(details);
+
+  // Vault status
+  if (chipData.vault_mounted !== undefined) {
+    var vault = document.createElement("div");
+    vault.className = "chip-card__vault";
+    vault.textContent = chipData.vault_mounted ? "vault open" : "vault sealed";
+    vault.setAttribute("data-mounted", chipData.vault_mounted ? "true" : "false");
+    container.appendChild(vault);
+  }
+
+  // Store chip data for lightbox
+  container.dataset.chipData = JSON.stringify(chipData);
+
+  container.appendChild(createModifierIcon());
+
+  return container;
+}
+
 // Update relative timestamps
 function updateTimestamps() {
   const messages = document.querySelectorAll('.conversation .card[data-timestamp]');
@@ -2768,6 +2887,75 @@ function renderLightboxBody(container, data, editable) {
     } else {
       renderMarkdown(container, data.value || "");
     }
+  } else if (data.type === "chip_status" || data.type === "chip_op") {
+    // Chip status / op detail view
+    var chipMeta = data.chip_data || {};
+
+    var chipHeader = document.createElement("div");
+    chipHeader.className = "chip-card__header";
+    chipHeader.style.marginBottom = "var(--space-md, 0.75rem)";
+
+    var chipSwatch = document.createElement("span");
+    chipSwatch.className = "chip-card__swatch";
+    chipSwatch.style.backgroundColor = chipMeta.root_color || "#888";
+    chipHeader.appendChild(chipSwatch);
+
+    var chipLabel = document.createElement("span");
+    chipLabel.className = "chip-card__label";
+    chipLabel.textContent = chipMeta.label || data.label || "unknown";
+    chipHeader.appendChild(chipLabel);
+
+    if (chipMeta.mode) {
+      var chipMode = document.createElement("span");
+      chipMode.className = "chip-card__mode";
+      chipMode.setAttribute("data-mode", chipMeta.mode);
+      chipMode.textContent = chipMeta.mode;
+      chipHeader.appendChild(chipMode);
+    }
+
+    container.appendChild(chipHeader);
+
+    // Detail lines
+    var fields = [
+      ["band", chipMeta.band],
+      ["model", chipMeta.model],
+      ["volume", chipMeta.volume],
+      ["vault", chipMeta.vault_mounted ? "open" : "sealed"],
+      ["mounts", chipMeta.mount_count],
+      ["device", chipMeta.device_id]
+    ];
+
+    if (data.type === "chip_op") {
+      fields.unshift(["op", data.chip_op || data.value]);
+    }
+
+    var detailList = document.createElement("div");
+    detailList.className = "chip-card__detail-list";
+    detailList.style.fontSize = "var(--font-size-sm, 0.875rem)";
+    detailList.style.color = "var(--text-secondary, #888)";
+    detailList.style.lineHeight = "1.8";
+
+    fields.forEach(function(pair) {
+      if (pair[1] === undefined || pair[1] === null || pair[1] === "") return;
+      var line = document.createElement("div");
+      var keySpan = document.createElement("span");
+      keySpan.style.opacity = "0.5";
+      keySpan.style.display = "inline-block";
+      keySpan.style.width = "70px";
+      keySpan.textContent = pair[0];
+      line.appendChild(keySpan);
+      var valSpan = document.createElement("span");
+      valSpan.textContent = String(pair[1]);
+      if (pair[0] === "device") {
+        valSpan.style.fontFamily = "monospace";
+        valSpan.style.fontSize = "0.75rem";
+        valSpan.style.opacity = "0.4";
+      }
+      line.appendChild(valSpan);
+      detailList.appendChild(line);
+    });
+
+    container.appendChild(detailList);
   }
 
   // Hex log box (view mode only)
@@ -3638,7 +3826,7 @@ requestChallenge();
 // Origin-checked. Routes events to Claude as text messages.
 
 (function() {
-  var ALLOWED_ORIGINS = ["http://localhost:3001"];
+  var ALLOWED_ORIGINS = ["http://localhost:3001", "http://localhost:3002", "http://localhost:3003"];
 
   // Map cue-sheet slugs to file paths for panel-initiated launches
   var _cuesheetPathCache = {};
@@ -3700,9 +3888,14 @@ requestChallenge();
       socket.emit("speak", {text: e.data.text});
     }
 
-    // Quick action with pre-filled data
+    // Markets discussion — submit question to Claude
     if (e.data.type === "quick_action" && e.data.task) {
-      addSystemMessage("Quick action: " + e.data.task + " (urgency: " + e.data.urgency + ")");
+      var prompt = "Let's discuss this: " + e.data.task;
+      if (e.data.context) {
+        prompt += " (regions: " + e.data.context + ")";
+      }
+      prompt += " -- Give me a quick framing of the issue, what you know about it, and ask me what I think.";
+      socket.emit("text_message", { text: prompt });
     }
   });
 
@@ -3852,87 +4045,23 @@ function attachPortFallback(el, onFinalError) {
 }
 
 function resolveGalleryImageUrl(img) {
-  if (!img) {
-    console.warn("[gallery] resolveGalleryImageUrl called with null/undefined image");
-    return "";
-  }
-  // Format 1: structured slug + filename (port-aware when available)
+  if (!img) return "";
+
+  // Canonical path: slug + filename + port -> /vault/<port>/<slug>/<filename>
   if (img.slug && img.filename) {
-    // Dropped images served from /drops/ route
-    if (img.slug === "_drops" || img.slug === "_hot_loose" || img.slug === "_cold_loose") {
-      var url = "/drops/" + safeEncodeComponent(img.filename);
-      console.log("[gallery] resolved drops: " + url);
-      return url;
+    var port = (img.port || "hot").toLowerCase();
+    if (port === "keeper") {
+      var base = "/vault/keeper/";
+      if (img.device) base += safeEncodeComponent(img.device) + "/";
+      return base + safeEncodeComponent(img.slug) + "/" + safeEncodeComponent(img.filename);
     }
-    var rawPort = (img.port || "hot").toLowerCase();
-    var port = (rawPort === "hot" || rawPort === "cold") ? rawPort : "hot";
-    var url = "/vault/" + port + "/" + safeEncodeComponent(img.slug) + "/" + safeEncodeComponent(img.filename);
-    console.log("[gallery] resolved slug+filename (" + port + "): " + url);
-    return url;
+    if (port !== "hot" && port !== "cold") port = "hot";
+    return "/vault/" + port + "/" + safeEncodeComponent(img.slug) + "/" + safeEncodeComponent(img.filename);
   }
-  // Format 2: src path -- convert known patterns to port-aware URLs
-  if (img.src) {
-    var src = img.src;
-    if (src.charAt(0) === "/") src = src.substring(1);
-    // Strip vault/ prefix if present (e.g. vault/HOT/slug/file.png)
-    var srcLower = src.toLowerCase();
-    if (srcLower.indexOf("vault/") === 0) {
-      src = src.substring(6);
-      srcLower = src.toLowerCase();
-    }
-    // hot/<slug>/<filename> or HOT/<slug>/<filename>
-    if (srcLower.indexOf("hot/") === 0) {
-      var rest = src.substring(4);
-      var idx = rest.indexOf("/");
-      if (idx > 0) {
-        var slug = rest.substring(0, idx);
-        var filename = rest.substring(idx + 1);
-        if (filename.indexOf("images/") === 0) filename = filename.substring(7);
-        var url = "/vault/hot/" + safeEncodeComponent(slug) + "/" + safeEncodeComponent(filename);
-        console.log("[gallery] resolved hot: " + img.src + " -> " + url);
-        return url;
-      }
-    }
-    // cold/<slug>/<filename> or COLD/<slug>/<filename>
-    if (srcLower.indexOf("cold/") === 0) {
-      var rest = src.substring(5);
-      var idx = rest.indexOf("/");
-      if (idx > 0) {
-        var slug = rest.substring(0, idx);
-        var filename = rest.substring(idx + 1);
-        if (filename.indexOf("images/") === 0) filename = filename.substring(7);
-        var url = "/vault/cold/" + safeEncodeComponent(slug) + "/" + safeEncodeComponent(filename);
-        console.log("[gallery] resolved cold: " + img.src + " -> " + url);
-        return url;
-      }
-    }
-    // ACTIVE/<slug>/<filename> -- treat as hot
-    if (src.indexOf("ACTIVE/") === 0) {
-      var rest = src.substring(7);
-      var idx = rest.indexOf("/");
-      if (idx > 0) {
-        var slug = rest.substring(0, idx);
-        var filename = rest.substring(idx + 1);
-        if (filename.indexOf("images/") === 0) filename = filename.substring(7);
-        var url = "/vault/hot/" + safeEncodeComponent(slug) + "/" + safeEncodeComponent(filename);
-        console.log("[gallery] resolved ACTIVE as hot: " + img.src + " -> " + url);
-        return url;
-      }
-    }
-    // docs/vault/<slug>/images/<filename> -- treat as cold
-    if (src.indexOf("docs/vault/") === 0) {
-      var rest = src.substring(11);
-      var parts = rest.split("/");
-      if (parts.length >= 3 && parts[1] === "images") {
-        var url = "/vault/cold/" + safeEncodeComponent(parts[0]) + "/" + safeEncodeComponent(parts.slice(2).join("/"));
-        console.log("[gallery] resolved docs/vault as cold: " + img.src + " -> " + url);
-        return url;
-      }
-    }
-    console.warn("[gallery] unrecognized src pattern, passing through: " + img.src);
-    return img.src;
-  }
-  console.warn("[gallery] image object has no slug/filename and no src: " + JSON.stringify(img));
+
+  // Fallback: raw src passthrough (should not happen with registered images)
+  if (img.src) return img.src;
+
   return "";
 }
 
@@ -3955,6 +4084,34 @@ function createGalleryStrip(data) {
     valid.push(item);
   }
   images = valid;
+
+  // Promote keeper keyframes to video items when caption is a video filename.
+  // Groups by slug so each source video appears once with its keyframe as thumbnail.
+  var _keeperSeen = {};
+  var promoted = [];
+  for (var ki = 0; ki < images.length; ki++) {
+    var kimg = images[ki];
+    if (kimg.port === "keeper" && kimg.caption && !isGalleryVideo(kimg) && !_keeperSeen[kimg.slug]) {
+      var kcap = kimg.caption;
+      var kdot = kcap.lastIndexOf(".");
+      var kext = kdot >= 0 ? kcap.substring(kdot).toLowerCase() : "";
+      if (_galleryVideoExts.indexOf(kext) >= 0) {
+        _keeperSeen[kimg.slug] = true;
+        promoted.push({
+          slug: kimg.slug,
+          filename: kcap.indexOf("/") >= 0 ? kcap.substring(kcap.lastIndexOf("/") + 1) : kcap,
+          port: "keeper",
+          source: "keeper",
+          device: kimg.device || "",
+          type: "video",
+          caption: kcap,
+          thumbnail: kimg.filename
+        });
+      }
+    }
+    promoted.push(kimg);
+  }
+  images = promoted;
 
   if (images.length === 0) {
     console.warn("[gallery] no valid images after filtering, returning null");
@@ -4019,56 +4176,47 @@ function createGalleryStrip(data) {
   var actions = document.createElement("div");
   actions.className = "gallery__actions";
 
-  // Case study icon
-  var caseBtn = document.createElement("button");
-  caseBtn.className = "case-study-icon";
-  caseBtn.setAttribute("aria-label", "Open as case study");
-  caseBtn.setAttribute("title", "open as case study");
-  caseBtn.setAttribute("data-gallery-id", id);
+  // Case study link
+  var caseLink = document.createElement("a");
+  caseLink.className = "case-study-icon";
+  caseLink.href = "/case-study/" + encodeURIComponent(gallerySlug);
+  caseLink.target = "_blank";
+  caseLink.rel = "noopener";
+  caseLink.title = "case study";
+  var caseGlyph = document.createElement("div");
+  caseGlyph.className = "vx-glyph vx-glyph--document";
+  caseLink.appendChild(caseGlyph);
+  actions.appendChild(caseLink);
 
-  var caseGlyph = document.createElement("span");
-  caseGlyph.className = "case-study-icon__glyph";
-  caseBtn.appendChild(caseGlyph);
+  // Contact sheet link
+  var sheetLink = document.createElement("a");
+  sheetLink.className = "contact-sheet-icon";
+  sheetLink.href = "/contact-sheet/" + encodeURIComponent(gallerySlug);
+  sheetLink.target = "_blank";
+  sheetLink.rel = "noopener";
+  sheetLink.title = "contact sheet";
+  var sheetGlyph = document.createElement("div");
+  sheetGlyph.className = "vx-glyph vx-glyph--grid";
+  for (var gi = 0; gi < 4; gi++) {
+    sheetGlyph.appendChild(document.createElement("span"));
+  }
+  sheetLink.appendChild(sheetGlyph);
+  actions.appendChild(sheetLink);
 
-  caseBtn.addEventListener("click", function(e) {
-    e.stopPropagation();
-    openCaseStudy(id, figure);
-  });
-  actions.appendChild(caseBtn);
-
-  // Contact sheet icon
-  var sheetBtn = document.createElement("button");
-  sheetBtn.className = "contact-sheet-icon";
-  sheetBtn.setAttribute("aria-label", "Open as contact sheet");
-  sheetBtn.setAttribute("title", "contact sheet");
-  sheetBtn.setAttribute("data-gallery-id", id);
-
-  var sheetGlyph = document.createElement("span");
-  sheetGlyph.className = "contact-sheet-icon__glyph";
-  sheetBtn.appendChild(sheetGlyph);
-
-  sheetBtn.addEventListener("click", function(e) {
-    e.stopPropagation();
-    openContactSheet(id, figure);
-  });
-  actions.appendChild(sheetBtn);
-
-  // Transcription icon
-  var transcBtn = document.createElement("button");
-  transcBtn.className = "transcription-icon";
-  transcBtn.setAttribute("aria-label", "Generate transcription PDF");
-  transcBtn.setAttribute("title", "transcription");
-  transcBtn.setAttribute("data-gallery-id", id);
-
-  var transcGlyph = document.createElement("span");
-  transcGlyph.className = "transcription-icon__glyph";
-  transcBtn.appendChild(transcGlyph);
-
-  transcBtn.addEventListener("click", function(e) {
-    e.stopPropagation();
-    openTranscription(id, figure);
-  });
-  actions.appendChild(transcBtn);
+  // Transcription link
+  var transcLink = document.createElement("a");
+  transcLink.className = "transcription-icon";
+  transcLink.href = "/transcription/" + encodeURIComponent(gallerySlug);
+  transcLink.target = "_blank";
+  transcLink.rel = "noopener";
+  transcLink.title = "transcription";
+  var transcGlyph = document.createElement("div");
+  transcGlyph.className = "vx-glyph vx-glyph--waveform";
+  for (var wi = 0; wi < 5; wi++) {
+    transcGlyph.appendChild(document.createElement("span"));
+  }
+  transcLink.appendChild(transcGlyph);
+  actions.appendChild(transcLink);
 
   // Pin icon
   var pinBtn = document.createElement("button");
@@ -4177,101 +4325,33 @@ function createGalleryStrip(data) {
   return figure;
 }
 
-function openCaseStudy(galleryId, galleryFigure) {
-  console.log("[case-study] opening for gallery: " + galleryId);
-  // Walk up to find the parent message card
-  var card = galleryFigure.closest("article.card");
-  var rawText = card ? (card.dataset.rawText || "") : "";
-  var entry = galleryRegistry[galleryId];
-  if (!entry) {
-    console.warn("[case-study] no registry entry for " + galleryId);
-    return;
-  }
-  console.log("[case-study] images:", JSON.stringify(entry.images).substring(0, 200));
-
-  // Build payload
-  var payload = JSON.stringify({
-    text: rawText,
-    gallery: { images: entry.images, title: entry.title },
-    galleryId: galleryId
-  });
-
-  // Submit via hidden form (POST to new tab)
-  var form = document.createElement("form");
-  form.method = "POST";
-  form.action = "/case-study";
-  form.target = "_blank";
-  form.style.display = "none";
-
-  var input = document.createElement("input");
-  input.type = "hidden";
-  input.name = "json";
-  input.value = payload;
-  form.appendChild(input);
-
-  document.body.appendChild(form);
-  form.submit();
-  document.body.removeChild(form);
+function _vxOpenExport(path) {
+  var a = document.createElement("a");
+  a.href = path;
+  a.target = "_blank";
+  a.rel = "noopener";
+  a.style.display = "none";
+  document.body.appendChild(a);
+  a.click();
+  document.body.removeChild(a);
 }
 
-function openContactSheet(galleryId, galleryFigure) {
-  console.log("[contact-sheet] opening for gallery: " + galleryId);
+function openCaseStudy(galleryId) {
   var entry = galleryRegistry[galleryId];
-  if (!entry) {
-    console.warn("[contact-sheet] no registry entry for " + galleryId);
-    return;
-  }
-
-  var payload = JSON.stringify({
-    gallery: { images: entry.images, title: entry.title },
-    galleryId: galleryId
-  });
-
-  var form = document.createElement("form");
-  form.method = "POST";
-  form.action = "/contact-sheet";
-  form.target = "_blank";
-  form.style.display = "none";
-
-  var input = document.createElement("input");
-  input.type = "hidden";
-  input.name = "json";
-  input.value = payload;
-  form.appendChild(input);
-
-  document.body.appendChild(form);
-  form.submit();
-  document.body.removeChild(form);
+  if (!entry || !entry.slug) return;
+  _vxOpenExport("/case-study/" + encodeURIComponent(entry.slug));
 }
 
-function openTranscription(galleryId, galleryFigure) {
-  console.log("[transcription] opening for gallery: " + galleryId);
+function openContactSheet(galleryId) {
   var entry = galleryRegistry[galleryId];
-  if (!entry) {
-    console.warn("[transcription] no registry entry for " + galleryId);
-    return;
-  }
+  if (!entry || !entry.slug) return;
+  _vxOpenExport("/contact-sheet/" + encodeURIComponent(entry.slug));
+}
 
-  var payload = JSON.stringify({
-    gallery: { images: entry.images, title: entry.title },
-    galleryId: galleryId
-  });
-
-  var form = document.createElement("form");
-  form.method = "POST";
-  form.action = "/transcription";
-  form.target = "_blank";
-  form.style.display = "none";
-
-  var input = document.createElement("input");
-  input.type = "hidden";
-  input.name = "json";
-  input.value = payload;
-  form.appendChild(input);
-
-  document.body.appendChild(form);
-  form.submit();
-  document.body.removeChild(form);
+function openTranscription(galleryId) {
+  var entry = galleryRegistry[galleryId];
+  if (!entry || !entry.slug) return;
+  _vxOpenExport("/transcription/" + encodeURIComponent(entry.slug));
 }
 
 function openGalleryLightbox(galleryId, startIndex) {
@@ -4437,6 +4517,13 @@ function renderGallerySlide() {
     stage.appendChild(spinner);
   }
   spinner.style.display = "";
+
+  // Set orientation on stage for CSS hooks
+  if (img.orientation) {
+    stage.setAttribute("data-orientation", img.orientation);
+  } else {
+    stage.removeAttribute("data-orientation");
+  }
 
   if (isGalleryVideo(img)) {
     newEl = document.createElement("video");
@@ -4773,6 +4860,12 @@ function getTrackTag(tags) {
   return null;
 }
 
+function applyChipDotColor(dot, data) {
+  if ((data.type === "chip_op" || data.type === "chip_status") && data.root_color) {
+    dot.style.backgroundColor = data.root_color;
+  }
+}
+
 function formatStreamAge(createdAt) {
   if (!createdAt) return "";
   var ms = Date.now() - new Date(createdAt).getTime();
@@ -4852,6 +4945,7 @@ function createIndividualCueCard(tokenId) {
   var dot = document.createElement("span");
   dot.className = "cue-card__dot";
   dot.setAttribute("data-type", data.type);
+  applyChipDotColor(dot, data);
   card.appendChild(dot);
 
   var label = document.createElement("span");
@@ -4988,6 +5082,7 @@ function renderFeaturedCard(trackName) {
   var dot = document.createElement("span");
   dot.className = "cue-card__dot";
   dot.setAttribute("data-type", data.type);
+  applyChipDotColor(dot, data);
   card.appendChild(dot);
 
   var label = document.createElement("span");
@@ -5023,6 +5118,7 @@ function renderPileMembers(trackName) {
     var dot = document.createElement("span");
     dot.className = "cue-card__dot";
     dot.setAttribute("data-type", data.type);
+    applyChipDotColor(dot, data);
     card.appendChild(dot);
 
     var label = document.createElement("span");

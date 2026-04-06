@@ -1,21 +1,14 @@
 /* ============================================
-   CASE STUDY - Print-Ready Stylesheet
+   CASE STUDY - Narrative Layout
+   Extends: vault-export.css
    ============================================ */
 
-/* -- Reset & Base -- */
-*, *::before, *::after {
-    box-sizing: border-box;
-}
-
 body {
-    margin: 0;
-    padding: 0;
     background: #fafafa;
     color: #1a1a1a;
     font-family: var(--font-family-body, Georgia, "Times New Roman", serif);
     font-size: 18px;
     line-height: 1.7;
-    -webkit-font-smoothing: antialiased;
 }
 
 /* -- Article Container -- */
@@ -26,24 +19,8 @@ body {
 }
 
 /* -- Header -- */
-.case-study__header {
+.case-study .vx-header {
     margin-bottom: 3rem;
-}
-
-.case-study__title {
-    font-family: var(--font-family-heading, "Helvetica Neue", Helvetica, Arial, sans-serif);
-    font-size: 2.4rem;
-    font-weight: 700;
-    line-height: 1.2;
-    margin: 0 0 1rem;
-    color: #111;
-}
-
-.case-study__intro {
-    font-size: 1.1rem;
-    color: #444;
-    line-height: 1.7;
-    margin: 0;
 }
 
 /* -- Body -- */
@@ -56,33 +33,19 @@ body {
 /* -- Slides -- */
 .case-study__slide {
     margin: 0;
+    break-inside: avoid;
+    page-break-inside: avoid;
 }
 
-.case-study__figure {
-    margin: 0;
-}
-
-.case-study__image {
-    width: 100%;
-    height: auto;
-    display: block;
+.case-study .vx-figure__image {
     border-radius: 4px;
 }
 
-.case-study__caption {
-    font-size: 0.9rem;
-    color: #555;
+.case-study .vx-figure__caption {
     margin-top: 0.75rem;
-    line-height: 1.5;
 }
 
-/* -- Footer -- */
-.case-study__footer {
-    margin-top: 4rem;
-    padding-top: 2rem;
-    border-top: 1px solid #ddd;
-}
-
+/* -- Closing -- */
 .case-study__closing {
     font-size: 1rem;
     color: #444;
@@ -90,15 +53,8 @@ body {
     margin: 0;
 }
 
-.case-study__colophon {
-    font-size: 0.8rem;
-    color: #aaa;
-    margin: 0;
-    text-align: center;
-}
-
 /* ============================================
-   PRINT STYLES
+   PRINT OVERRIDES
    ============================================ */
 @media print {
     @page {
@@ -106,7 +62,6 @@ body {
     }
 
     body {
-        background: white;
         font-size: 12pt;
         color: #000;
     }
@@ -116,29 +71,10 @@ body {
         padding: 0;
     }
 
-    .case-study__title {
-        font-size: 24pt;
-    }
-
-    .case-study__figure {
-        break-inside: avoid;
-        page-break-inside: avoid;
-    }
-
-    .case-study__image {
+    .case-study .vx-figure__image {
         max-height: 7in;
         width: auto;
         max-width: 100%;
         border-radius: 0;
-    }
-
-    .case-study__slide {
-        break-inside: avoid;
-        page-break-inside: avoid;
-    }
-
-    a {
-        color: inherit;
-        text-decoration: none;
     }
 }
