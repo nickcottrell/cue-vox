@@ -1133,6 +1133,10 @@ function handleTTSClick(e) {
 
 // Render message content with embedded structured components
 function renderMessageContent(container, text) {
+  // Defense-in-depth: strip <system-reminder>...</system-reminder> blocks so
+  // they cannot bleed into the chat render band even if the server misses them.
+  text = String(text || "").replace(/<system-reminder>[\s\S]*?<\/system-reminder>\s*/gi, "").trim();
+
   console.log("Rendering message:", text.substring(0, 100) + (text.length > 100 ? "..." : ""));
 
   // Find structured tags with bracket-balanced matching

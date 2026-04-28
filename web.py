@@ -65,6 +65,7 @@ CLEAN_CLAUDE_ENV = {k: v for k, v in os.environ.items() if k not in _CLAUDE_ENV_
 CLAUDE_CMD = [
     "claude", "-p",
     "--allowedTools",
+    "Bash(python3 tools/c2d2/cli.py:*)",
     "mcp__vault-hot__*",
     "mcp__vault-cold__*",
     "mcp__jeff__*",
@@ -333,6 +334,7 @@ def _call_claude_or_fallback(prompt_text, raw_user_text=""):
     raw_user_text: the original user input (pre-context-injection), used for C2D2 slim prompt.
     """
     global _active_claude_process, _claude_voided
+    _claude_voided = False
 
     # -- Force mode: skip Claude entirely, use slim C2D2 path --
     if _c2d2_mode == "force":
@@ -766,6 +768,32 @@ def extract_snr(text):
         return (text, None)
 
 
+_SYSTEM_REMINDER_BALANCED = re.compile(r"<system-reminder>[\s\S]*?</system-reminder>\s*", re.IGNORECASE)
+_SYSTEM_REMINDER_OPEN_ORPHAN = re.compile(r"<system-reminder>[\s\S]*$", re.IGNORECASE)
+_SYSTEM_REMINDER_CLOSE_ORPHAN = re.compile(r"^[\s\S]*?</system-reminder>\s*", re.IGNORECASE)
+
+
+def strip_system_reminders(text):
+    """Strip <system-reminder>...</system-reminder> blocks.
+
+    System-reminder is a control band, not a conversation band. It must not
+    cross into the chat render path, the conversation log, or TTS.
+
+    Three passes:
+      1. Balanced tags (the common case).
+      2. Orphaned opener: tag without a closer -- strip from tag to end.
+      3. Orphaned closer: closing tag without an opener -- strip from start
+         through the closer (Claude sometimes emits only the closing tag
+         when the system-reminder body bled into the response).
+    """
+    if not text:
+        return text
+    text = _SYSTEM_REMINDER_BALANCED.sub("", text)
+    text = _SYSTEM_REMINDER_OPEN_ORPHAN.sub("", text)
+    text = _SYSTEM_REMINDER_CLOSE_ORPHAN.sub("", text)
+    return text.strip()
+
+
 def strip_markdown_for_tts(text):
     """Strip markdown formatting so macOS say gets clean prose.
     Bullet/number prefixes, bold/italic markers, heading hashes, code fences."""
@@ -877,8 +905,52 @@ def sanitize_for_tts(text):
     return text
 
 
+# TTS budget: macOS `say` runs at ~150 wpm; per-chunk timeout is 30s.
+# Cap below the timeout so a long paragraph degrades to a clean sentence
+# split instead of a mid-word guillotine. See voice-response-cadence policy.
+TTS_MAX_WORDS_PER_CHUNK = 60
+
+
+def _split_long_chunk(chunk, max_words=TTS_MAX_WORDS_PER_CHUNK):
+    """Split an over-budget paragraph on sentence boundaries.
+
+    Sentence-level fallback for the voice-response-cadence policy: when a
+    paragraph exceeds the say-timeout budget, group sentences into chunks
+    that each fit under max_words. Preserves sentence boundaries; never
+    splits mid-sentence.
+    """
+    if len(chunk.split()) <= max_words:
+        return [chunk]
+    # Split on sentence terminators while keeping the terminator attached.
+    sentences = re.findall(r"[^.!?]+[.!?]+(?:\s+|$)|[^.!?]+$", chunk)
+    sentences = [s.strip() for s in sentences if s.strip()]
+    if not sentences:
+        return [chunk]
+    grouped = []
+    buf = []
+    buf_words = 0
+    for sentence in sentences:
+        s_words = len(sentence.split())
+        if buf and buf_words + s_words > max_words:
+            grouped.append(" ".join(buf))
+            buf = [sentence]
+            buf_words = s_words
+        else:
+            buf.append(sentence)
+            buf_words += s_words
+    if buf:
+        grouped.append(" ".join(buf))
+    return grouped
+
+
 def tts_chunk_split(text):
-    """Split text into speakable chunks. Returns list of strings."""
+    """Split text into speakable chunks. Returns list of strings.
+
+    Primary split is paragraph-level (\\n\\n+). Paragraphs that exceed the
+    say-timeout budget get a secondary split on sentence boundaries via
+    _split_long_chunk -- defense in depth for the voice-response-cadence
+    policy.
+    """
     if not text or not text.strip():
         return []
     paragraphs = re.split(r"\n\n+", text.strip())
@@ -886,7 +958,7 @@ def tts_chunk_split(text):
     for para in paragraphs:
         stripped = para.strip()
         if stripped:
-            chunks.append(stripped)
+            chunks.extend(_split_long_chunk(stripped))
     return chunks if chunks else [text.strip()]
 
 
@@ -1960,9 +2032,11 @@ def log_conversation(user_text, assistant_text, speech_metadata=None, input_leng
     timestamp = datetime.now()
     log_file = LOG_DIR / f"{timestamp.strftime('%Y-%m-%d')}.jsonl"
 
-    # Extract SNR and citations from assistant response
+    # Extract SNR and citations from assistant response, then drop any
+    # system-reminder blocks so they never reach the chat render band or log.
     text_after_snr, snr_value = extract_snr(assistant_text)
-    clean_text, citations_data = extract_citations(text_after_snr)
+    text_after_citations, citations_data = extract_citations(text_after_snr)
+    clean_text = strip_system_reminders(text_after_citations)
 
     entry = {
         'timestamp': timestamp.strftime('%Y-%m-%dT%H:%M'),  # No seconds
@@ -2165,7 +2239,12 @@ def detect_temporal_query(text):
 
 
 def load_recent_logs(limit=10):
-    """Load recent log entries from today's log file"""
+    """Load recent log entries from today's log file.
+
+    Sanitizes user/assistant fields on read so historical entries that
+    pre-date strip_system_reminders cannot leak <system-reminder> blocks
+    back into context injection, summary compression, or recent_context.md.
+    """
     ensure_log_dir()
 
     # Get today's log file
@@ -2181,7 +2260,12 @@ def load_recent_logs(limit=10):
         lines = f.readlines()
         for line in lines[-limit:]:
             try:
-                entries.append(json.loads(line))
+                entry = json.loads(line)
+                if 'user' in entry:
+                    entry['user'] = strip_system_reminders(entry['user'])
+                if 'assistant' in entry:
+                    entry['assistant'] = strip_system_reminders(entry['assistant'])
+                entries.append(entry)
             except json.JSONDecodeError:
                 continue
 
@@ -4585,7 +4669,6 @@ def handle_audio(data):
         enhanced_text = assemble_prompt_with_budget(context_sections, enhanced_text)
 
         # Send to Claude Code with C2D2 fallback
-        _claude_voided = False
         response, used_fallback = _call_claude_or_fallback(enhanced_text, raw_user_text=text)
 
         if response is None:
@@ -4703,7 +4786,6 @@ CRITICAL: If the user responds "No" to a yes/no question, accept their answer as
 IMPORTANT: When speaking, say "Yes OR No" not "yes-no" or "yes slash no"."""
 
         # Send to Claude Code with C2D2 fallback
-        _claude_voided = False
         response, used_fallback = _call_claude_or_fallback(enhanced_text, raw_user_text=answer)
 
         if response is None:
@@ -5069,7 +5151,6 @@ def handle_input_response(data):
         enhanced_text = f"{flux_context}{summary_context}{speech_context}{variables_context}{history_context}[USER INPUT]\n{user_message}"
 
         # Send to Claude Code with C2D2 fallback
-        _claude_voided = False
         response, used_fallback = _call_claude_or_fallback(enhanced_text, raw_user_text=str(user_message))
 
         if response is None:
@@ -5148,7 +5229,6 @@ def handle_text_message(data):
         enhanced_text = assemble_prompt_with_budget(context_sections, enhanced_text)
 
         # Send to Claude Code with C2D2 fallback
-        _claude_voided = False
         response, used_fallback = _call_claude_or_fallback(enhanced_text, raw_user_text=text)
 
         if response is None:
