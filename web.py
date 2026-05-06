@@ -2622,6 +2622,23 @@ def create_scale_token(scale_name, config, now):
     # Use this scale's base temperature
     temperature = config['base_temp']
 
+    # Snapshot the active lane onto every summary so multi-lane filtering
+    # works downstream. Falls back to the in-process _active_track if the
+    # persistent state is unset (e.g. on first launch).
+    summary_lane = None
+    try:
+        from track_registry import get_active_lane  # type: ignore
+        summary_lane = get_active_lane()
+    except ImportError:
+        pass
+    if not summary_lane and _active_track:
+        summary_lane = _active_track
+
+    summary_tags = ['rolling_summary', 'context', scale_name]
+    if summary_lane:
+        summary_tags.append(f"track:{summary_lane}")
+        summary_tags.append(f"lane:{summary_lane}")
+
     # Create CUE-MEM token if available
     if CUE_MEM_AVAILABLE:
         try:
@@ -2631,12 +2648,13 @@ def create_scale_token(scale_name, config, now):
                 base_temp=temperature,
                 token_type='conversation_summary',
                 visibility='local',
-                tags=['rolling_summary', 'context', scale_name],
+                tags=summary_tags,
                 metadata={
                     'scale': scale_name,
                     'window': config['window'],
                     'exchanges': len(recent_logs),
-                    'created_at': now.isoformat()
+                    'created_at': now.isoformat(),
+                    'lane': summary_lane,
                 }
             )
 
@@ -2658,10 +2676,12 @@ def create_scale_token(scale_name, config, now):
         'status': 'active',
         'scale': scale_name,
         'created_at': now.isoformat(),
+        'tags': summary_tags,
         'metadata': {
             'scale': scale_name,
             'window': config['window'],
-            'exchanges': len(recent_logs)
+            'exchanges': len(recent_logs),
+            'lane': summary_lane,
         }
     })
 
