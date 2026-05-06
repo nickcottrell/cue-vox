@@ -2659,6 +2659,26 @@ def create_scale_token(scale_name, config, now):
             )
 
             print(f"✓ Created {scale_name} scale token: {token_id} (temp={temperature}°, {len(recent_logs)} exchanges)")
+
+            # Re-reference accrual: bump weight on prior summaries whose
+            # content overlaps the new one. The "naturally weighs in
+            # more" mechanic. Quiet failure -- accrual is best-effort.
+            try:
+                from reference_accrual import compute_bumps, apply_bumps  # type: ignore
+                from tokens import list_tokens  # type: ignore
+                priors = [t for t in list_tokens(include_frozen=False)
+                          if t.get("token_id") != token_id
+                          and "rolling_summary" in t.get("tags", [])]
+                priors = priors[:30]  # bound the lookback
+                bumps = compute_bumps(summary_text, priors,
+                                       similarity_threshold=0.15,
+                                       factor=1.15, max_weight=10.0)
+                if bumps:
+                    apply_bumps(bumps, str(TOKENS_DIR),
+                                logger=lambda m: print(m))
+            except Exception as accrual_err:
+                print(f"  (accrual skipped: {accrual_err})")
+
             return token_id
 
         except Exception as e:
