@@ -2655,42 +2655,30 @@ def create_scale_token(scale_name, config, now):
         summary_tags.append(f"track:{summary_lane}")
         summary_tags.append(f"lane:{summary_lane}")
 
-    # Walkie-talkie wire-through: structural PII scrub + VRGB record
-    # attached as metadata. Per substrate-worker doctrine, the rendered
-    # token value is structural-header + scrubbed-prose; the full VRGB
-    # record travels in metadata for audit + future cross-tier routing.
-    walkie_record = None
-    rendered_value = summary_text
-    if WALKIE_AVAILABLE and walkie_emit is not None:
-        try:
-            rendered_value, walkie_record = walkie_emit(summary_text)
-            print(f"  {walkie_audit(walkie_record)}")
-        except Exception as walkie_err:
-            print(f"⚠ walkie-talkie emit failed (falling back to raw): {walkie_err}")
-            rendered_value = summary_text
-            walkie_record = None
-
     # Create CUE-MEM token if available
+    #
+    # Conversation-summary tokens are same-tier persistence (Opus → next
+    # Opus session) and intentionally retained as prose so recent_context
+    # .md stays semantically readable. Walkie-talkie wiring lives at the
+    # cross-tier boundaries (pull-agent sanitize inbound, outbound
+    # dispatch egress) -- not here. See ninja_walkietalkie_boundaries_only
+    # pin (2026-05-07).
     if CUE_MEM_AVAILABLE:
         try:
-            token_metadata = {
-                'scale': scale_name,
-                'window': config['window'],
-                'exchanges': len(recent_logs),
-                'created_at': now.isoformat(),
-                'lane': summary_lane,
-            }
-            if walkie_record is not None:
-                token_metadata['walkie_record'] = walkie_record
-
             token_id = cue_mem_create_token(
                 label=f"conv_{scale_name}_{int(now.timestamp())}",
-                value=rendered_value,
+                value=summary_text,
                 base_temp=temperature,
                 token_type='conversation_summary',
                 visibility='local',
                 tags=summary_tags,
-                metadata=token_metadata,
+                metadata={
+                    'scale': scale_name,
+                    'window': config['window'],
+                    'exchanges': len(recent_logs),
+                    'created_at': now.isoformat(),
+                    'lane': summary_lane,
+                }
             )
 
             print(f"✓ Created {scale_name} scale token: {token_id} (temp={temperature}°, {len(recent_logs)} exchanges)")
