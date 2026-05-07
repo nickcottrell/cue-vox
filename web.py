@@ -82,6 +82,22 @@ _jeff_path = MAESTRO_ROOT / "tools" / "jeff"
 if str(_jeff_path) not in sys.path:
     sys.path.insert(0, str(_jeff_path))
 
+# Walkie-talkie -- VRGB encoder/decoder + response-shape rendering for
+# token emission. Used to scrub PII structurally and attach a VRGB
+# record as metadata when conversation summary tokens are written.
+_walkie_path = MAESTRO_ROOT / "tools" / "walkie-talkie"
+if str(_walkie_path) not in sys.path:
+    sys.path.insert(0, str(_walkie_path))
+
+try:
+    from emit import emit_token_value as walkie_emit, emit_audit_summary as walkie_audit
+    WALKIE_AVAILABLE = True
+except ImportError as e:
+    print(f"⚠ walkie-talkie unavailable: {e}")
+    walkie_emit = None
+    walkie_audit = None
+    WALKIE_AVAILABLE = False
+
 C2D2_SYSTEM_PROMPT = (
     "You are C2D2, a small local robot assistant running on Ollama. "
     "You are NOT Claude. Claude is temporarily offline. "
@@ -2639,23 +2655,42 @@ def create_scale_token(scale_name, config, now):
         summary_tags.append(f"track:{summary_lane}")
         summary_tags.append(f"lane:{summary_lane}")
 
+    # Walkie-talkie wire-through: structural PII scrub + VRGB record
+    # attached as metadata. Per substrate-worker doctrine, the rendered
+    # token value is structural-header + scrubbed-prose; the full VRGB
+    # record travels in metadata for audit + future cross-tier routing.
+    walkie_record = None
+    rendered_value = summary_text
+    if WALKIE_AVAILABLE and walkie_emit is not None:
+        try:
+            rendered_value, walkie_record = walkie_emit(summary_text)
+            print(f"  {walkie_audit(walkie_record)}")
+        except Exception as walkie_err:
+            print(f"⚠ walkie-talkie emit failed (falling back to raw): {walkie_err}")
+            rendered_value = summary_text
+            walkie_record = None
+
     # Create CUE-MEM token if available
     if CUE_MEM_AVAILABLE:
         try:
+            token_metadata = {
+                'scale': scale_name,
+                'window': config['window'],
+                'exchanges': len(recent_logs),
+                'created_at': now.isoformat(),
+                'lane': summary_lane,
+            }
+            if walkie_record is not None:
+                token_metadata['walkie_record'] = walkie_record
+
             token_id = cue_mem_create_token(
                 label=f"conv_{scale_name}_{int(now.timestamp())}",
-                value=summary_text,
+                value=rendered_value,
                 base_temp=temperature,
                 token_type='conversation_summary',
                 visibility='local',
                 tags=summary_tags,
-                metadata={
-                    'scale': scale_name,
-                    'window': config['window'],
-                    'exchanges': len(recent_logs),
-                    'created_at': now.isoformat(),
-                    'lane': summary_lane,
-                }
+                metadata=token_metadata,
             )
 
             print(f"✓ Created {scale_name} scale token: {token_id} (temp={temperature}°, {len(recent_logs)} exchanges)")
