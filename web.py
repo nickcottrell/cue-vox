@@ -82,22 +82,6 @@ _jeff_path = MAESTRO_ROOT / "tools" / "jeff"
 if str(_jeff_path) not in sys.path:
     sys.path.insert(0, str(_jeff_path))
 
-# Walkie-talkie -- VRGB encoder/decoder + response-shape rendering for
-# token emission. Used to scrub PII structurally and attach a VRGB
-# record as metadata when conversation summary tokens are written.
-_walkie_path = MAESTRO_ROOT / "tools" / "walkie-talkie"
-if str(_walkie_path) not in sys.path:
-    sys.path.insert(0, str(_walkie_path))
-
-try:
-    from emit import emit_token_value as walkie_emit, emit_audit_summary as walkie_audit
-    WALKIE_AVAILABLE = True
-except ImportError as e:
-    print(f"⚠ walkie-talkie unavailable: {e}")
-    walkie_emit = None
-    walkie_audit = None
-    WALKIE_AVAILABLE = False
-
 C2D2_SYSTEM_PROMPT = (
     "You are C2D2, a small local robot assistant running on Ollama. "
     "You are NOT Claude. Claude is temporarily offline. "
