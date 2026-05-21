@@ -3084,6 +3084,9 @@ def get_flux_capacitor_context():
             return ""
 
         return f"""[FLUX CAPACITOR CONTEXT - Auto-synced maestro memory]
+
+READER HINT: When the Pipeline Surface doc opens with a `[card] DELTA — ... since push pipe-...` block, that block is the AUTHORITATIVE diff signal. Cite its lines when asked "what changed?" / "see the diff?" / "see the new thing?". If the block says "No changes since last push," that is also authoritative — say so plainly with the slug as receipt. Never say "same surface, what did you push?" when a DELTA block is present in this context.
+
 {content}
 
 """
@@ -4601,13 +4604,22 @@ def api_list_galleries():
 
 @app.route("/api/gallery/<slug>", methods=["GET"])
 def api_get_gallery(slug):
-    """Fetch a single gallery by slug with full image list."""
+    """Fetch a single gallery by slug with full image list. Includes
+    steering instruction + source path when present (cube-pushed galleries
+    have these; organic galleries leave them null)."""
     import sqlite3 as _gal_sqlite3
     db_path = MAESTRO_ROOT / "vault-cold" / "vault.db"
     try:
         conn = _gal_sqlite3.connect(str(db_path))
+        # Probe schema for the cube-push columns (lazy-added; not on every db).
+        cols = [r[1] for r in conn.execute("PRAGMA table_info(galleries)").fetchall()]
+        select_cols = ["slug", "title", "images", "created_at"]
+        if "steering" in cols:
+            select_cols.append("steering")
+        if "source_path" in cols:
+            select_cols.append("source_path")
         row = conn.execute(
-            "SELECT slug, title, images, created_at FROM galleries WHERE slug = ?",
+            "SELECT " + ", ".join(select_cols) + " FROM galleries WHERE slug = ?",
             (slug,),
         ).fetchone()
         conn.close()
@@ -4615,13 +4627,262 @@ def api_get_gallery(slug):
         return jsonify({"error": str(exc)}), 500
     if not row:
         return jsonify({"error": "not found"}), 404
+    record = dict(zip(select_cols, row))
     try:
-        imgs = json.loads(row[2])
+        imgs = json.loads(record.get("images") or "[]")
     except (ValueError, TypeError):
         imgs = []
     return jsonify({
-        "slug": row[0], "title": row[1],
-        "images": imgs, "image_count": len(imgs), "created_at": row[3],
+        "slug": record["slug"],
+        "title": record["title"],
+        "images": imgs,
+        "image_count": len(imgs),
+        "created_at": record["created_at"],
+        "steering": record.get("steering") or "",
+        "source_path": record.get("source_path") or "",
+    })
+
+
+# ----- Cube push bridge -----
+# Cube (the curation surface) pushes its assembled gallery here. We do two
+# things with the payload:
+#   1. Mint a fresh `type=gallery` token with a prose transcription as the
+#      value, so when this token hydrates into the cue-vox agent's context
+#      the assistant sees what's on stage. Full slide payloads ride along in
+#      extra_fields.slides for any downstream consumer that wants the full
+#      object, not just the prose summary.
+#   2. Emit a chat response with a [GALLERY: …] block so the gallery appears
+#      live in the chat window, matching how dropped-images galleries surface.
+@app.route("/api/cube/push", methods=["POST"])
+def api_cube_push():
+    payload = request.get_json(silent=True) or {}
+    slug = (payload.get("slug") or "").strip()
+    title = (payload.get("title") or slug or "Cube Gallery").strip()
+    vault = (payload.get("vault") or "").strip()
+    slides = payload.get("slides") or []
+    if not slug:
+        return jsonify({"error": "slug required"}), 400
+    # Source path = "<vault>/<slug>" — the canonical "where this came from"
+    # identifier used in the chat header, token metadata, and gallery title.
+    source_path = ("%s/%s" % (vault, slug)) if vault else slug
+
+    # Build a prose transcription that an LLM reading the token can use to
+    # understand the gallery without parsing the structured slides field.
+    # Cube has already enriched each slide with the slim styled fields
+    # (caption_styled for images, summary_styled for markdown). We use
+    # those — the full markdown body is intentionally not in the
+    # transcription, only the short summary.
+    lines = []
+    lines.append("Pushed from Cube: %s" % title)
+    lines.append("slug: %s" % slug)
+    lines.append("slides: %d" % len(slides))
+    lines.append("")
+    chat_images = []
+    for i, slide in enumerate(slides, start=1):
+        stype = slide.get("type", "markdown")
+        if stype == "markdown":
+            slide_title = slide.get("slide_title") or "(untitled)"
+            styled_summary = (slide.get("summary_styled") or slide.get("summary_original") or "").strip()
+            lines.append("[%d] markdown — %s" % (i, slide_title))
+            if styled_summary:
+                lines.append(styled_summary)
+        elif stype == "image":
+            styled_caption = (slide.get("caption_styled") or slide.get("caption_original") or "").strip()
+            media = slide.get("media") or {}
+            mpath = media.get("path") or ""
+            murl = media.get("url") or ""
+            lines.append("[%d] image — %s%s" % (
+                i,
+                styled_caption or "(no caption)",
+                (" — " + mpath) if mpath else "",
+            ))
+            if mpath or murl:
+                # Use `src` (not `url`) — that's the field name cue-vox's
+                # resolveGalleryImageUrl falls back to when slug+filename
+                # don't match the canonical /vault/<port>/<slug>/<filename>
+                # path. `src` must be absolute since cue-vox runs on :3000
+                # and the media lives on cube — cube rewrites the URL
+                # before sending.
+                #
+                # caption_original + caption_styled both ride along so the
+                # persisted gallery row keeps the source caption alongside
+                # the styled one — `caption` is what the viewer renders by
+                # default (= styled when steering ran, = original when not).
+                orig_caption = (slide.get("caption_original") or "").strip()
+                chat_images.append({
+                    "filename": media.get("label") or os.path.basename(mpath or ""),
+                    "src": murl,
+                    "path": mpath,
+                    "type": "image",
+                    "caption": styled_caption,
+                    "caption_original": orig_caption,
+                    "caption_styled": styled_caption,
+                })
+        else:
+            lines.append("[%d] %s" % (i, stype))
+
+        # Notes (substrate pattern: slide.metadata.notes list) — raw, never
+        # transformed by steering. Reasoning substrate for downstream
+        # consumers; this is the user's own thinking about the slide.
+        meta = slide.get("metadata") or {}
+        notes_list = meta.get("notes") or []
+        for n in notes_list:
+            body = (n.get("body") or "").strip()
+            if body:
+                lines.append("  — " + body)
+        # Legacy single-string note
+        if not notes_list and (slide.get("note") or "").strip():
+            lines.append("  — " + slide["note"].strip())
+
+        lines.append("")
+
+    transcription = "\n".join(lines).strip()
+    label = "gallery_cube_%s" % re.sub(r"[^a-z0-9_]", "_", slug.lower())
+
+    # Token value is the slim transcription — caption per slide, notes
+    # inline. The full styled doc stays on cube as a sidecar (styled.md)
+    # for Export to bundle; pushing the whole thing through to the chat
+    # would just be wall-of-text noise.
+    steering_instruction = (payload.get("steering_instruction") or "").strip()
+
+    # Create the hot/fresh gallery token. Thermal: warmer base + shorter
+    # half-life than a default gallery token so it dominates fresh context
+    # right after a push and decays out over the next day.
+    token_id = None
+    if token_factory is not None:
+        try:
+            token_id = token_factory.create(
+                token_type="gallery",
+                label=label,
+                value=transcription,
+                tags=["gallery", "cube-push"],
+                thermal={"base_temp": 85, "half_life_hours": 24, "floor_temp": 10},
+                extra_fields={
+                    "title": title,
+                    "gallery_slug": slug,
+                    "vault": vault,
+                    "source_path": source_path,
+                    "slide_count": len(slides),
+                    "slides": slides,
+                    "source": "cube",
+                    "steering_instruction": steering_instruction,
+                },
+            )
+        except Exception as exc:
+            print("[cube/push] token_factory.create failed: %s" % exc)
+
+    # Persist as a first-class gallery in vault.db so it shows up in
+    # cue-vox's gallery list / sidebar. Slug uses the gallery's own slug
+    # (the curation identity); the title carries the "vault/slug" source
+    # path so the gallery row reads as "where this came from". INSERT OR
+    # REPLACE — re-pushing the same gallery overwrites with the latest
+    # curated captions, original captions, and steering instruction. The
+    # post-steering captions are one-way: this row is the durable record
+    # of how cube-vox saw the gallery; loading the same slug back into
+    # Cube reads from the cold vault project.md (original captions only).
+    try:
+        import sqlite3 as _gal_sqlite3
+        db_path = MAESTRO_ROOT / "vault-cold" / "vault.db"
+        conn = _gal_sqlite3.connect(str(db_path))
+        conn.execute("""
+            CREATE TABLE IF NOT EXISTS galleries (
+                slug TEXT PRIMARY KEY, title TEXT, images TEXT, created_at TEXT
+            )
+        """)
+        # Lazy migration: add steering + source_path columns if missing.
+        # SQLite's only way to "ALTER ADD COLUMN IF NOT EXISTS" is try/except.
+        for ddl in (
+            "ALTER TABLE galleries ADD COLUMN steering TEXT",
+            "ALTER TABLE galleries ADD COLUMN source_path TEXT",
+        ):
+            try:
+                conn.execute(ddl)
+            except _gal_sqlite3.OperationalError:
+                pass  # column already exists
+        gallery_title = "%s (from %s)" % (title, source_path) if vault else title
+        conn.execute(
+            "INSERT OR REPLACE INTO galleries (slug, title, images, created_at, steering, source_path) "
+            "VALUES (?, ?, ?, ?, ?, ?)",
+            (
+                slug,
+                gallery_title,
+                json.dumps(chat_images),
+                datetime.utcnow().isoformat(timespec="seconds") + "Z",
+                steering_instruction,
+                source_path,
+            ),
+        )
+        conn.commit()
+        conn.close()
+    except Exception as exc:
+        print("[cube/push] gallery persist failed (non-fatal): %s" % exc)
+
+    # Notify the cue-vox client(s) so the pinned/active tokens panel updates
+    # and the chat shows the new gallery.
+    socketio.emit("token_created", {
+        "token_id": token_id or ("ctx_cube_push_%d" % int(time.time())),
+        "type": "gallery",
+        "label": label,
+        "value": transcription,
+        "title": title,
+        "gallery_slug": slug,
+        "slide_count": len(slides),
+        "source": "cube",
+    })
+
+    # Push the gallery into the chat as an assistant message:
+    #   - one-line header citing the source (vault/slug + steering). The
+    #     source is a clickable link back to Cube with vault + gallery as
+    #     query params — clicking re-opens the gallery in Cube for further
+    #     curation. ("Grab the slug, drop it into Cube.")
+    #   - the [GALLERY:…] block, which renders the image strip with the
+    #     styled captions (caption per tile)
+    # No styled prose body — that lives as styled.md on cube for Export to
+    # bundle. The push surface stays focused: gallery + captions.
+    cube_origin = (payload.get("origin") or "http://localhost:5052").rstrip("/")
+    if vault:
+        from urllib.parse import quote as _q
+        cube_link = "%s/?vault=%s&gallery=%s" % (cube_origin, _q(vault), _q(slug))
+        source_md = "[%s](%s)" % (source_path, cube_link)
+    else:
+        source_md = source_path
+
+    # Steering deliberately not surfaced as text in the header — it's
+    # captured in extra_fields + the persisted gallery row, and the styled
+    # captions on the tiles ARE the visible evidence. No need to also dump
+    # the instruction as a label.
+    chat_parts = []
+    header = "_Pushed from Cube: **%s** (%d slide%s)_" % (
+        source_md,
+        len(slides),
+        "" if len(slides) == 1 else "s",
+    )
+    chat_parts.append(header)
+    if chat_images:
+        gallery_block = json.dumps({
+            "title": title,
+            "slug": slug,
+            "source": "cube",
+            "vault": vault,
+            "images": chat_images,
+        })
+        chat_parts.append("[GALLERY: %s]" % gallery_block)
+
+    socketio.emit("response", {
+        "role": "assistant",
+        "text": "\n\n".join(chat_parts),
+        "tts_chunks": [],  # no TTS for a push — visual only
+    })
+
+    print("[cube/push] gallery '%s' → token %s (%d slides, %d images in chat)" % (
+        slug, token_id, len(slides), len(chat_images)
+    ))
+    return jsonify({
+        "ok": True,
+        "token_id": token_id,
+        "label": label,
+        "slide_count": len(slides),
+        "image_count_in_chat": len(chat_images),
     })
 
 

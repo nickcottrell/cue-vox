@@ -4122,29 +4122,49 @@ function createGalleryStrip(data) {
     return null;
   }
 
-  // Generate a stable, human-readable gallery slug
-  var slugBase = (data.title || "gallery").toLowerCase()
-    .replace(/[^a-z0-9]+/g, "-").replace(/^-|-$/g, "");
+  // Canonical gallery slug: honor data.slug if the producer set one (cube
+  // push, regenerate, etc.) — otherwise generate a stable, human-readable
+  // one from the title + datestamp.
   var now = new Date();
-  var dateStamp = String(now.getMonth() + 1).padStart(2, "0")
-    + String(now.getDate()).padStart(2, "0")
-    + "-" + String(now.getHours()).padStart(2, "0")
-    + String(now.getMinutes()).padStart(2, "0");
-  var gallerySlug = slugBase + "-" + dateStamp;
+  var gallerySlug;
+  if (data.slug) {
+    gallerySlug = data.slug;
+  } else {
+    var slugBase = (data.title || "gallery").toLowerCase()
+      .replace(/[^a-z0-9]+/g, "-").replace(/^-|-$/g, "");
+    var dateStamp = String(now.getMonth() + 1).padStart(2, "0")
+      + String(now.getDate()).padStart(2, "0")
+      + "-" + String(now.getHours()).padStart(2, "0")
+      + String(now.getMinutes()).padStart(2, "0");
+    gallerySlug = slugBase + "-" + dateStamp;
+  }
+  // Vault is its own field — surfaced as a separate chip in the header
+  // alongside the slug chip, mirroring how the viewer/lightbox separates
+  // them. Compound `vault/slug` is what cube's compound-slug paste handler
+  // needs; we keep it ready for any copy-all affordance.
+  var galleryVault = data.vault || "";
 
-  galleryRegistry[id] = { images: images, title: data.title || "", slug: gallerySlug };
+  galleryRegistry[id] = {
+    images: images, title: data.title || "",
+    slug: gallerySlug, vault: galleryVault, source: data.source || "",
+  };
 
-  // Persist gallery to vault registry (fire and forget)
-  fetch("/api/gallery", {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({
-      slug: gallerySlug,
-      title: data.title || "",
-      images: images,
-      created_at: now.toISOString()
-    })
-  }).catch(function(err) { console.error("[gallery] save failed:", err); });
+  // Persist to vault registry — but skip for cube-sourced galleries, the
+  // cube push endpoint already wrote a richer row (with steering, source_
+  // path, original+styled captions). Double-saving here would clobber
+  // those fields with a thinner record.
+  if (data.source !== "cube") {
+    fetch("/api/gallery", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        slug: gallerySlug,
+        title: data.title || "",
+        images: images,
+        created_at: now.toISOString()
+      })
+    }).catch(function(err) { console.error("[gallery] save failed:", err); });
+  }
 
   var figure = document.createElement("figure");
   var layout = images.length === 1 ? "gallery-hero"
@@ -4163,7 +4183,29 @@ function createGalleryStrip(data) {
   caption.textContent = data.title || "";
   header.appendChild(caption);
 
-  // Copyable gallery ID badge
+  // Vault chip (separate field) — shows the source vault when present, so
+  // the identity reads as "from this vault" + "this slug" rather than as
+  // a concatenated slash-joined string. Mirrors how the viewer treats them
+  // as distinct fields. Click copies just the vault name.
+  if (galleryVault) {
+    var vaultBadge = document.createElement("button");
+    vaultBadge.className = "gallery__vault-badge";
+    vaultBadge.textContent = galleryVault;
+    vaultBadge.setAttribute("title", "Copy vault name");
+    vaultBadge.addEventListener("click", function(e) {
+      e.stopPropagation();
+      navigator.clipboard.writeText(galleryVault).then(function() {
+        var prev = vaultBadge.textContent;
+        vaultBadge.textContent = "copied";
+        setTimeout(function() { vaultBadge.textContent = prev; }, 1500);
+      });
+    });
+    header.appendChild(vaultBadge);
+  }
+
+  // Copyable gallery ID badge — shows + copies just the slug. The compound
+  // "vault/slug" form (for pasting into Cube) is available via the link
+  // in the chat header; the chip stays a single clean field.
   var idBadge = document.createElement("button");
   idBadge.className = "gallery__id-badge";
   idBadge.textContent = gallerySlug;

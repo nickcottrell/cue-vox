@@ -2206,7 +2206,8 @@ body {
   margin-bottom: var(--space-xs, 0.25rem);
 }
 
-.gallery__id-badge {
+.gallery__id-badge,
+.gallery__vault-badge {
   font-family: var(--font-family-mono, monospace);
   font-size: 10px;
   color: var(--text-secondary, #888);
@@ -2221,10 +2222,19 @@ body {
   flex-shrink: 0;
 }
 
-.gallery__id-badge:hover {
+.gallery__id-badge:hover,
+.gallery__vault-badge:hover {
   opacity: 1;
   color: var(--text, #fff);
   border-color: rgba(255, 255, 255, 0.2);
+}
+
+/* Vault chip gets a subtle tinted border so it reads as a different field
+   type than the slug chip, even at low contrast — same affordance, distinct
+   identity. */
+.gallery__vault-badge {
+  border-color: rgba(255, 255, 255, 0.04);
+  opacity: 0.55;
 }
 
 .gallery__actions {
