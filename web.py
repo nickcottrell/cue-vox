@@ -22,6 +22,7 @@ import math
 import re
 import sys
 import queue
+import urllib.request
 
 # Determine maestro root directory
 def find_maestro_root():
@@ -850,8 +851,9 @@ def sanitize_for_tts(text):
     text, _ = extract_snr(text)
     text, _ = extract_citations(text)
 
-    # Strip visual-only tags (rendered as widgets, never spoken)
-    text = _strip_bracket_balanced_tags(text, ("GALLERY", "APPROVAL", "DOCUMENT", "CUE"))
+    # Strip visual-only tags (rendered as widgets, never spoken).
+    # PIN_NOTE is a structured handoff to the note-add fast-path -- never spoken.
+    text = _strip_bracket_balanced_tags(text, ("GALLERY", "APPROVAL", "DOCUMENT", "CUE", "PIN_NOTE"))
 
     print(f"[TTS DEBUG] Input text: {text[:200]}")  # Log first 200 chars
 
@@ -4098,7 +4100,7 @@ def _parse_case_study_segments(text):
     {"type": "gallery", "data": {...}}.
     Strips non-GALLERY structured tags from narrative text.
     """
-    tag_re = re.compile(r"\[(YES_NO|INPUT|APPROVAL|DOCUMENT|CUE|GALLERY|CITATIONS):\s*")
+    tag_re = re.compile(r"\[(YES_NO|INPUT|APPROVAL|DOCUMENT|CUE|GALLERY|CITATIONS|PIN_NOTE):\s*")
     segments = []
     last_end = 0
 
@@ -5018,6 +5020,59 @@ def handle_audio(data):
         emit('state_change', {'state': 'idle'})
 
 
+def _try_fast_path_note_add(answer, recent_logs):
+    """Fast-path for note-add YES_NOs: if the last assistant turn carried a
+    [PIN_NOTE: {...}] sibling block and the user clicked Yes, write the note
+    directly via POST /api/notes and return the templated confirmation.
+    Returns None to fall through to the normal LLM path -- on No, on missing
+    PIN_NOTE block, on malformed JSON, or on HTTP failure.
+    """
+    if answer != "Yes" or not recent_logs:
+        return None
+
+    last_assistant_msg = recent_logs[-1].get('assistant', '') or ''
+    m = re.search(r'\[PIN_NOTE:\s*(\{[\s\S]+?\})\s*\]', last_assistant_msg)
+    if not m:
+        return None
+    try:
+        data = json.loads(m.group(1))
+    except (json.JSONDecodeError, ValueError) as exc:
+        print("[FAST-PATH] PIN_NOTE block found but JSON parse failed: %s" % exc)
+        return None
+
+    node_type = (data.get('node_type') or '').strip()
+    node_id = (data.get('node_id') or '').strip()
+    body = (data.get('body') or '').strip()
+    display = (data.get('display_name') or node_id).strip()
+    if not node_type or not node_id or not body:
+        print("[FAST-PATH] PIN_NOTE missing required fields, falling through")
+        return None
+
+    pipeline_url = os.environ.get('PIPELINE_URL', 'http://localhost:5050')
+    payload = json.dumps({
+        'node_type': node_type,
+        'node_id': node_id,
+        'author': 'cue-vox',
+        'body': body,
+    }).encode('utf-8')
+    req = urllib.request.Request(
+        pipeline_url + '/api/notes',
+        data=payload,
+        headers={'Content-Type': 'application/json'},
+        method='POST',
+    )
+    try:
+        with urllib.request.urlopen(req, timeout=5.0) as resp:
+            note = json.loads(resp.read())
+    except Exception as exc:
+        print("[FAST-PATH] POST /api/notes failed (%s) -- falling through to LLM" % exc)
+        return None
+
+    note_id = note.get('id') or '?'
+    print("[FAST-PATH] Note landed on %s -- id %s (bypassed LLM)" % (display, note_id))
+    return "Note landed on %s — id %s." % (display, note_id)
+
+
 @socketio.on('button_response')
 def handle_button_response(data):
     """Handle yes/no button click - treat as voice input"""
@@ -5093,8 +5148,17 @@ CRITICAL: If the user responds "No" to a yes/no question, accept their answer as
 
 IMPORTANT: When speaking, say "Yes OR No" not "yes-no" or "yes slash no"."""
 
-        # Send to Claude Code with C2D2 fallback
-        response, used_fallback = _call_claude_or_fallback(enhanced_text, raw_user_text=answer)
+        # Fast-path: if the previous assistant turn carried a [PIN_NOTE: ...]
+        # block and the user said Yes, write the note directly and skip the
+        # Claude subprocess entirely. Drops note-add latency from seconds to
+        # ~HTTP round-trip. Falls through to the LLM path on any failure.
+        fast_response = _try_fast_path_note_add(answer, recent_logs)
+        if fast_response is not None:
+            response = fast_response
+            used_fallback = False
+        else:
+            # Send to Claude Code with C2D2 fallback
+            response, used_fallback = _call_claude_or_fallback(enhanced_text, raw_user_text=answer)
 
         if response is None:
             print("[VOID] Claude response discarded (button response was voided)")
