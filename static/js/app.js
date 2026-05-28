@@ -3623,10 +3623,17 @@ function showChallengeLightbox(data) {
 // ============================================
 
 setState('idle');
-initAudio();
 
-// Request human verification challenge on load
-requestChallenge();
+// Resolve mic permission BEFORE issuing the challenge. getUserMedia raises a
+// blocking browser permission dialog; if the challenge timer starts while that
+// dialog is still up, response_time_ms measures "time to click Allow" instead
+// of human reaction time, which craters human_confidence. initAudio() resolves
+// once getUserMedia settles (granted OR denied) and the dialog is gone, so the
+// challenge then opens against a clean timing window. Returning users (perm
+// already granted) resolve instantly, so there's no added delay for them.
+// .finally so the challenge still issues even if mic init rejects -- a denied
+// mic must never silently suppress human verification.
+initAudio().finally(requestChallenge);
 
 // Query-string hydration: ?hydrate=1 triggers token re-hydration
 // Used by buff-launch to push tokens into an already-open session
