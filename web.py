@@ -3097,6 +3097,45 @@ READER HINT: When the Pipeline Surface doc opens with a `[card] DELTA — ... si
         return ""
 
 
+def get_upstream_handoff_context():
+    """Surface pending upstream handoffs from ninja Claude (Reader -> Writer).
+
+    cue-vox is the Writer: it reads the handoff inbox, decides what to
+    crystallize, and archives each one. This block is the session-start nudge.
+    It self-clears -- brief() returns empty once nothing pends -- so the nudge
+    stays visible only until cue-vox disposes of each handoff via the protocol.
+
+    The handoff channel is a shared-chassis MCP server (tools/handoff/), also
+    available as the handoff_* tools. This in-process import reads the same
+    flat-file substrate the verbs operate on. See upstream-handoff policy.
+    """
+    handoff_lib = MAESTRO_ROOT / "tools" / "handoff"
+    if str(handoff_lib) not in sys.path:
+        sys.path.insert(0, str(handoff_lib))
+
+    try:
+        import handoff as handoff_core
+        nudge = handoff_core.brief()
+    except Exception as e:
+        print(f"⚠️  Failed to read upstream handoffs: {e}")
+        return ""
+
+    if not nudge:
+        return ""
+
+    return f"""[UPSTREAM HANDOFFS - ninja Claude left signal for you]
+
+{nudge}
+
+To process: read each (handoff_read, or the CLI: python3 tools/handoff/cli.py read <slug>),
+decide whether to crystallize it into a token (your existing createtoken job),
+then archive it (handoff_archive with disposition crystallized | modified | discarded).
+Apply the same data-sensitivity and crystallization rules you apply to voice exchanges.
+You may mention a relevant handoff in early conversation, e.g. "ninja left a note about X."
+
+"""
+
+
 def get_speech_consumption_context():
     """Get context about whether user absorbed previous response"""
     recent_logs = load_recent_logs(limit=1)
@@ -4965,6 +5004,7 @@ def handle_audio(data):
         context_sections = [
             ("identity", get_instance_identity()),
             ("flux", get_flux_capacitor_context()),
+            ("handoff", get_upstream_handoff_context()),
             ("images", get_image_context()),
             ("engagement", get_engagement_context()),
             ("summary", get_conversation_summary_context()),
@@ -5587,6 +5627,7 @@ def handle_text_message(data):
         context_sections = [
             ("identity", get_instance_identity()),
             ("flux", get_flux_capacitor_context()),
+            ("handoff", get_upstream_handoff_context()),
             ("images", get_image_context()),
             ("engagement", get_engagement_context()),
             ("summary", get_conversation_summary_context()),
