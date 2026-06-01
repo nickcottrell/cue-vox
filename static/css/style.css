@@ -1208,7 +1208,10 @@ body {
 
 .pinned-tokens {
   position: fixed;
-  top: var(--space-2xl, 2rem);
+  /* Sit below the text-comfort slider so they stack as one right column
+     instead of clobbering each other. rem-based, so the clearance holds
+     at every font-comfort scale. */
+  top: calc(var(--space-lg, 1rem) + 3rem);
   right: var(--space-lg, 1rem);
   display: flex;
   flex-direction: column;
@@ -1264,7 +1267,7 @@ body {
    ============================================ */
 
 .pinned-thumbnail {
-  width: 180px;
+  width: var(--cue-column-width, 180px);
   padding: var(--space-sm, 0.5rem) var(--space-md, 0.75rem);
   background: var(--surface, rgba(26, 26, 26, 0.92));
   backdrop-filter: blur(16px);
@@ -2585,7 +2588,7 @@ body {
   right: var(--space-lg, 1rem);
   top: 0;
   bottom: 0;
-  width: 180px;
+  width: var(--cue-column-width, 180px);
   display: flex;
   flex-direction: column;
   gap: var(--space-xs, 0.25rem);
@@ -2753,4 +2756,68 @@ body {
 .theme-toggle .toggle__label {
   font-size: var(--font-size-sm, 0.875rem);
   color: var(--text-secondary, #888);
+}
+
+/* ============================================
+   TEXT-SIZE COMFORT SLIDER
+   Label-less standing control; smaller <-> larger. Placement lives
+   here (always-on); themed appearance rides Haberdash tokens and
+   falls back when the theme sheet is toggled off. The thumb is tinted
+   by --cue-comfort-hex (the VRGB-encoded comfort scalar, set in JS).
+   ============================================ */
+
+/* The root scale the slider drives. rem-based UI breathes with it.
+   Unset -> 1 -> 100%, so the control is inert until the user moves it.
+   --cue-column-width is the single source of truth for the right column;
+   the comfort slider, pinned thumbnails, and cue-stream all span it. */
+:root {
+  font-size: calc(100% * var(--cue-font-scale, 1));
+  --cue-column-width: 180px;
+}
+
+.text-comfort {
+  position: fixed;
+  top: var(--space-lg, 1rem);
+  right: var(--space-lg, 1rem);
+  z-index: 999;
+  display: flex;
+  align-items: center;
+  gap: var(--space-xs, 0.35rem);
+  width: var(--cue-column-width, 180px);
+}
+
+.text-comfort__cue {
+  color: var(--text-secondary, #888);
+  line-height: 1;
+  user-select: none;
+  flex-shrink: 0;
+}
+.text-comfort__cue--sm { font-size: 0.7rem; }
+.text-comfort__cue--lg { font-size: 1.15rem; }
+
+.text-comfort__slider {
+  flex: 1;
+  appearance: none;
+  -webkit-appearance: none;
+  height: 0.25rem;
+  border-radius: 999px;
+  background: var(--border, #d0d0d0);
+  cursor: pointer;
+}
+.text-comfort__slider::-webkit-slider-thumb {
+  -webkit-appearance: none;
+  appearance: none;
+  width: 0.85rem;
+  height: 0.85rem;
+  border-radius: 999px;
+  background: var(--cue-comfort-hex, var(--accent, #cb4daf));
+  cursor: pointer;
+}
+.text-comfort__slider::-moz-range-thumb {
+  width: 0.85rem;
+  height: 0.85rem;
+  border: none;
+  border-radius: 999px;
+  background: var(--cue-comfort-hex, var(--accent, #cb4daf));
+  cursor: pointer;
 }

@@ -108,6 +108,80 @@ function stopAllSounds() {
   });
 })();
 
+// ============================================
+// TEXT-SIZE COMFORT SLIDER
+// Label-less standing control, anchored top-right. Logarithmic curve so
+// equal slider steps feel like equal size steps. Always defaults to 62 on
+// reload (no persistence) and drives :root font-size via --cue-font-scale.
+// The comfort scalar is VRGB-encoded client-side (--cue-comfort-hex).
+// ============================================
+
+(function initTextComfort() {
+  var slider = document.getElementById("textComfortSlider");
+  if (!slider) return;
+
+  // Fixed comfort default, applied on every load -- the slider does not
+  // remember the last session; 62 is the resting position.
+  var DEFAULT_COMFORT = 62;
+  // Logarithmic font-scale range, geometric-centered on 1.0 so the
+  // midpoint (50) is the author's default size (SCALE_MIN * SCALE_MAX === 1).
+  var SCALE_MIN = 0.8;   // smaller
+  var SCALE_MAX = 1.25;  // larger
+
+  // Self-contained HSL -> hex (app.js has hexToHSL but not the inverse).
+  function hslToHex(h, s, l) {
+    s = s / 100;
+    l = l / 100;
+    var c = (1 - Math.abs(2 * l - 1)) * s;
+    var x = c * (1 - Math.abs((h / 60) % 2 - 1));
+    var m = l - c / 2;
+    var r = 0, g = 0, b = 0;
+    if (h < 60) { r = c; g = x; }
+    else if (h < 120) { r = x; g = c; }
+    else if (h < 180) { g = c; b = x; }
+    else if (h < 240) { g = x; b = c; }
+    else if (h < 300) { r = x; b = c; }
+    else { r = c; b = x; }
+    function ch(v) {
+      var hx = Math.round((v + m) * 255).toString(16);
+      return hx.length === 1 ? "0" + hx : hx;
+    }
+    return "#" + ch(r) + ch(g) + ch(b);
+  }
+
+  function clamp(value) {
+    return Math.max(0, Math.min(100, value));
+  }
+
+  function scaleFor(value) {
+    var t = clamp(value) / 100;
+    return SCALE_MIN * Math.pow(SCALE_MAX / SCALE_MIN, t);
+  }
+
+  // VRGB scalar encoding: the comfort value rides a cool->warm hue ramp
+  // (smaller = cooler, larger = warmer). The hex is the scalar's VRGB
+  // expression and tints the slider thumb.
+  function comfortHex(value) {
+    var t = clamp(value) / 100;
+    var hue = 210 - (t * 180); // 210 cool blue -> 30 warm amber
+    return hslToHex(hue, 70, 55);
+  }
+
+  function applyComfort(value) {
+    var root = document.documentElement;
+    root.style.setProperty("--cue-font-scale", scaleFor(value).toFixed(4));
+    root.style.setProperty("--cue-comfort-hex", comfortHex(value));
+    slider.value = value;
+  }
+
+  applyComfort(DEFAULT_COMFORT);
+
+  // Live within the session; resets to DEFAULT_COMFORT on the next load.
+  slider.addEventListener("input", function() {
+    applyComfort(parseInt(slider.value, 10));
+  });
+})();
+
 // Modifier token state
 var modifierTokens = {};          // target_id -> DOM thumbnail element
 var modifiersByTarget = {};       // target_id -> [modifier_ids]

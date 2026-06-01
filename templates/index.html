@@ -116,6 +116,15 @@
         <span class="toggle__label"></span>
     </label>
 
+    <!-- Text-Size Comfort Slider (label-less; smaller ↔ larger). Anchored
+         top-right, symmetric to the corner-fixed toggles. -->
+    <div class="text-comfort" id="textComfort">
+        <span class="text-comfort__cue text-comfort__cue--sm" aria-hidden="true">A</span>
+        <input class="text-comfort__slider" id="textComfortSlider" type="range"
+               min="0" max="100" step="1" value="62" aria-label="Text size">
+        <span class="text-comfort__cue text-comfort__cue--lg" aria-hidden="true">A</span>
+    </div>
+
     <!-- Main Canvas -->
     <main class="canvas">
         <!-- Session Label -->
