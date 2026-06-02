@@ -26,6 +26,7 @@ let lastMessageHash = null; // Prevent duplicate messages
 let stateTimerInterval = null;
 let stateStartTime = Date.now();
 let recordingTimeout = null;
+let spaceHeld = false; // Tracks physical spacebar hold -- blocks auto-repeat re-arm after the 30s cutoff
 var RECORDING_LIMIT_MS = 30000;
 let micEnabled = true;
 
@@ -250,8 +251,18 @@ document.addEventListener('keydown', (e) => {
     return;
   }
 
-  if (e.code === 'Space' && !isRecording) {
+  if (e.code === 'Space') {
     e.preventDefault();
+
+    // Ignore the OS keyboard auto-repeat (and any re-arm after the 30s cutoff)
+    // while the key is still physically down. Without this, the moment the 30s
+    // limit clears isRecording, the next auto-repeat keydown starts a fresh
+    // recording -- producing a short mangled trailing fragment in front of the
+    // real block. The record window only re-opens after a real keyup.
+    if (spaceHeld) return;
+    spaceHeld = true;
+
+    if (isRecording) return;
 
     // Block recording when mic is disabled (demo mode)
     if (!micEnabled) {
@@ -316,10 +327,18 @@ document.addEventListener('keyup', (e) => {
   // Don't trigger if typing in any text input or textarea
   if (e.target === drawerTextInput || e.target.matches('textarea, input[type="text"]')) return;
 
-  if (e.code === 'Space' && isRecording) {
+  if (e.code === 'Space') {
     e.preventDefault();
-    stopRecording();
+    spaceHeld = false; // Key released -- the record window may re-open on next press
+    if (isRecording) stopRecording();
   }
+});
+
+// If the window loses focus while the spacebar is held, keyup never fires.
+// Reset the hold flag (and stop any in-flight recording) so the next press works.
+window.addEventListener('blur', () => {
+  spaceHeld = false;
+  if (isRecording) stopRecording();
 });
 
 // ============================================
