@@ -434,6 +434,23 @@ except ImportError as e:
     resolve_thermal = None
     create_structured_sum = None
 
+# Proper-noun anchor layer -- canonical-entity correction applied at summary
+# time. Same cue-mem/lib path the TokenFactory import added above. The memory
+# half (snap) and the reflex half (detect unanchored) are separate modules.
+PROPER_NOUNS_AVAILABLE = False
+try:
+    import proper_nouns as _proper_nouns
+    try:
+        import proper_noun_reflex as _proper_noun_reflex
+    except ImportError:
+        _proper_noun_reflex = None
+    PROPER_NOUNS_AVAILABLE = True
+    print("✓ Proper-noun anchors loaded")
+except ImportError as e:
+    print("⚠️  Proper-noun anchors not available: %s" % e)
+    _proper_nouns = None
+    _proper_noun_reflex = None
+
 # Import AuditLogger for structured audit trail
 _audit_logger = None
 _audit_subscriber = None
@@ -2029,6 +2046,22 @@ def compute_relative_time_from_now(timestamp_str):
     except (ValueError, TypeError):
         return ""
 
+def _format_absolute_anchor(timestamp_str):
+    """Render a stored ISO timestamp as a neutral absolute anchor.
+
+    Absolute by construction, so it never decays: the line reads correctly
+    whenever the snapshot is re-read (per temporally-neutral-descriptions).
+    Relative rendering, when wanted, is a display-layer concern gated by the
+    Relative Time flag (see relative-time statute) -- it is not baked in here.
+    """
+    if not timestamp_str:
+        return ""
+    try:
+        ts = datetime.fromisoformat(str(timestamp_str))
+        return ts.strftime("[%b %-d %H:%M]")
+    except (ValueError, TypeError):
+        return ""
+
 def log_conversation(user_text, assistant_text, speech_metadata=None, input_length=None, confidence=None):
     ensure_log_dir()
     timestamp = datetime.now()
@@ -2508,6 +2541,79 @@ def get_engagement_context():
     return "\n".join(lines)
 
 
+def _snap_entries_proper_nouns(entries):
+    """Snap STT-mangled proper nouns in conversation entries to canonical form.
+
+    Runs the proper-noun anchor layer over the user/assistant text of each entry
+    BEFORE it is compressed into a summary, so the stored summary records the
+    canonical entity spelling ("AltSpace VR") rather than the transcript's
+    near-miss surface form ("old space VR"). This is the memory half of the STT
+    fix -- recurring, known entities. The reflex half (flagging first-occurrence
+    unknown nouns) is _detect_unanchored_proper_nouns, kept separate.
+
+    Returns (entries, total_corrections). Best-effort: with the anchor layer
+    unavailable or no anchors on disk, the entries are returned untouched.
+    """
+    if not PROPER_NOUNS_AVAILABLE or not _proper_nouns or not entries:
+        return entries, 0
+    try:
+        anchors = _proper_nouns.load_anchors(str(TOKENS_DIR))
+    except Exception:
+        return entries, 0
+    if not anchors:
+        return entries, 0
+
+    total = 0
+    snapped = []
+    for entry in entries:
+        new_entry = dict(entry)
+        for field in ("user", "assistant"):
+            text = new_entry.get(field)
+            if text:
+                corrected, corrections = _proper_nouns.snap_text(text, anchors)
+                if corrections:
+                    new_entry[field] = corrected
+                    total += len(corrections)
+        snapped.append(new_entry)
+    return snapped, total
+
+
+def _detect_unanchored_proper_nouns(entries):
+    """Reflex half: surface proper-noun-shaped tokens that have NO anchor yet.
+
+    A first-occurrence proper noun is uncertain, not fact -- STT may have
+    mangled it and no canonical entity vouches for it. We collect those surface
+    forms so the summary token can carry them as control-channel metadata
+    (low_confidence_nouns), a flag for a later reader NOT to absorb them as
+    established truth. Per managed-intelligence-presence, this is scaffolding:
+    it rides in metadata, never in the prose body the user hears.
+
+    Returns a de-duplicated list of surface strings. Best-effort / empty on any
+    failure or when the reflex module is unavailable.
+    """
+    if not PROPER_NOUNS_AVAILABLE or not _proper_noun_reflex or not entries:
+        return []
+    try:
+        anchors = _proper_nouns.load_anchors(str(TOKENS_DIR)) if _proper_nouns else []
+    except Exception:
+        anchors = []
+
+    seen = {}
+    for entry in entries:
+        for field in ("user", "assistant"):
+            text = entry.get(field)
+            if not text:
+                continue
+            try:
+                for surface in _proper_noun_reflex.detect_unanchored(text, anchors):
+                    key = surface.lower()
+                    if key not in seen:
+                        seen[key] = surface
+            except Exception:
+                continue
+    return list(seen.values())
+
+
 def compress_conversation_chunk(entries, compression_level='light'):
     """
     Compress conversation entries into a concise summary.
@@ -2546,12 +2652,21 @@ def compress_conversation_chunk(entries, compression_level='light'):
         return "\n".join(compressed_lines)
 
     else:  # 'light' - recent, less baked
-        # Light compression - preserve more detail
+        # Light compression - preserve more detail.
+        #
+        # Per temporally-neutral-descriptions: the stored prose carries an
+        # ABSOLUTE per-entry anchor, never a relative ("3m ago") phrase.
+        # compute_relative_time_from_now is a READ-time display helper -- baking
+        # its output here freezes a value that is already wrong the next time the
+        # snapshot is read (a 24m-old token still claiming "7m ago"). The
+        # snapshot's own timestamp -- the header from create_scale_token plus
+        # metadata.created_at -- carries the temporal frame; the body stays neutral.
         for entry in entries:
-            t_rel = compute_relative_time_from_now(entry.get('timestamp', ''))
+            t_abs = _format_absolute_anchor(entry.get('timestamp', ''))
             user = entry.get('user', '')[:80]
             assistant = entry.get('assistant', '')[:100]
-            compressed_lines.append(f"{t_rel}: U: {user} | A: {assistant}")
+            prefix = f"{t_abs} " if t_abs else ""
+            compressed_lines.append(f"{prefix}U: {user} | A: {assistant}")
 
         return "\n".join(compressed_lines)
 
@@ -2609,6 +2724,15 @@ def create_scale_token(scale_name, config, now):
     if not recent_logs or len(recent_logs) < 2:
         return None  # Not enough activity
 
+    # Snap known entities to canonical spelling before compression so the
+    # summary records "AltSpace VR", not the STT near-miss (proper-noun anchor
+    # layer, memory half, 2026-06-06 pin item A). Detect unanchored proper
+    # nouns too -- the reflex half rides as control-channel metadata below.
+    recent_logs, snap_count = _snap_entries_proper_nouns(recent_logs)
+    if snap_count:
+        print(f"  (proper-noun snap: {snap_count} correction(s) applied)")
+    low_confidence_nouns = _detect_unanchored_proper_nouns(recent_logs)
+
     # Compress with this scale's compression level
     summary_text = compress_conversation_chunk(recent_logs, compression_level=config['compression'])
 
@@ -2620,6 +2744,13 @@ def create_scale_token(scale_name, config, now):
         vibe = _build_vibe_line()
         if vibe:
             summary_text = summary_text + "\n" + vibe
+
+    # Snapshot anchor: a summary IS a temporal artifact -- the moment it was
+    # taken is its temporal context. Carry that as one explicit absolute anchor
+    # at the head of the prose so the body can stay temporally neutral while a
+    # later reader still knows the frame. (summary-engine temporal-neutrality
+    # pin, 2026-06-06; temporally-neutral-descriptions statute)
+    summary_text = "[snapshot %s]\n%s" % (now.strftime("%b %-d %H:%M"), summary_text)
 
     # Use this scale's base temperature
     temperature = config['base_temp']
@@ -2664,6 +2795,7 @@ def create_scale_token(scale_name, config, now):
                     'exchanges': len(recent_logs),
                     'created_at': now.isoformat(),
                     'lane': summary_lane,
+                    'low_confidence_nouns': low_confidence_nouns,
                 }
             )
 
@@ -2711,6 +2843,7 @@ def create_scale_token(scale_name, config, now):
             'window': config['window'],
             'exchanges': len(recent_logs),
             'lane': summary_lane,
+            'low_confidence_nouns': low_confidence_nouns,
         }
     })
 
@@ -3528,20 +3661,20 @@ def _query_all_vaults(query, params=()):
 
 @app.route("/vault/cold/<slug>/<path:filename>")
 def serve_vault_cold(slug, filename):
-    """Serve data from the cold port."""
+    """Serve data from the cold port (conditional=True -> HTTP range for video)."""
     directory, fname = _resolve_vault_image(slug, filename, "cold")
     if directory is None:
         return "Not found", 404
-    return send_from_directory(directory, fname)
+    return send_from_directory(directory, fname, conditional=True)
 
 
 @app.route("/vault/hot/<slug>/<path:filename>")
 def serve_vault_hot(slug, filename):
-    """Serve data from the hot port."""
+    """Serve data from the hot port (conditional=True -> HTTP range for video)."""
     directory, fname = _resolve_vault_image(slug, filename, "hot")
     if directory is None:
         return "Not found", 404
-    return send_from_directory(directory, fname)
+    return send_from_directory(directory, fname, conditional=True)
 
 
 def _serve_keeper_file(slug, filename, device=None):
@@ -3562,6 +3695,13 @@ def _serve_keeper_file(slug, filename, device=None):
         vp = get_volume_path(k.get("device_id", ""))
         if vp is None:
             continue
+
+        # Try cut clips + posters under processed/<slug>/ (conditional=True
+        # gives HTTP range support so video seeks/streams instead of stalling).
+        proc_dir = os.path.join(vp, "processed", slug)
+        proc_path = os.path.join(proc_dir, filename)
+        if os.path.isfile(proc_path):
+            return send_from_directory(proc_dir, filename, conditional=True)
 
         # Try keyframe in analysis directory
         kf_dir = os.path.join(vp, ".kept", "analysis", slug, "keyframes")
@@ -4405,6 +4545,17 @@ def contact_sheet(gallery_slug):
         return "Gallery not found", 404
     gallery_images = _vx_resolve_images(images)
 
+    # Polished 3-tier selection summary, if one has been generated.
+    cs_summary = {}
+    try:
+        _sfd, _sp, _sd = _vx_find_folder(gallery_slug)
+        if _sfd:
+            _scp = os.path.join(_sfd, "captions.json")
+            if os.path.isfile(_scp):
+                cs_summary = (json.load(open(_scp)) or {}).get("_summary", {}) or {}
+    except Exception:
+        cs_summary = {}
+
     import sqlite3 as _cs_sqlite3
     _cs_db = os.path.join(MAESTRO_ROOT, "vault-cold", "vault.db")
     _cs_tags = {}
@@ -4459,6 +4610,7 @@ def contact_sheet(gallery_slug):
         categories=categories,
         item_count=item_count,
         category_count=len(categories),
+        summary=cs_summary,
     )
 
 
@@ -4513,6 +4665,17 @@ def transcription_view(gallery_slug):
             pass
         return ""
 
+    # Per-clip transcripts from the gallery's spans.json (HOT or keeper).
+    _span_map = {}
+    try:
+        _tfd, _tp, _td = _vx_find_folder(gallery_slug)
+        if _tfd:
+            _tsp = os.path.join(_tfd, "spans.json")
+            if os.path.isfile(_tsp):
+                _span_map = json.load(open(_tsp, encoding="utf-8")) or {}
+    except Exception:
+        _span_map = {}
+
     items = []
     for img in gallery_images:
         slug = img.get("slug", "")
@@ -4526,7 +4689,11 @@ def transcription_view(gallery_slug):
 
         transcript_text = tr_data.get("transcript_text", "") if tr_data else ""
 
-        # Fallback to keeper transcript if vault.db has nothing
+        # Per-clip transcript from the gallery's spans.json (HOT or keeper).
+        if not transcript_text:
+            transcript_text = (_span_map.get(fname) or "").strip()
+
+        # Fallback to the episode-level keeper transcript
         if not transcript_text and port == "keeper":
             transcript_text = _keeper_transcript(slug)
 
@@ -4601,6 +4768,511 @@ def api_save_gallery():
         return jsonify({"error": str(exc)}), 500
     print("[gallery] saved: %s (%d images)" % (slug, len(images)))
     return jsonify({"ok": True, "slug": slug})
+
+
+def _vx_emit_poster(clip_path):
+    """Background byproduct: one freeze-frame poster beside the clip.
+    Idempotent -- skips if it already exists. Never surfaced to the user."""
+    base, _ext = os.path.splitext(clip_path)
+    poster = base + ".thumb.jpg"
+    if os.path.isfile(poster):
+        return poster
+    try:
+        subprocess.run(
+            ["ffmpeg", "-y", "-ss", "1.5", "-i", clip_path,
+             "-frames:v", "1", "-q:v", "3", poster],
+            stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=60,
+        )
+    except Exception as exc:
+        print("[from-keeper] poster emit failed for %s: %s" % (clip_path, exc))
+    return poster if os.path.isfile(poster) else None
+
+
+def _vx_caption_from_name(fname):
+    base = os.path.splitext(fname)[0]
+    if base.startswith("q_"):
+        return "Question"
+    parts = base.split("_")
+    label = "_".join(parts[2:]) if len(parts) > 2 else base
+    return label.replace("-", " ").title()
+
+
+def _vx_voice_card(folder_dir=None):
+    """Load the steering text that lives WITH the videos. Walks up from the clip
+    folder: <folder>/steering.txt, <parent>/steering.txt, <parent>/_context/
+    steering.txt. Returns "" if none (captions still get written, just unsteered)."""
+    candidates = []
+    if folder_dir:
+        parent = os.path.dirname(os.path.normpath(folder_dir))
+        candidates = [
+            os.path.join(folder_dir, "steering.txt"),
+            os.path.join(parent, "steering.txt"),
+            os.path.join(parent, "_context", "steering.txt"),
+        ]
+    for p in candidates:
+        try:
+            if os.path.isfile(p):
+                return open(p, encoding="utf-8").read()
+        except Exception:
+            pass
+    return ""
+
+
+def _vx_is_caption_feedback(text):
+    """Cheap local (C2D2) yes/no: is this utterance feedback to change captions?
+    Used to route voice feedback on the active gallery into a refine pass."""
+    if not text or len(text.split()) < 2:
+        return False
+    try:
+        from ollama_client import chat
+        r = chat(
+            "You answer with exactly one word: yes or no.",
+            "The user is looking at a gallery of captioned video clips. Does this "
+            "message ask to change, fix, correct, shorten, or reword a caption or what "
+            "a clip/slide says? Message: \"" + text + "\"",
+            max_tokens=3, timeout=20,
+        )
+        return (r or "").strip().lower().startswith("y")
+    except Exception:
+        return False
+
+
+def _vx_frontier_generate(prompt, timeout=180):
+    """One frontier (Claude) call for the polish pass. Run from a neutral cwd so it
+    does not load the heavy project context -- keeps the single call lean."""
+    import tempfile
+    try:
+        p = subprocess.Popen(
+            ["claude", "-p"],
+            stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+            text=True, cwd=tempfile.gettempdir(), env=CLEAN_CLAUDE_ENV,
+        )
+        out, err = p.communicate(input=prompt, timeout=timeout)
+        if err and err.strip():
+            print("[polish] claude stderr: %s" % err.strip()[:300])
+        return (out or "").strip()
+    except Exception as exc:
+        print("[polish] frontier call failed: %s" % exc)
+        return ""
+
+
+def _vx_batch_caption(items, voice_card, mode, notes="", engine="c2d2"):
+    """ONE batched call for a whole gallery -- never per-caption. engine 'c2d2'
+    (local, free) or 'frontier' (Claude, the paid polish pass).
+
+    items: {filename: {"role", "transcript", "caption"}}. 'transcript' is what is
+    actually said in the clip (ground truth). 'role'=='question' marks the
+    interviewer's question slide. mode 'draft'|'align'|'refine'. Returns
+    {filename: caption}; empty dict on failure (callers keep existing text)."""
+    if not items:
+        return {}
+    try:
+        from ollama_client import chat
+    except Exception as exc:
+        print("[caption] ollama_client unavailable: %s" % exc)
+        return {}
+    grounding = (
+        "You are captioning video clips. The JSON below maps each filename to its "
+        "role, transcript, and current caption. The transcript is the ONLY source of "
+        "truth -- it is what is actually said in that clip. Caption strictly from the "
+        "transcript: do NOT add or invent any name, title, number, place, or claim that "
+        "is not present in that clip's transcript. If the transcript is thin, keep the "
+        "caption thin. A clip whose role is \"question\" is the interviewer's question "
+        "slide: its caption must be a faithful recap of the question actually asked in "
+        "that transcript -- restate that question, nothing more. Write each caption in "
+        "the voice above, one sentence.")
+    if mode == "draft":
+        task = grounding + (" Write a fresh caption for each clip from its transcript. "
+                "Return ONLY a JSON object {filename: caption}, nothing else.")
+    elif mode == "refine":
+        task = grounding + (" Apply these editor corrections: " + json.dumps(notes) +
+                ". Fix any caption that drifts from its transcript or that the "
+                "corrections call out. If a caption already tracks its transcript and "
+                "reads well, return it UNCHANGED. Return ONLY a JSON object "
+                "{filename: caption}, nothing else.")
+    else:
+        task = grounding + (" Rewrite each caption to the voice while keeping it true to "
+                "the transcript. If a caption already tracks and reads well, return it "
+                "UNCHANGED. Return ONLY a JSON object {filename: caption}, nothing else.")
+    system = (voice_card + "\n\n" + task) if voice_card else task
+    payload = {}
+    for fn, d in items.items():
+        if isinstance(d, dict):
+            payload[fn] = {"role": d.get("role", "answer"),
+                           "transcript": (d.get("transcript") or "")[:500],
+                           "caption": d.get("caption", "")}
+        else:
+            payload[fn] = {"transcript": str(d)[:500]}
+    user = json.dumps(payload, ensure_ascii=False)
+    try:
+        if engine == "frontier":
+            resp = _vx_frontier_generate(system + "\n\n" + user)
+        else:
+            resp = chat(system, user, max_tokens=900, timeout=180)
+    except Exception as exc:
+        print("[caption] %s call failed: %s" % (engine, exc))
+        return {}
+    m = re.search(r"\{.*\}", resp or "", re.DOTALL)
+    if not m:
+        print("[caption] no JSON in C2D2 response")
+        return {}
+    try:
+        out = json.loads(m.group(0))
+    except Exception as exc:
+        print("[caption] JSON parse failed: %s" % exc)
+        return {}
+    return {k: str(v).strip() for k, v in out.items()
+            if isinstance(v, str) and v.strip()}
+
+
+def _vx_is_question(fn):
+    """The question slide, regardless of sort-prefix (q_ll.mp4, 00-q_ll.mp4, ...)."""
+    base = re.sub(r'^[^A-Za-z]+', '', os.path.basename(fn)).lower()
+    return base.startswith("q_") or base.startswith("q.")
+
+
+def _vx_find_folder(folder):
+    """Resolve a dropped gallery folder. HOT vault first (where the clips live),
+    keeper second. Returns (folder_dir, port, device_id) or (None, None, None)."""
+    for root in _VAULT_SEARCH_PATHS:
+        if not root.is_dir():
+            continue
+        cand = root / folder
+        if cand.is_dir():
+            return str(cand), "hot", ""
+        for sub in root.iterdir():
+            if sub.is_dir() and not sub.name.startswith("."):
+                c = sub / folder
+                if c.is_dir():
+                    return str(c), "hot", ""
+    try:
+        import sys as _sys
+        _sys.path.insert(0, str(MAESTRO_ROOT / "tools" / "keeper"))
+        from discovery import list_keepers, get_volume_path
+        for k in list_keepers():
+            vp = get_volume_path(k.get("device_id", ""))
+            if vp and os.path.isdir(os.path.join(vp, "processed", folder)):
+                return os.path.join(vp, "processed", folder), "keeper", k.get("device_id", "")
+    except Exception:
+        pass
+    return None, None, None
+
+
+def _vx_ensure_spans(folder_dir, clips):
+    """Ensure spans.json (per-clip transcript). Transcribes any missing clip with
+    Whisper -- the literal 'check the footage' step -- and caches the result."""
+    sp = os.path.join(folder_dir, "spans.json")
+    spans = {}
+    if os.path.isfile(sp):
+        try:
+            spans = json.load(open(sp, encoding="utf-8"))
+        except Exception:
+            spans = {}
+    missing = [c for c in clips if not (spans.get(c) or "").strip()]
+    if missing:
+        try:
+            model = get_whisper_model()
+            for c in missing:
+                try:
+                    r = model.transcribe(os.path.join(folder_dir, c))
+                    spans[c] = (r.get("text") or "").strip()
+                    print("[spans] transcribed %s (%d chars)" % (c, len(spans[c])))
+                except Exception as exc:
+                    print("[spans] transcribe failed for %s: %s" % (c, exc))
+            try:
+                json.dump(spans, open(sp, "w"), ensure_ascii=False, indent=1)
+            except Exception:
+                pass
+        except Exception as exc:
+            print("[spans] whisper unavailable: %s" % exc)
+    return spans
+
+
+def _vx_clip_items(target_dir, clips, captions):
+    """Build {filename: {role, transcript, caption}} -- grounds each caption in the
+    clip's actual transcript (spans.json) and marks the question slide by role."""
+    spans = {}
+    sp = os.path.join(target_dir, "spans.json")
+    if os.path.isfile(sp):
+        try:
+            spans = json.load(open(sp, encoding="utf-8"))
+        except Exception:
+            spans = {}
+    return {fn: {
+        "role": "question" if _vx_is_question(fn) else "answer",
+        "transcript": spans.get(fn, "") or "",
+        "caption": captions.get(fn, ""),
+    } for fn in clips}
+
+
+@app.route("/api/gallery/from-keeper", methods=["POST"])
+def api_gallery_from_keeper():
+    """Build one gallery from a question folder that already lives on a keeper.
+
+    Clips are referenced in place (port=keeper, no re-upload); posters are
+    emitted as a background byproduct; captions/title come from the folder's
+    captions.json sidecar if present. One folder -> one gallery -> one
+    contact sheet."""
+    data = request.get_json() or {}
+    folder = (data.get("folder") or "").strip().strip("/")
+    if not folder:
+        return jsonify({"ok": False, "error": "no folder"}), 400
+
+    folder_dir, port, device_id = _vx_find_folder(folder)
+    if not folder_dir:
+        return jsonify({"ok": False, "error": "folder not found"}), 404
+
+    clips = [f for f in os.listdir(folder_dir)
+             if os.path.splitext(f)[1].lower() in _VX_VIDEO_EXTS]
+    clips.sort(key=lambda n: (0, n) if _vx_is_question(n) else (1, n))
+    if not clips:
+        return jsonify({"ok": False, "error": "no clips in folder"}), 404
+
+    cap_path = os.path.join(folder_dir, "captions.json")
+    captions = {}
+    if os.path.isfile(cap_path):
+        try:
+            captions = json.load(open(cap_path))
+        except Exception:
+            captions = {}
+    title = captions.get("_title") or folder
+
+    # Ground truth: transcribe each clip (cached), then write captions with the
+    # better model, grounded strictly in that transcript + the steering file.
+    spans = _vx_ensure_spans(folder_dir, clips)
+    if not any(k != "_title" for k in captions):
+        draft_items = {c: {
+            "role": "question" if _vx_is_question(c) else "answer",
+            "transcript": spans.get(c, "") or "", "caption": "",
+        } for c in clips}
+        drafted = _vx_batch_caption(draft_items, _vx_voice_card(folder_dir=folder_dir),
+                                    "draft", engine="frontier")
+        if drafted:
+            captions.update(drafted)
+            captions.setdefault("_title", title)
+            try:
+                json.dump(captions, open(cap_path, "w"), ensure_ascii=False, indent=1)
+            except Exception:
+                pass
+
+    items = []
+    for fn in clips:
+        _vx_emit_poster(os.path.join(folder_dir, fn))  # background, idempotent
+        base = os.path.splitext(fn)[0]
+        item = {
+            "slug": folder, "filename": fn, "port": port,
+            "thumbnail": base + ".thumb.jpg", "type": "video",
+            "caption": captions.get(fn) or _vx_caption_from_name(fn),
+        }
+        if port == "keeper":
+            item["device"] = (device_id or "")[:8]
+        items.append(item)
+
+    try:
+        import sqlite3 as _s
+        conn = _s.connect(str(MAESTRO_ROOT / "vault-cold" / "vault.db"))
+        conn.execute(
+            "INSERT OR REPLACE INTO galleries (slug,title,images,source_path,steering) "
+            "VALUES (?,?,?,?,?)",
+            (folder, title, json.dumps(items), folder_dir, ""),
+        )
+        conn.commit()
+        conn.close()
+    except Exception as exc:
+        return jsonify({"ok": False, "error": "persist failed: %s" % exc}), 500
+
+    print("[from-keeper] gallery '%s' (%s) built: %d clips" % (folder, port, len(items)))
+    return jsonify({
+        "ok": True, "slug": folder, "title": title, "images": items,
+        "spoken": "gallery ready: %s" % title,
+    })
+
+
+def _vx_caption_pass(slug, mode, notes="", engine="c2d2"):
+    """One batched pass over a gallery's captions. mode 'align' rewrites to voice;
+    'refine' also applies editor `notes`. engine 'c2d2' (local) or 'frontier'
+    (Claude polish). Returns (payload_dict, status)."""
+    target_dir, port, device_id = _vx_find_folder(slug)
+    if not target_dir:
+        return {"ok": False, "error": "folder not found"}, 404
+
+    cap_path = os.path.join(target_dir, "captions.json")
+    captions = {}
+    if os.path.isfile(cap_path):
+        try:
+            captions = json.load(open(cap_path))
+        except Exception:
+            captions = {}
+    current = {k: v for k, v in captions.items() if k != "_title"}
+    if not current:
+        return {"ok": False, "error": "no captions yet"}, 400
+
+    items = _vx_clip_items(target_dir, list(current.keys()), captions)
+    result = _vx_batch_caption(items, _vx_voice_card(folder_dir=target_dir), mode, notes, engine)
+    if not result:
+        return {"ok": False, "error": "model produced nothing"}, 502
+
+    captions.update(result)
+    try:
+        json.dump(captions, open(cap_path, "w"), ensure_ascii=False, indent=1)
+    except Exception:
+        pass
+
+    title = captions.get("_title") or slug
+    clips = [f for f in os.listdir(target_dir)
+             if os.path.splitext(f)[1].lower() in _VX_VIDEO_EXTS]
+    clips.sort(key=lambda n: (0, n) if _vx_is_question(n) else (1, n))
+    items = []
+    for fn in clips:
+        base = os.path.splitext(fn)[0]
+        item = {
+            "slug": slug, "filename": fn, "port": port,
+            "thumbnail": base + ".thumb.jpg", "type": "video",
+            "caption": captions.get(fn) or _vx_caption_from_name(fn),
+        }
+        if port == "keeper":
+            item["device"] = (device_id or "")[:8]
+        items.append(item)
+    try:
+        import sqlite3 as _s
+        conn = _s.connect(str(MAESTRO_ROOT / "vault-cold" / "vault.db"))
+        conn.execute(
+            "INSERT OR REPLACE INTO galleries (slug,title,images,source_path,steering) "
+            "VALUES (?,?,?,?,?)",
+            (slug, title, json.dumps(items), target_dir, ""),
+        )
+        conn.commit()
+        conn.close()
+    except Exception as exc:
+        return {"ok": False, "error": "persist failed: %s" % exc}, 500
+
+    print("[caption] %s pass: %d captions for %s" % (mode, len(result), slug))
+    return {"ok": True, "slug": slug, "title": title,
+            "images": items, "count": len(result)}, 200
+
+
+@app.route("/api/gallery/<slug>/caption", methods=["POST"])
+def api_gallery_caption(slug):
+    """Directly set one clip's caption (manual inline edit). Writes the captions.json
+    sidecar and updates the gallery row. No model in the loop."""
+    data = request.get_json() or {}
+    fn = (data.get("filename") or "").strip()
+    caption = (data.get("caption") or "").strip()
+    if not fn:
+        return jsonify({"ok": False, "error": "no filename"}), 400
+    folder_dir, port, device_id = _vx_find_folder(slug)
+    if not folder_dir:
+        return jsonify({"ok": False, "error": "folder not found"}), 404
+    cap_path = os.path.join(folder_dir, "captions.json")
+    captions = {}
+    if os.path.isfile(cap_path):
+        try:
+            captions = json.load(open(cap_path))
+        except Exception:
+            captions = {}
+    captions[fn] = caption
+    try:
+        json.dump(captions, open(cap_path, "w"), ensure_ascii=False, indent=1)
+    except Exception as exc:
+        return jsonify({"ok": False, "error": "write failed: %s" % exc}), 500
+    try:
+        import sqlite3 as _s
+        conn = _s.connect(str(MAESTRO_ROOT / "vault-cold" / "vault.db"))
+        row = conn.execute("SELECT images FROM galleries WHERE slug=?", (slug,)).fetchone()
+        if row:
+            imgs = json.loads(row[0])
+            for im in imgs:
+                if im.get("filename") == fn:
+                    im["caption"] = caption
+            conn.execute("UPDATE galleries SET images=? WHERE slug=?",
+                         (json.dumps(imgs), slug))
+            conn.commit()
+        conn.close()
+    except Exception as exc:
+        print("[caption-edit] row update failed: %s" % exc)
+    print("[caption-edit] %s / %s set" % (slug, fn))
+    return jsonify({"ok": True})
+
+
+def _vx_gallery_summary(captions, voice_card, title):
+    """Frontier: a polished summary of the whole selection at three lengths.
+    Returns {three, one, sentence} or {} on failure. Grounded in the captions."""
+    lines = [c for k, c in captions.items()
+             if k not in ("_title", "_summary") and isinstance(c, str) and c.strip()]
+    if not lines:
+        return {}
+    task = ("Below are the captions for a selection of video clips titled %r. Write a "
+            "polished summary of the whole selection at three lengths: a three-paragraph "
+            "version, a one-paragraph version, and a one-sentence version. Ground it only "
+            "in these captions -- do not invent anything. Return ONLY a JSON object with "
+            "keys \"three\", \"one\", \"sentence\", nothing else." % title)
+    system = (voice_card + "\n\n" + task) if voice_card else task
+    resp = _vx_frontier_generate(system + "\n\nCaptions:\n" + "\n".join("- " + l for l in lines))
+    m = re.search(r"\{.*\}", resp or "", re.DOTALL)
+    if not m:
+        return {}
+    try:
+        out = json.loads(m.group(0))
+        return {k: str(out.get(k, "")).strip() for k in ("three", "one", "sentence")}
+    except Exception:
+        return {}
+
+
+@app.route("/api/gallery/<slug>/summary", methods=["POST"])
+def api_gallery_summary(slug):
+    """Generate (frontier) and store a polished 3-tier summary of the selection.
+    Shows up at the top of the contact sheet."""
+    folder_dir, port, device_id = _vx_find_folder(slug)
+    if not folder_dir:
+        return jsonify({"ok": False, "error": "folder not found"}), 404
+    cap_path = os.path.join(folder_dir, "captions.json")
+    captions = {}
+    if os.path.isfile(cap_path):
+        try:
+            captions = json.load(open(cap_path))
+        except Exception:
+            captions = {}
+    title = captions.get("_title") or slug
+    summary = _vx_gallery_summary(captions, _vx_voice_card(folder_dir=folder_dir), title)
+    if not summary:
+        return jsonify({"ok": False, "error": "summary produced nothing"}), 502
+    captions["_summary"] = summary
+    try:
+        json.dump(captions, open(cap_path, "w"), ensure_ascii=False, indent=1)
+    except Exception:
+        pass
+    print("[summary] generated for %s" % slug)
+    return jsonify({"ok": True, "summary": summary})
+
+
+@app.route("/api/gallery/<slug>/restyle", methods=["POST"])
+def api_gallery_restyle(slug):
+    """Align a whole gallery's captions to the voice card -- one batched local call."""
+    payload, status = _vx_caption_pass(slug, "align")
+    return jsonify(payload), status
+
+
+@app.route("/api/gallery/<slug>/refine", methods=["POST"])
+def api_gallery_refine(slug):
+    """Apply editor corrections (free text) to a gallery's captions, in voice --
+    one batched local call. Body: {"notes": "Luna is a congresswoman, not ..."}"""
+    data = request.get_json() or {}
+    notes = (data.get("notes") or "").strip()
+    if not notes:
+        return jsonify({"ok": False, "error": "no notes"}), 400
+    payload, status = _vx_caption_pass(slug, "refine", notes, engine="frontier")
+    return jsonify(payload), status
+
+
+@app.route("/api/gallery/<slug>/polish", methods=["POST"])
+def api_gallery_polish(slug):
+    """Polish a gallery's captions with the frontier model -- one batched paid call.
+    Optional body {"notes": "..."} to also apply corrections in the same pass."""
+    data = request.get_json(silent=True) or {}
+    notes = (data.get("notes") or "").strip()
+    mode = "refine" if notes else "align"
+    payload, status = _vx_caption_pass(slug, mode, notes, engine="frontier")
+    return jsonify(payload), status
 
 
 @app.route("/api/galleries", methods=["GET"])
@@ -4992,6 +5664,28 @@ def handle_audio(data):
 
         emit('transcription', {'text': text, 'segments': segment_info})
         emit('state_change', {'state': 'thinking'})
+
+        # --- Caption feedback on the active gallery routes to a refine pass ---
+        # (cue-vox treats feedback about a clip's caption as a request to change it)
+        active_gallery = (data.get("activeGallery") or "").strip()
+        if active_gallery and _vx_is_caption_feedback(text):
+            print("[caption-voice] '%s' -> refine %s" % (text, active_gallery))
+            payload, _status = _vx_caption_pass(active_gallery, "refine", text, engine="frontier")
+            try:
+                Path(temp_file.name).unlink()
+            except Exception:
+                pass
+            if payload.get("ok"):
+                socketio.emit("caption_update", {
+                    "slug": active_gallery,
+                    "title": payload.get("title", active_gallery),
+                    "images": payload.get("images", []),
+                })
+            else:
+                msg = "I couldn't update those captions."
+                emit("response", {"text": msg, "tts_chunks": tts_chunk_split(sanitize_for_tts(msg))})
+            emit("state_change", {"state": "idle"})
+            return
 
         # Calculate input length for response matching
         input_word_count = get_input_word_count(text)
