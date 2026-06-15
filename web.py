@@ -2327,6 +2327,42 @@ def format_logs_with_time(entries):
     return "\n".join(formatted)
 
 
+def get_recent_conversation_context(turns=6):
+    """Verbatim block of the last N conversation turns, for referent resolution.
+
+    The flux/summary contexts compress and truncate, so a pronoun whose
+    antecedent lived in the prior turn ("dying to see it") can lose its
+    referent before it reaches the model. This block carries the most recent
+    turns in full, untruncated, so the immediately-prior context is always
+    legible. It is NOT in assemble_prompt_with_budget's trim_order, so it
+    survives budget enforcement -- recent verbatim turns are the floor, not
+    the first thing cut.
+
+    The button (YES_NO) path already does this inline; this helper gives the
+    voice and text paths the same continuity.
+    """
+    # Pull a generous raw window: token_created / client_connected events are
+    # interleaved with exchanges in the log, so we over-read then filter.
+    raw = load_recent_logs(limit=turns * 6)
+    exchanges = [e for e in raw if e.get('user') and e.get('assistant')]
+    if not exchanges:
+        return ""
+
+    recent = exchanges[-turns:]
+    lines = ["[RECENT CONVERSATION -- last %d turns, verbatim]" % len(recent)]
+    for entry in recent:
+        t_rel = compute_relative_time_from_now(entry.get('timestamp', ''))
+        prefix = f"{t_rel} " if t_rel else ""
+        lines.append(f"{prefix}User: {entry.get('user', '')}")
+        lines.append(f"Assistant: {entry.get('assistant', '')}")
+    lines.append(
+        "When the user's input contains a pronoun or deictic ('it', 'that', "
+        "'this', 'the one') with no antecedent in their current message, "
+        "resolve it against these turns BEFORE asking them to repeat themselves."
+    )
+    return "\n".join(lines) + "\n\n"
+
+
 POSITIVE_EMOJI = {
     "\U0001f44d", "\u2764\ufe0f", "\u2764", "\U0001f525", "\U0001f602",
     "\U0001f60d", "\U0001f64f", "\U0001f389", "\U0001f680", "\U0001f4af",
@@ -5697,6 +5733,7 @@ def handle_audio(data):
         # Inject instance identity, speech consumption, variables, input history, engagement, and rolling summary context
         context_sections = [
             ("identity", get_instance_identity()),
+            ("recent_conversation", get_recent_conversation_context()),
             ("flux", get_flux_capacitor_context()),
             ("handoff", get_upstream_handoff_context()),
             ("images", get_image_context()),
@@ -6294,6 +6331,66 @@ def handle_input_response(data):
         emit('state_change', {'state': 'idle'})
 
 
+def _assemble_and_respond(text):
+    """Run one conversation turn's reasoning and return the computed response.
+
+    This is the shared core of a turn: temporal + identity + flux + summary
+    context assembly, the Claude/C2D2 call, logging, and TTS shaping. It does
+    NOT emit -- callers own the emit target. The socketio text handler emits to
+    the requesting client; the HTTP /api/converse push broadcasts via
+    socketio.emit into the live conversation surface. Same reasoning, two
+    delivery paths. See docs/policies/manage-notes.md (Injection Surface).
+
+    Returns a dict with clean_response / tts_text / tts_chunks / snr_hex /
+    used_fallback / input_word_count, or None if the response was voided.
+    """
+    input_word_count = get_input_word_count(text)
+    length_constraint = get_response_length_constraint(input_word_count)
+
+    # Inject temporal context if query is time-related
+    enhanced_text = inject_temporal_context(text)
+
+    # Inject instance identity, speech consumption, variables, input history, engagement, and rolling summary context
+    context_sections = [
+        ("identity", get_instance_identity()),
+        ("recent_conversation", get_recent_conversation_context()),
+        ("flux", get_flux_capacitor_context()),
+        ("handoff", get_upstream_handoff_context()),
+        ("images", get_image_context()),
+        ("engagement", get_engagement_context()),
+        ("summary", get_conversation_summary_context()),
+        ("speech", get_speech_consumption_context()),
+        ("variables", get_variables_context()),
+        ("input_history", get_input_history_context()),
+        ("length_constraint", length_constraint),
+        ("prompt_template", load_prompt_template()),
+    ]
+
+    # Assemble with budget enforcement to prevent "Prompt is too long" errors
+    enhanced_text = assemble_prompt_with_budget(context_sections, enhanced_text)
+
+    # Send to Claude Code with C2D2 fallback
+    response, used_fallback = _call_claude_or_fallback(enhanced_text, raw_user_text=text)
+
+    if response is None:
+        print("[VOID] Claude response discarded (turn was voided)")
+        return None
+
+    # Log conversation with input length
+    _, clean_response, snr_hex = log_conversation(text, response, input_length=input_word_count)
+
+    tts_text = sanitize_for_tts(clean_response)
+    tts_chunks = tts_chunk_split(tts_text)
+    return {
+        "clean_response": clean_response,
+        "tts_text": tts_text,
+        "tts_chunks": tts_chunks,
+        "snr_hex": snr_hex,
+        "used_fallback": used_fallback,
+        "input_word_count": input_word_count,
+    }
+
+
 @socketio.on('text_message')
 def handle_text_message(data):
     """Handle text message from input field - same flow as voice but without transcription"""
@@ -6310,50 +6407,20 @@ def handle_text_message(data):
 
         emit('state_change', {'state': 'thinking'})
 
-        # Calculate input length for response matching
-        input_word_count = get_input_word_count(text)
-        length_constraint = get_response_length_constraint(input_word_count)
+        result = _assemble_and_respond(text)
 
-        # Inject temporal context if query is time-related
-        enhanced_text = inject_temporal_context(text)
-
-        # Inject instance identity, speech consumption, variables, input history, engagement, and rolling summary context
-        context_sections = [
-            ("identity", get_instance_identity()),
-            ("flux", get_flux_capacitor_context()),
-            ("handoff", get_upstream_handoff_context()),
-            ("images", get_image_context()),
-            ("engagement", get_engagement_context()),
-            ("summary", get_conversation_summary_context()),
-            ("speech", get_speech_consumption_context()),
-            ("variables", get_variables_context()),
-            ("input_history", get_input_history_context()),
-            ("length_constraint", length_constraint),
-            ("prompt_template", load_prompt_template()),
-        ]
-
-        # Assemble with budget enforcement to prevent "Prompt is too long" errors
-        enhanced_text = assemble_prompt_with_budget(context_sections, enhanced_text)
-
-        # Send to Claude Code with C2D2 fallback
-        response, used_fallback = _call_claude_or_fallback(enhanced_text, raw_user_text=text)
-
-        if response is None:
-            print("[VOID] Claude response discarded (text message was voided)")
+        if result is None:
             emit('state_change', {'state': 'idle'})
             return
 
-        if used_fallback:
+        if result["used_fallback"]:
             emit('fallback_active', {'backend': 'c2d2'})
 
-        # Log conversation with input length
-        _, clean_response, snr_hex = log_conversation(text, response, input_length=input_word_count)
-
-        tts_text = sanitize_for_tts(clean_response)
-        tts_chunks = tts_chunk_split(tts_text)
-        response_data = {"text": clean_response, "tts_chunks": tts_chunks}
-        if snr_hex:
-            response_data["snr_hex"] = snr_hex
+        clean_response = result["clean_response"]
+        tts_text = result["tts_text"]
+        response_data = {"text": clean_response, "tts_chunks": result["tts_chunks"]}
+        if result["snr_hex"]:
+            response_data["snr_hex"] = result["snr_hex"]
         emit("response", response_data)
         emit('state_change', {'state': 'speaking'})
 
@@ -7151,6 +7218,74 @@ def api_speak():
     tts_interrupted = False
     _speech_queue.put((text, 0, False))
     _speech_queue.join()
+    return {"ok": True}
+
+
+@app.route('/api/converse', methods=['POST'])
+def api_converse():
+    """Inject a turn into the LIVE conversation surface and reason in place.
+
+    Unlike /api/speak (TTS only), this runs the full reasoning pipeline -- the
+    same context assembly as a typed turn -- and broadcasts both the response
+    and conversation state to all connected clients via socketio.emit. It pushes
+    INTO the conversation that's already open; it never spawns a new one. Surface
+    affordances (e.g. the pipeline 'Manage Notes' button) POST here to laminate
+    context into the live thread. See docs/policies/manage-notes.md.
+
+    Speech runs in a background task so the POST returns promptly while cue-vox
+    speaks; the conversation settles thinking -> speaking -> idle on its own.
+    """
+    text = ""
+    if request.is_json:
+        text = (request.json or {}).get("text", "")
+    else:
+        text = request.form.get("text", "")
+    text = text.strip()
+    if not text:
+        return {"ok": False, "error": "no text"}, 400
+
+    # Stop any in-flight speech, exactly as a fresh turn does.
+    handle_speech_interruption()
+    flush_speech_queue()
+    global tts_interrupted
+    tts_interrupted = False
+
+    # ACK fast: emit 'thinking' now, then run the whole turn (reasoning +
+    # speech) in the background so the caller isn't blocked on Claude latency.
+    # The conversation surface settles thinking -> speaking -> idle on its own.
+    socketio.emit('state_change', {'state': 'thinking'})
+
+    def _run_turn(turn_text):
+        try:
+            result = _assemble_and_respond(turn_text)
+            if result is None:
+                socketio.emit('state_change', {'state': 'idle'})
+                return
+            if result["used_fallback"]:
+                socketio.emit('fallback_active', {'backend': 'c2d2'})
+            response_data = {
+                "role": "assistant",
+                "text": result["clean_response"],
+                "tts_chunks": result["tts_chunks"],
+            }
+            if result["snr_hex"]:
+                response_data["snr_hex"] = result["snr_hex"]
+            socketio.emit("response", response_data)
+            socketio.emit('state_change', {'state': 'speaking'})
+            # Speak via the queue with emit_events=False -- HTTP-safe, no
+            # context-bound emit (speak_chunked's trailing emit() would fail).
+            start_speech_tracking(result["clean_response"])
+            speak_text = strip_markdown_for_tts(result["tts_text"])
+            if speak_text:
+                _speech_queue.put((speak_text, 0, False))
+                _speech_queue.join()
+            finish_speech()
+            socketio.emit('state_change', {'state': 'idle'})
+        except Exception as exc:
+            socketio.emit('error', {'message': str(exc)})
+            socketio.emit('state_change', {'state': 'idle'})
+
+    socketio.start_background_task(_run_turn, text)
     return {"ok": True}
 
 
