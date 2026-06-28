@@ -514,6 +514,17 @@ def get_whisper_model():
 tts_process = None
 tts_interrupted = False
 
+# Voice for the macOS `say` command.
+# Empty string = use the system default voice. This is INTENTIONAL: the
+# desired voice is "Siri Voice 2", and Siri voices CANNOT be addressed by
+# `say -v <name>` -- they are reachable only as the system default
+# (System Settings > Accessibility > Spoken Content > System Voice).
+# So we leave this empty and rely on the system default being Siri Voice 2.
+# Set a name here ONLY to pin a non-Siri voice (e.g. "Samantha").
+# NOTE: a macOS update can reset the system default; if the voice sounds
+# wrong, re-select Siri Voice 2 as the System Voice in the settings above.
+TTS_VOICE = ""
+
 # --- Speech queue: single consumer thread, FIFO, no overlaps ---
 _speech_queue = queue.Queue()
 
@@ -530,7 +541,8 @@ def _say_with_fallback(text, timeout=30):
     """Run macOS say command. If it produces no audible output, retry via pyttsx3."""
     try:
         start = time.time()
-        subprocess.run(["say", text], check=False, timeout=timeout)
+        cmd = ["say", "-v", TTS_VOICE, text] if TTS_VOICE else ["say", text]
+        subprocess.run(cmd, check=False, timeout=timeout)
         elapsed = time.time() - start
         # If say returned almost instantly for non-trivial text, it was silent
         words = len(text.split())
