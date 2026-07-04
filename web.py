@@ -3206,6 +3206,82 @@ Respond thoroughly but stay focused on their points.
 """.format(word_count)
 
 
+def _aperture_hex_from_brevity(b):
+    """Mirror of app.js apertureHex(): brevity 0..1 -> VRGB hue arc.
+
+    hue = 30 (warm amber, brief) -> 210 (cool blue, reflective), at hsl(h,70,55).
+    Kept identical to the client so a backend fallback never drifts from the
+    color the user actually sees on the dial thumb. Used only when the client
+    did not put the hex on the wire (older client / API path).
+    """
+    hue = 30 + (max(0.0, min(1.0, b)) * 180)
+    s, l = 0.70, 0.55
+    c = (1 - abs(2 * l - 1)) * s
+    x = c * (1 - abs((hue / 60) % 2 - 1))
+    m = l - c / 2
+    if hue < 60:    r, g, bl = c, x, 0
+    elif hue < 120: r, g, bl = x, c, 0
+    elif hue < 180: r, g, bl = 0, c, x
+    else:           r, g, bl = 0, x, c
+    return "#%02X%02X%02X" % (
+        round((r + m) * 255), round((g + m) * 255), round((bl + m) * 255)
+    )
+
+
+def get_aperture_constraint(brevity, aperture_hex=None):
+    """Turn the brevity dial (0..1) into a response-mode directive.
+
+    The dial is the user's EXPLICIT demand signal -- how much they need to get
+    OUT of this turn versus how much they can stay and reflect. It is set by a
+    physical control the user owns, and it dominates the word-count heuristic
+    because the demand is driven by the user's external context (the operation
+    waiting outside this window), which the substrate cannot see or infer.
+
+    ONE axis, three coupled attributes that move together: sentence length,
+    content length, and definitiveness. Dial DOWN = MORE brevity (short,
+    minimal, definitive). Dial UP = LESS brevity (long, expansive, tangential).
+
+    Three buckets, each a band on the VRGB hue arc (amber 30 deg brief -> blue
+    210 deg reflective). The dial's own color travels into the directive as the
+    VRGB coordinate, so the geometry rides alongside the prose. The hex the user
+    sees on the thumb IS the signal -- one source of truth, no re-derivation.
+
+    Scale: 0.0 = brief / deliverable (bottom), 1.0 = loose / reflective (top).
+    """
+    try:
+        b = float(brevity)
+    except (TypeError, ValueError):
+        return ""
+    b = max(0.0, min(1.0, b))
+
+    coord = (aperture_hex or "").strip() or _aperture_hex_from_brevity(b)
+
+    if b >= 0.66:
+        return """[BREVITY DIAL - VRGB %s : blue band (reflective, user-set, authoritative)]
+Top of the arc, aperture wide open -- LEAST brevity. All three axes ride high:
+longer sentences, more content, more exploratory and tangential. The user has
+time and wants to think WITH you -- reflect, mirror, wander. Do not rush to a
+deliverable or a decision. This dominates any length heuristic.
+""" % coord
+    if b >= 0.33:
+        return """[BREVITY DIAL - VRGB %s : green band (deliberative, user-set, authoritative)]
+Middle of the arc -- medium brevity. Structured over discursive: weigh the
+options, give the pros/cons and trade-offs that move the user toward a choice,
+but keep it tight -- not yet a bare artifact. This dominates any length heuristic.
+""" % coord
+    return """[BREVITY DIAL - VRGB %s : amber band (deliverable, user-set, authoritative)]
+Bottom of the arc, aperture closed -- MAXIMUM brevity. All three axes ride low:
+short sentences, minimal content, definitive -- commit, do NOT hedge or wander.
+Assume the user has another operation queued and is about to leave this window.
+Give the clean, liftable thing: the paragraph, the command, the copy-paste block
+-- clarity over completeness. NO pros/cons scaffolding; they have already decided
+and just need the output in a form they can grab and go. If you are genuinely
+blocked, do NOT open a discussion -- ask ONE clarifying question in the tightest
+form possible (prefer a yes/no, else a 0-10 scalar, else a single open question).
+This dominates any length heuristic.
+""" % coord
+
+
 def get_instance_identity():
     """
     Return instance identity header for cue-vox Claude.
@@ -5735,9 +5811,14 @@ def handle_audio(data):
             emit("state_change", {"state": "idle"})
             return
 
-        # Calculate input length for response matching
+        # Calculate input length for response matching. The brevity dial, when
+        # the client puts it on the wire, is the user's explicit demand signal
+        # and supersedes the word-count inference -- same rule as the text path.
         input_word_count = get_input_word_count(text)
-        length_constraint = get_response_length_constraint(input_word_count)
+        aperture_constraint = get_aperture_constraint(
+            data.get('brevity'), data.get('aperture_hex')
+        )
+        length_constraint = aperture_constraint or get_response_length_constraint(input_word_count)
 
         # Inject temporal context if query is time-related
         enhanced_text = inject_temporal_context(text)
@@ -6343,7 +6424,7 @@ def handle_input_response(data):
         emit('state_change', {'state': 'idle'})
 
 
-def _assemble_and_respond(text):
+def _assemble_and_respond(text, brevity=None, aperture_hex=None):
     """Run one conversation turn's reasoning and return the computed response.
 
     This is the shared core of a turn: temporal + identity + flux + summary
@@ -6357,7 +6438,12 @@ def _assemble_and_respond(text):
     used_fallback / input_word_count, or None if the response was voided.
     """
     input_word_count = get_input_word_count(text)
-    length_constraint = get_response_length_constraint(input_word_count)
+    # The brevity dial is the user's explicit demand signal; when present it
+    # supersedes the word-count heuristic (an inference). Absent (older client),
+    # fall back to matching the user's input length. aperture_hex carries the
+    # dial's VRGB coordinate (the color on the thumb) straight into the directive.
+    aperture_constraint = get_aperture_constraint(brevity, aperture_hex)
+    length_constraint = aperture_constraint or get_response_length_constraint(input_word_count)
 
     # Inject temporal context if query is time-related
     enhanced_text = inject_temporal_context(text)
@@ -6417,9 +6503,15 @@ def handle_text_message(data):
         if not text:
             return
 
+        # Brevity dial (0 = brief/deliverable, 1 = reflective); None on older
+        # clients -> word-count fallback downstream. aperture_hex is the dial's
+        # VRGB coordinate (the thumb color) for the geometric directive.
+        brevity = data.get('brevity')
+        aperture_hex = data.get('aperture_hex')
+
         emit('state_change', {'state': 'thinking'})
 
-        result = _assemble_and_respond(text)
+        result = _assemble_and_respond(text, brevity=brevity, aperture_hex=aperture_hex)
 
         if result is None:
             emit('state_change', {'state': 'idle'})

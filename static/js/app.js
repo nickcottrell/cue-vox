@@ -183,6 +183,107 @@ function stopAllSounds() {
   });
 })();
 
+// ============================================
+// APERTURE DIAL (extraction-urgency)
+// Vertical demand-side twin of the text-size slider, anchored bottom-right
+// above the Do launcher. Top (100) = loose/reflective, bottom (0) = brevity/
+// deliverable. Placement pass only: publishes a --cue-brevity scalar (0..1,
+// where 0 = brief/deliverable) for the response-compose layer to read later,
+// and tints its own thumb via --cue-aperture-hex. Resets on reload.
+// ============================================
+
+(function initAperture() {
+  var slider = document.getElementById("apertureSlider");
+  if (!slider) return;
+
+  // Resting position on every load -- slightly open (deliberative), not the
+  // reflective ceiling, so the dial starts neutral. No persistence.
+  var DEFAULT_APERTURE = 55;
+
+  // Self-contained HSL -> hex (kept local, mirroring initTextComfort).
+  function hslToHex(h, s, l) {
+    s = s / 100;
+    l = l / 100;
+    var c = (1 - Math.abs(2 * l - 1)) * s;
+    var x = c * (1 - Math.abs((h / 60) % 2 - 1));
+    var m = l - c / 2;
+    var r = 0, g = 0, b = 0;
+    if (h < 60) { r = c; g = x; }
+    else if (h < 120) { r = x; g = c; }
+    else if (h < 180) { g = c; b = x; }
+    else if (h < 240) { g = x; b = c; }
+    else if (h < 300) { r = x; b = c; }
+    else { r = c; b = x; }
+    function ch(v) {
+      var hx = Math.round((v + m) * 255).toString(16);
+      return hx.length === 1 ? "0" + hx : hx;
+    }
+    return "#" + ch(r) + ch(g) + ch(b);
+  }
+
+  function clamp(value) {
+    return Math.max(0, Math.min(100, value));
+  }
+
+  // brevity scalar: 0 = brief/deliverable (bottom), 1 = reflective (top).
+  function brevityFor(value) {
+    return clamp(value) / 100;
+  }
+
+  // VRGB scalar encoding, inverse of the comfort ramp: brief/deliverable
+  // reads warm/urgent (amber), reflective reads cool (blue).
+  function apertureHex(value) {
+    var t = clamp(value) / 100;
+    var hue = 30 + (t * 180); // 30 warm amber (brief) -> 210 cool blue (reflective)
+    return hslToHex(hue, 70, 55);
+  }
+
+  function applyAperture(value) {
+    var root = document.documentElement;
+    root.style.setProperty("--cue-brevity", brevityFor(value).toFixed(4));
+    root.style.setProperty("--cue-aperture-hex", apertureHex(value));
+    slider.value = value;
+  }
+
+  applyAperture(DEFAULT_APERTURE);
+
+  slider.addEventListener("input", function() {
+    applyAperture(parseInt(slider.value, 10));
+  });
+})();
+
+// Read the live aperture scalar at send time (0 = brief/deliverable, 1 =
+// reflective). Returns null if the dial isn't present, so the backend falls
+// back to its word-count heuristic on the voice path / older clients.
+// Logs the exact value + zone to the browser console -- the unbuffered,
+// client-side source of truth for what actually went on the wire. Mirror of
+// the backend zone boundaries in get_aperture_constraint (web.py).
+function currentBrevity() {
+  var raw = getComputedStyle(document.documentElement)
+    .getPropertyValue("--cue-brevity").trim();
+  var n = parseFloat(raw);
+  if (isNaN(n)) {
+    console.log("[aperture] brevity=null -> not sent (word-count fallback)");
+    return null;
+  }
+  var zone = n >= 0.66 ? "REFLECTIVE (dial high)"
+           : n >= 0.33 ? "DELIBERATIVE (dial mid)"
+           : "DELIVERABLE (dial low)";
+  console.log("[aperture] brevity=" + n.toFixed(4) + " -> " + zone);
+  return n;
+}
+
+// Read the dial's live VRGB coordinate at send time -- the exact hex the thumb
+// is showing. This is the color the user sees; sending it (rather than letting
+// the backend re-derive) keeps one source of truth for the brevity state.
+// Returns null if the dial isn't present, so the backend falls back to its own
+// mirrored formula.
+function currentApertureHex() {
+  var hex = getComputedStyle(document.documentElement)
+    .getPropertyValue("--cue-aperture-hex").trim();
+  return hex || null;
+}
+
 // Modifier token state
 var modifierTokens = {};          // target_id -> DOM thumbnail element
 var modifiersByTarget = {};       // target_id -> [modifier_ids]
@@ -225,7 +326,7 @@ async function initAudio() {
       const reader = new FileReader();
       reader.readAsDataURL(audioBlob);
       reader.onloadend = () => {
-        socket.emit('audio_data', { audio: reader.result });
+        socket.emit('audio_data', { audio: reader.result, activeGallery: window.__activeGallery || "", brevity: currentBrevity(), aperture_hex: currentApertureHex() });
       };
       audioChunks = [];
     };
@@ -382,7 +483,7 @@ function sendTextMessage() {
 
   // Add user message immediately (backend doesn't echo text input)
   addMessage('user', text);
-  socket.emit('text_message', { text: text });
+  socket.emit('text_message', { text: text, brevity: currentBrevity(), aperture_hex: currentApertureHex() });
   drawerTextInput.value = '';
 }
 
@@ -1397,7 +1498,7 @@ function renderMessageContent(container, text) {
 
       // Send as single text_message -- one Claude call, one response
       addMessage("user", messageText);
-      socket.emit("text_message", { text: messageText });
+      socket.emit("text_message", { text: messageText, brevity: currentBrevity(), aperture_hex: currentApertureHex() });
     });
     container.appendChild(submitAllBtn);
   }
