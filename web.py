@@ -328,6 +328,55 @@ def _call_c2d2(user_text):
     return response
 
 
+# ============================================================
+# JEFF TRIAGE -- consult the substrate registry, route C2D2-first
+# ============================================================
+
+_JEFF_CLI = os.path.join(MAESTRO_ROOT, "tools", "jeff", "jeff")
+_triage_cmd_cache = None  # discovered once from Jeff's registry ([] = "none")
+
+
+def _discover_triage_cmd():
+    """Ask Jeff's toolchain registry for a triage-capable floor toolchain's
+    triage command. Jeff owns the connection -- we do NOT hard-code C2D2's path;
+    we read whatever floor toolchain Jeff has registered. Cached after first hit.
+    """
+    global _triage_cmd_cache
+    if _triage_cmd_cache is not None:
+        return _triage_cmd_cache or None
+    _triage_cmd_cache = []  # remember "checked, none" to avoid re-probing
+    try:
+        r = subprocess.run([_JEFF_CLI, "toolchains", "--json", "--no-probe"],
+                           cwd=MAESTRO_ROOT, capture_output=True, text=True, timeout=10)
+        rows = json.loads(r.stdout)
+        rows.sort(key=lambda t: 0 if t.get("tier") == "floor" else 1)  # floor first
+        for tc in rows:
+            if tc.get("triage_cmd"):
+                _triage_cmd_cache = tc["triage_cmd"]
+                print("[JEFF-TRIAGE] Floor toolchain: %s (%s)" % (
+                    tc.get("name"), " ".join(tc["triage_cmd"])))
+                break
+    except Exception as exc:
+        print("[JEFF-TRIAGE] Registry lookup failed: %s" % exc)
+    return _triage_cmd_cache or None
+
+
+def _jeff_triage(user_text):
+    """Route C2D2-first: run the floor toolchain's triage. Returns the verdict
+    dict ({handled, answer, route, ...}) or None if triage is unavailable."""
+    cmd = _discover_triage_cmd()
+    if not cmd or not user_text:
+        return None
+    try:
+        r = subprocess.run(cmd + [user_text, "--json"], cwd=MAESTRO_ROOT,
+                           capture_output=True, text=True, timeout=30)
+        if r.returncode == 0 and r.stdout.strip():
+            return json.loads(r.stdout.strip().splitlines()[-1])
+    except Exception as exc:
+        print("[JEFF-TRIAGE] Triage failed: %s" % exc)
+    return None
+
+
 def _call_claude_or_fallback(prompt_text, raw_user_text=""):
     """Route prompt based on _c2d2_mode.
 
@@ -349,6 +398,17 @@ def _call_claude_or_fallback(prompt_text, raw_user_text=""):
         except Exception as exc:
             print("[C2D2] Force mode failed: %s" % exc)
         return ("", True)
+
+    # -- C2D2-first: consult Jeff's floor triage before spending Claude compute.
+    # If the substrate's floor toolchain can handle it deterministically, use that
+    # answer and never wake the Computer. Anything it can't handle escalates. --
+    if _c2d2_mode == "auto":
+        verdict = _jeff_triage(raw_user_text or prompt_text)
+        if verdict and verdict.get("handled") and verdict.get("answer"):
+            print("[JEFF-TRIAGE] Handled by C2D2 floor (%s) -- no escalation"
+                  % verdict.get("route"))
+            _emit_c2d2_responded_token("triage")
+            return (verdict["answer"], True)
 
     # -- Normal Claude path --
     try:
