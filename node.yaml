@@ -1,0 +1,18 @@
+# Node manifest -- single source of truth. Contract: docs/design/node-standard.md
+# cue-vox is its own git repo (a maestro submodule); this manifest lives with it.
+name:        cue-vox
+kind:        service
+bucket:      private-brain
+path:        tools/cue-vox
+summary:     voice interface -- the Writer instance; tracks multiple threads
+entrypoint:  web.py
+runtime:     launchd
+service:     com.maestro.cuevox
+endpoints:
+  - http://127.0.0.1:3000
+deps:
+  - cue-mem
+verbs:
+  test:    test/run.sh
+  status:  status.sh
+  deploy:  dev.sh
