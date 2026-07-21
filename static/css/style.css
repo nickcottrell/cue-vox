@@ -430,6 +430,266 @@ body {
 }
 
 /* ============================================
+   MARKDOWN STYLING
+   ============================================ */
+
+/* Headings */
+.conversation h1,
+.conversation h2,
+.conversation h3,
+.conversation h4,
+.conversation h5,
+.conversation h6,
+.card__body h1,
+.card__body h2,
+.card__body h3,
+.card__body h4,
+.card__body h5,
+.card__body h6 {
+  color: var(--text-heading, #fff);
+  font-weight: var(--font-weight-bold, 700);
+  line-height: 1.3;
+  margin: var(--space-lg, 1rem) 0 var(--space-md, 0.75rem) 0;
+}
+
+.conversation h1:first-child,
+.conversation h2:first-child,
+.conversation h3:first-child,
+.conversation h4:first-child,
+.conversation h5:first-child,
+.conversation h6:first-child,
+.card__body h1:first-child,
+.card__body h2:first-child,
+.card__body h3:first-child,
+.card__body h4:first-child,
+.card__body h5:first-child,
+.card__body h6:first-child {
+  margin-top: 0;
+}
+
+.conversation h1,
+.card__body h1 {
+  font-size: var(--font-size-2xl, 1.5rem);
+  border-bottom: 1px solid var(--border, rgba(255, 255, 255, 0.1));
+  padding-bottom: var(--space-sm, 0.5rem);
+}
+
+.conversation h2,
+.card__body h2 {
+  font-size: var(--font-size-xl, 1.25rem);
+  border-bottom: 1px solid var(--border, rgba(255, 255, 255, 0.05));
+  padding-bottom: var(--space-xs, 0.25rem);
+}
+
+.conversation h3,
+.card__body h3 {
+  font-size: var(--font-size-lg, 1.125rem);
+}
+
+.conversation h4,
+.card__body h4 {
+  font-size: var(--font-size-md, 1rem);
+}
+
+.conversation h5,
+.card__body h5 {
+  font-size: var(--font-size-sm, 0.875rem);
+  color: var(--text-secondary, #888);
+}
+
+.conversation h6,
+.card__body h6 {
+  font-size: var(--font-size-sm, 0.875rem);
+  color: var(--text-secondary, #888);
+  font-weight: var(--font-weight-normal, 400);
+}
+
+/* Paragraphs */
+.conversation p,
+.card__body p {
+  margin: var(--space-md, 0.75rem) 0;
+  line-height: 1.6;
+  color: var(--text, #fff);
+}
+
+.conversation p:first-child,
+.card__body p:first-child {
+  margin-top: 0;
+}
+
+.conversation p:last-child,
+.card__body p:last-child {
+  margin-bottom: 0;
+}
+
+/* Lists */
+.conversation ul,
+.conversation ol,
+.card__body ul,
+.card__body ol {
+  margin: var(--space-md, 0.75rem) 0;
+  padding-left: var(--space-xl, 1.5rem);
+  line-height: 1.6;
+  color: var(--text, #fff);
+}
+
+.conversation ul,
+.card__body ul {
+  list-style-type: disc;
+}
+
+.conversation ol,
+.card__body ol {
+  list-style-type: decimal;
+}
+
+.conversation ul ul,
+.conversation ol ul,
+.card__body ul ul,
+.card__body ol ul {
+  list-style-type: circle;
+}
+
+.conversation ul ul ul,
+.conversation ol ul ul,
+.card__body ul ul ul,
+.card__body ol ul ul {
+  list-style-type: square;
+}
+
+.conversation li,
+.card__body li {
+  margin: var(--space-xs, 0.25rem) 0;
+}
+
+.conversation li > p,
+.card__body li > p {
+  margin: var(--space-xs, 0.25rem) 0;
+}
+
+/* Code blocks */
+.conversation pre,
+.card__body pre {
+  margin: var(--space-md, 0.75rem) 0;
+  padding: var(--space-md, 0.75rem);
+  background: var(--surface-secondary, rgba(255, 255, 255, 0.05));
+  border: 1px solid var(--border, rgba(255, 255, 255, 0.1));
+  border-radius: var(--radius-sm, 4px);
+  overflow-x: auto;
+  line-height: 1.5;
+}
+
+.conversation pre code,
+.card__body pre code {
+  background: transparent;
+  padding: 0;
+  border: none;
+  font-size: var(--font-size-sm, 0.875rem);
+  color: var(--text, #fff);
+  font-family: var(--font-family-mono, 'Menlo', 'Monaco', 'Courier New', monospace);
+}
+
+/* Inline code */
+.conversation code,
+.card__body code {
+  padding: var(--space-xs, 0.25rem) var(--space-sm, 0.5rem);
+  background: var(--surface-secondary, rgba(255, 255, 255, 0.08));
+  border: 1px solid var(--border, rgba(255, 255, 255, 0.1));
+  border-radius: var(--radius-xs, 3px);
+  font-size: var(--font-size-sm, 0.875rem);
+  color: var(--text-accent, #fff);
+  font-family: var(--font-family-mono, 'Menlo', 'Monaco', 'Courier New', monospace);
+}
+
+/* Blockquotes */
+.conversation blockquote,
+.card__body blockquote {
+  margin: var(--space-md, 0.75rem) 0;
+  padding: var(--space-sm, 0.5rem) var(--space-md, 0.75rem);
+  border-left: 3px solid var(--border, rgba(255, 255, 255, 0.3));
+  background: var(--surface-secondary, rgba(255, 255, 255, 0.03));
+  border-radius: var(--radius-sm, 4px);
+  color: var(--text-secondary, #888);
+  font-style: italic;
+}
+
+.conversation blockquote p,
+.card__body blockquote p {
+  margin: var(--space-xs, 0.25rem) 0;
+}
+
+/* Links */
+.conversation a,
+.card__body a {
+  color: var(--primary, #fff);
+  text-decoration: underline;
+  text-decoration-color: var(--border, rgba(255, 255, 255, 0.3));
+  text-underline-offset: 2px;
+  transition: all 0.2s ease;
+}
+
+.conversation a:hover,
+.card__body a:hover {
+  color: var(--primary-hover, #f0f0f0);
+  text-decoration-color: var(--border, rgba(255, 255, 255, 0.5));
+}
+
+/* Bold and italic */
+.conversation strong,
+.conversation b,
+.card__body strong,
+.card__body b {
+  font-weight: var(--font-weight-bold, 700);
+  color: var(--text-heading, #fff);
+}
+
+.conversation em,
+.conversation i,
+.card__body em,
+.card__body i {
+  font-style: italic;
+  color: var(--text, #fff);
+}
+
+/* Horizontal rules */
+.conversation hr,
+.card__body hr {
+  margin: var(--space-lg, 1rem) 0;
+  border: none;
+  border-top: 1px solid var(--border, rgba(255, 255, 255, 0.1));
+}
+
+/* Tables */
+.conversation table,
+.card__body table {
+  margin: var(--space-md, 0.75rem) 0;
+  border-collapse: collapse;
+  width: 100%;
+  font-size: var(--font-size-sm, 0.875rem);
+}
+
+.conversation table th,
+.conversation table td,
+.card__body table th,
+.card__body table td {
+  padding: var(--space-sm, 0.5rem) var(--space-md, 0.75rem);
+  border: 1px solid var(--border, rgba(255, 255, 255, 0.1));
+  text-align: left;
+}
+
+.conversation table th,
+.card__body table th {
+  background: var(--surface-secondary, rgba(255, 255, 255, 0.05));
+  font-weight: var(--font-weight-bold, 700);
+  color: var(--text-heading, #fff);
+}
+
+.conversation table tr:nth-child(even),
+.card__body table tr:nth-child(even) {
+  background: var(--surface-secondary, rgba(255, 255, 255, 0.02));
+}
+
+/* ============================================
    DRAWER STATUS
    ============================================ */
 
