@@ -2183,6 +2183,34 @@ body {
   text-overflow: ellipsis;
 }
 
+.gallery__align {
+  background: none;
+  border: none;
+  padding: 0 6px;
+  font-size: 11px;
+  color: var(--accent, #6b8afd);
+  text-decoration: underline;
+  cursor: pointer;
+}
+.gallery__align:hover { opacity: 0.8; }
+.gallery__align:disabled { opacity: 0.5; cursor: default; }
+
+.card--note .card__body {
+  color: var(--text-secondary, #888);
+  font-size: 12px;
+  font-style: italic;
+}
+
+.gallery-strip__caption--editable { cursor: text; }
+.gallery-strip__caption--editable:hover { text-decoration: underline dotted; }
+.gallery-strip__caption--editable:focus {
+  white-space: normal;
+  overflow: visible;
+  outline: 1px solid var(--accent, #6b8afd);
+  background: var(--bg-surface, #1a1a1a);
+  border-radius: 3px;
+}
+
 .gallery-strip__count {
   font-size: 11px;
   color: var(--text-secondary, #888);
@@ -2819,5 +2847,55 @@ body {
   border: none;
   border-radius: 999px;
   background: var(--cue-comfort-hex, var(--accent, #cb4daf));
+  cursor: pointer;
+}
+
+/* ============================================
+   APERTURE DIAL (extraction-urgency)
+   Vertical, label-less demand-side twin of the text-size slider. Top =
+   loose/reflective (wide aperture), bottom = brevity/deliverable (0%).
+   Anchored bottom-right, stacked above the Do launcher and symmetric to
+   the corner-fixed controls. writing-mode + direction:rtl put the low
+   value (brief) at the BOTTOM. Thumb is tinted by --cue-aperture-hex.
+   ============================================ */
+.aperture {
+  position: fixed;
+  right: var(--space-lg, 1rem);
+  /* Clear the Do button (btn--sm, ~2.5rem tall at bottom: --space-lg) with a
+     3rem gap above it: --space-lg + button + 3rem. */
+  bottom: calc(var(--space-lg, 1rem) + 2.5rem + 3rem);
+  z-index: 999;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  height: var(--cue-aperture-height, 375px);
+}
+
+.aperture__slider {
+  flex: 1;
+  writing-mode: vertical-lr;
+  direction: rtl;              /* min (brief) at bottom, max (reflective) at top */
+  appearance: none;
+  -webkit-appearance: none;
+  width: 0.25rem;
+  border-radius: 999px;
+  background: var(--border, #d0d0d0);
+  cursor: pointer;
+}
+.aperture__slider::-webkit-slider-thumb {
+  -webkit-appearance: none;
+  appearance: none;
+  width: 0.85rem;
+  height: 0.85rem;
+  border-radius: 999px;
+  background: var(--cue-aperture-hex, var(--accent, #cb4daf));
+  cursor: pointer;
+}
+.aperture__slider::-moz-range-thumb {
+  width: 0.85rem;
+  height: 0.85rem;
+  border: none;
+  border-radius: 999px;
+  background: var(--cue-aperture-hex, var(--accent, #cb4daf));
   cursor: pointer;
 }

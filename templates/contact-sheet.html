@@ -23,6 +23,22 @@
             </div>
         </header>
 
+        {% if summary %}
+        <section class="contact-sheet__summary">
+            {% if summary.get("sentence") %}
+            <p class="vx-summary__lede">{{ summary.get("sentence") }}</p>
+            {% endif %}
+            {% if summary.get("one") %}
+            <p class="vx-summary__para">{{ summary.get("one") }}</p>
+            {% endif %}
+            {% if summary.get("three") %}
+            <div class="vx-summary__full">
+                {% for para in summary.get("three").split("\n\n") %}{% if para.strip() %}<p>{{ para.strip() }}</p>{% endif %}{% endfor %}
+            </div>
+            {% endif %}
+        </section>
+        {% endif %}
+
         {% for category, items in categories %}
         <section class="contact-sheet__category">
             <h2 class="contact-sheet__category-title">{{ category }} ({{ items|length }})</h2>

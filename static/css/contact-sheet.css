@@ -71,3 +71,40 @@ body {
         gap: 6px;
     }
 }
+
+/* Polished 3-tier selection summary */
+.contact-sheet__summary {
+  margin: 0 0 1.5rem;
+  padding-bottom: 1rem;
+  border-bottom: 1px solid var(--border, #ddd);
+}
+.vx-summary__lede {
+  font-size: 1.25rem;
+  font-weight: 600;
+  line-height: 1.35;
+  margin: 0 0 0.75rem;
+}
+.vx-summary__para {
+  font-size: 0.95rem;
+  line-height: 1.5;
+  margin: 0 0 0.75rem;
+}
+.vx-summary__full p {
+  font-size: 0.9rem;
+  line-height: 1.5;
+  margin: 0 0 0.6rem;
+  color: var(--text-secondary, #555);
+}
+
+/* Readable per-clip captions on the contact sheet (override the 1-line truncation) */
+.contact-sheet .vx-desc {
+  white-space: normal;
+  font-size: 12px;
+  line-height: 1.4;
+  color: #444;
+  display: -webkit-box;
+  -webkit-line-clamp: 4;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+}
+.contact-sheet .vx-filename { font-size: 10px; }

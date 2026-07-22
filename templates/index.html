@@ -161,6 +161,16 @@
             Hold SPACE to talk • Release to process
         </p>
 
+        <!-- Aperture Dial (extraction-urgency; vertical, label-less). Top =
+             loose/reflective, bottom = brevity/deliverable. Demand-side twin of
+             the text-size slider, anchored bottom-right above the Do launcher.
+             Resets to resting on reload (no persistence). -->
+        <div class="aperture" id="aperture">
+            <input class="aperture__slider" id="apertureSlider" type="range"
+                   min="0" max="100" step="1" value="55" orient="vertical"
+                   aria-label="Aperture: reflective at top, brief at bottom">
+        </div>
+
         <!-- Cue-Sheet Launcher -->
         <button class="cuesheet-toggle btn btn--sm btn--secondary" id="cuesheetToggle" aria-label="Do cue-sheet">
             Do
