@@ -46,3 +46,6 @@ drops/
 .claude/audit/
 .claude/cue-mem
 .claude/settings.local.json
+
+# Runtime feed state -- pipeline_pin polls/mutates this; personal note content, not source
+feeds/
