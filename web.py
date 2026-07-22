@@ -944,7 +944,6 @@ def sanitize_for_tts(text):
     # PIN_NOTE is a structured handoff to the note-add fast-path -- never spoken.
     text = _strip_bracket_balanced_tags(text, ("GALLERY", "APPROVAL", "DOCUMENT", "CUE", "PIN_NOTE"))
 
-    print(f"[TTS DEBUG] Input text: {text[:200]}")  # Log first 200 chars
 
     # Check if entire message is a YES_NO question - extract the question text
     yes_no_match = re.match(r'^\[YES_NO:\s*(.+?)\]$', text, re.IGNORECASE)
@@ -988,11 +987,9 @@ def sanitize_for_tts(text):
                 result = result.replace(match.group(0), '')
 
         result_text = result.strip()
-        print(f"[TTS DEBUG] Sanitized to: {result_text[:200]}")
         return result_text
 
     # No structured tags found, return original text
-    print(f"[TTS DEBUG] No tags found, returning original")
     return text
 
 
@@ -2921,7 +2918,7 @@ def create_scale_token(scale_name, config, now):
                 priors = priors[:30]  # bound the lookback
                 bumps = compute_bumps(summary_text, priors,
                                        similarity_threshold=0.15,
-                                       factor=1.15, max_weight=10.0)
+                                       factor=1.15, max_value=10.0)
                 if bumps:
                     apply_bumps(bumps, str(TOKENS_DIR),
                                 logger=lambda m: print(m))
@@ -7686,4 +7683,8 @@ if __name__ == '__main__':
     print(f"Open: http://localhost:{port}")
     print(f"Logs: {LOG_DIR} (24hr retention)")
     print()
+    # Silence werkzeug per-request access logs -- ~13% of log volume, and every
+    # line is a request path that can carry query PII. Warnings/errors still log.
+    import logging as _logging
+    _logging.getLogger('werkzeug').setLevel(_logging.WARNING)
     socketio.run(app, host='127.0.0.1', port=port, debug=False, allow_unsafe_werkzeug=True)
