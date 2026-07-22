@@ -9,7 +9,7 @@ from typing import Any, Callable, Dict, Optional
 
 # -- Thermal conditions --
 _THERMAL_CONDITIONS_PATH = (
-    Path(__file__).resolve().parents[3] / "cue-sheets" / "lib" / "thermal_conditions.py"
+    Path(__file__).resolve().parents[3] / "playbook" / "lib" / "thermal_conditions.py"
 )
 
 _spec = importlib.util.spec_from_file_location("thermal_conditions", _THERMAL_CONDITIONS_PATH)
@@ -23,7 +23,7 @@ _spec.loader.exec_module(_thermal_conditions)
 _MAESTRO_ROOT = os.path.abspath(
     os.path.join(os.path.dirname(__file__), "..", "..", "..", "..")
 )
-_VRGB_LIB = os.path.join(_MAESTRO_ROOT, "cue-sheets", "lib")
+_VRGB_LIB = os.path.join(_MAESTRO_ROOT, "playbook", "lib")
 if _VRGB_LIB not in sys.path:
     sys.path.insert(0, _VRGB_LIB)
 

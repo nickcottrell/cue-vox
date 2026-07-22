@@ -7029,7 +7029,7 @@ def handle_cuesheet_list(data=None):
         #        regeneration -- only menu-metadata edits (name/icon/order/panel)
         #        require `python3 tools/do-menu.py`. ---
         import json as _json
-        manifest_file = MAESTRO_ROOT / "cue-sheets" / "do-menu.json"
+        manifest_file = MAESTRO_ROOT / "playbook" / "do-menu.json"
         if manifest_file.is_file():
             manifest = _json.loads(manifest_file.read_text())
             for op in manifest.get("ops", []):
