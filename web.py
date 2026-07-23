@@ -66,7 +66,7 @@ CLEAN_CLAUDE_ENV = {k: v for k, v in os.environ.items() if k not in _CLAUDE_ENV_
 CLAUDE_CMD = [
     "claude", "-p",
     "--allowedTools",
-    "Bash(python3 tools/c2d2/cli.py:*)",
+    "Bash(python3 core/c2d2/cli.py:*)",
     "mcp__vault-hot__*",
     "mcp__vault-cold__*",
     "mcp__jeff__*",
@@ -74,12 +74,12 @@ CLAUDE_CMD = [
 ]
 
 # C2D2 (local Ollama) -- available as fallback when Claude subprocess fails
-_c2d2_path = MAESTRO_ROOT / "tools" / "c2d2"
+_c2d2_path = MAESTRO_ROOT / "core" / "c2d2"
 if str(_c2d2_path) not in sys.path:
     sys.path.insert(0, str(_c2d2_path))
 
 # Jeff bridge -- import mcp_proxy for direct tool calls
-_jeff_path = MAESTRO_ROOT / "tools" / "jeff"
+_jeff_path = MAESTRO_ROOT / "core" / "jeff"
 if str(_jeff_path) not in sys.path:
     sys.path.insert(0, str(_jeff_path))
 
@@ -332,7 +332,7 @@ def _call_c2d2(user_text):
 # JEFF TRIAGE -- consult the substrate registry, route C2D2-first
 # ============================================================
 
-_JEFF_CLI = os.path.join(MAESTRO_ROOT, "tools", "jeff", "jeff")
+_JEFF_CLI = os.path.join(MAESTRO_ROOT, "core", "jeff", "jeff")
 _triage_cmd_cache = None  # discovered once from Jeff's registry ([] = "none")
 
 
@@ -3423,7 +3423,7 @@ def get_upstream_handoff_context():
     available as the handoff_* tools. This in-process import reads the same
     flat-file substrate the verbs operate on. See upstream-handoff policy.
     """
-    handoff_lib = MAESTRO_ROOT / "tools" / "handoff"
+    handoff_lib = MAESTRO_ROOT / "core" / "handoff"
     if str(handoff_lib) not in sys.path:
         sys.path.insert(0, str(handoff_lib))
 
@@ -3967,7 +3967,7 @@ def serve_drop(filename):
         pass
 
     # Legacy fallback: old drops dir
-    legacy_dir = MAESTRO_ROOT / "tools" / "cue-vox" / "drops"
+    legacy_dir = MAESTRO_ROOT / "core" / "cue-vox" / "drops"
     fpath = legacy_dir / filename
     if fpath.exists():
         real_path = fpath.resolve()
@@ -3988,7 +3988,7 @@ def api_recognize():
     """
     import hashlib
     try:
-        vault_lib = MAESTRO_ROOT / "tools" / "vault-template" / "app" / "lib"
+        vault_lib = MAESTRO_ROOT / "core" / "vault-template" / "app" / "lib"
         if str(vault_lib) not in sys.path:
             sys.path.insert(0, str(vault_lib))
         from fts import get_connection, ensure_schema, ensure_registry_schema
@@ -4217,7 +4217,7 @@ def api_drop_register():
         ocr_result = ""
         colors_result = ""
         try:
-            c2d2_path = MAESTRO_ROOT / "tools" / "c2d2"
+            c2d2_path = MAESTRO_ROOT / "core" / "c2d2"
             if str(c2d2_path) not in sys.path:
                 sys.path.insert(0, str(c2d2_path))
             from ollama_client import describe_image
@@ -4388,7 +4388,7 @@ def api_image_inspect():
         return jsonify({"error": "no image found at path or in payload"}), 400
 
     try:
-        c2d2_path = MAESTRO_ROOT / "tools" / "c2d2"
+        c2d2_path = MAESTRO_ROOT / "core" / "c2d2"
         if str(c2d2_path) not in sys.path:
             sys.path.insert(0, str(c2d2_path))
         from ollama_client import describe_image
@@ -4429,7 +4429,7 @@ def api_describe():
     Returns JSON: { "result": "description text" }
     """
     try:
-        c2d2_path = MAESTRO_ROOT / "tools" / "c2d2"
+        c2d2_path = MAESTRO_ROOT / "core" / "c2d2"
         if str(c2d2_path) not in sys.path:
             sys.path.insert(0, str(c2d2_path))
         from ollama_client import describe_images
@@ -4521,7 +4521,7 @@ def _generate_story(images, context=""):
     Returns dict: { title, intro, slides: [{narrative}], closing }
     """
     try:
-        c2d2_path = MAESTRO_ROOT / "tools" / "c2d2"
+        c2d2_path = MAESTRO_ROOT / "core" / "c2d2"
         if str(c2d2_path) not in sys.path:
             sys.path.insert(0, str(c2d2_path))
         from ollama_client import generate
@@ -6711,7 +6711,7 @@ def handle_cue_dispatch(data):
         }
 
         # Try to dispatch via cue-dispatcher
-        dispatcher_path = MAESTRO_ROOT / "tools" / "cue-dispatcher" / "dispatch.py"
+        dispatcher_path = MAESTRO_ROOT / "core" / "cue-dispatcher" / "dispatch.py"
         if dispatcher_path.exists():
             import tempfile
             with tempfile.NamedTemporaryFile(mode="w", suffix=".json", delete=False) as f:
@@ -6795,7 +6795,7 @@ def handle_cuesheet_execute(data):
             sys.path.insert(0, str(executor_path))
             from cuesheet_executor import CuesheetExecutor
 
-        dispatcher_path = MAESTRO_ROOT / "tools" / "cue-dispatcher" / "dispatch.py"
+        dispatcher_path = MAESTRO_ROOT / "core" / "cue-dispatcher" / "dispatch.py"
         executor = CuesheetExecutor(
             maestro_root=MAESTRO_ROOT,
             dispatcher_path=str(dispatcher_path) if dispatcher_path.exists() else None,
@@ -7061,7 +7061,7 @@ def handle_cuesheet_list(data=None):
                 sheets.append(entry)
 
         # --- 2. Active vault volumes (via Jeff) ---
-        jeff_dir = MAESTRO_ROOT / "tools" / "jeff"
+        jeff_dir = MAESTRO_ROOT / "core" / "jeff"
         active_file = jeff_dir / ".jeff-volumes-active.json"
         volumes_file = jeff_dir / "volumes.json"
         if active_file.is_file() and volumes_file.is_file():
@@ -7208,7 +7208,7 @@ def handle_cuesheet_launch(data):
 
         # Ensure pull data freshness before launch (collect-only, no webhooks)
         if pulls:
-            ensure_script = MAESTRO_ROOT / "tools" / "zapier" / "pull" / "scripts" / "_lib.sh"
+            ensure_script = MAESTRO_ROOT / "core" / "zapier" / "pull" / "scripts" / "_lib.sh"
             for pull_source in pulls:
                 try:
                     result = subprocess.run(
@@ -7329,7 +7329,7 @@ def handle_cuesheet_launch(data):
 
         # 5. Refresh context
         try:
-            refresh_script = MAESTRO_ROOT / "tools" / "refresh-memory.py"
+            refresh_script = MAESTRO_ROOT / "core" / "refresh-memory.py"
             if refresh_script.exists():
                 subprocess.run(["python3", str(refresh_script)], capture_output=True, timeout=15)
         except Exception:
