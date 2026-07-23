@@ -7640,7 +7640,7 @@ def handle_connect():
 
 
 @socketio.on('disconnect')
-def handle_disconnect():
+def handle_disconnect(reason=None):
     """Track client disconnection"""
     ensure_log_dir()
     timestamp = datetime.now()
