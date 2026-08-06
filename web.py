@@ -329,6 +329,82 @@ def _call_c2d2(user_text):
 
 
 # ============================================================
+# @c2d2 EVAL BENCH -- leading-sigil route straight to C2D2
+# ============================================================
+#
+# The pinned eval-bench spec: a chassis post whose lines begin `@c2d2` bypasses
+# the whole cue-vox conversational layer (no flux, no engagement, no Claude) and
+# runs each line as a SEPARATE query through C2D2's live ask pipeline, in
+# sequence. The raw answer is echoed verbatim WITH the substrate verb + freshness
+# tier it hit, and every run mints a floored c2d2-eval token; the batch threads
+# into one constellation. This is the steering wheel on the trace-first C2D2 work
+# -- test a prompt (or a series) against the real substrate and crystallize the
+# good compositions. The engine is `c2d2 eval` (core/c2d2/cli.py).
+
+_C2D2_SIGIL = "@c2d2"
+_C2D2_CLI = os.path.join(MAESTRO_ROOT, "core", "c2d2", "cli.py")
+
+
+def _c2d2_bench_lines(text):
+    """Extract the @c2d2 query lines from a post, sigil stripped, order preserved.
+    A post is a bench iff at least one line starts with the sigil (case-insensitive).
+    Non-@c2d2 lines are ignored -- the sigil is the whole opt-in."""
+    lines = []
+    for raw in (text or "").splitlines():
+        stripped = raw.strip()
+        if stripped.lower().startswith(_C2D2_SIGIL):
+            q = stripped[len(_C2D2_SIGIL):].strip()
+            if q:
+                lines.append(q)
+    return lines
+
+
+def _run_c2d2_bench(text):
+    """Run the @c2d2 batch and emit the echo. Owns its own emits (bypasses the
+    normal turn path entirely). Each line runs in sequence through `c2d2 eval`;
+    the constellation id threads the batch's eval tokens into one series."""
+    import time
+    queries = _c2d2_bench_lines(text)
+    cid = "evalbatch_%d" % int(time.time())
+    emit('state_change', {'state': 'thinking'})
+
+    blocks = ["C2D2 EVAL -- %d quer%s * constellation %s" % (
+        len(queries), "y" if len(queries) == 1 else "ies", cid)]
+    for n, q in enumerate(queries, 1):
+        rec = None
+        try:
+            r = subprocess.run(
+                ["python3", _C2D2_CLI, "eval", q, "--constellation", cid],
+                cwd=MAESTRO_ROOT, capture_output=True, text=True, timeout=120)
+            out = (r.stdout or "").strip().splitlines()
+            if out:
+                rec = json.loads(out[-1])
+        except Exception as exc:
+            blocks.append("\n@c2d2 %s\n-> [bench error: %s]" % (q, exc))
+            continue
+        if not rec:
+            blocks.append("\n@c2d2 %s\n-> [no result]" % q)
+            continue
+        age = rec.get("freshness_age")
+        fa = (" %sh" % age) if age is not None else ""
+        blocks.append("\n@c2d2 %s\n-> verb: %s * freshness: %s%s\n\n%s" % (
+            q, rec.get("verb", "?"), rec.get("freshness_tier", "?"), fa,
+            rec.get("answer", "").strip()))
+        blocks.append("-" * 40)
+
+    echo = "\n".join(blocks)
+    # Emit as a visible response, but do NOT read the raw dump aloud -- a bench is
+    # a readout, not a spoken turn. A one-line spoken confirmation keeps TTS sane.
+    spoken = "C2D2 eval complete. %d quer%s in constellation." % (
+        len(queries), "y" if len(queries) == 1 else "ies")
+    log_conversation(text, echo)
+    emit("response", {"text": echo, "tts_chunks": [spoken]})
+    emit('state_change', {'state': 'speaking'})
+    speak_chunked(spoken)
+    emit('state_change', {'state': 'idle'})
+
+
+# ============================================================
 # JEFF TRIAGE -- consult the substrate registry, route C2D2-first
 # ============================================================
 
@@ -6558,6 +6634,12 @@ def handle_text_message(data):
         text = data['text'].strip()
 
         if not text:
+            return
+
+        # @c2d2 sigil -> the eval bench (bypasses the whole conversational layer).
+        # Checked before anything else so a bench post never touches flux/Claude.
+        if _c2d2_bench_lines(text):
+            _run_c2d2_bench(text)
             return
 
         # Brevity dial (0 = brief/deliverable, 1 = reflective); None on older
