@@ -22,6 +22,10 @@ let mediaRecorder;
 let audioChunks = [];
 let isRecording = false;
 let currentState = 'idle';
+// The REAL pipeline stage, pushed by the backend (C2D2's own _stage events).
+// When set, the status line reflects actual state instead of guessing a phase
+// from elapsed time. Cleared on every state change.
+let currentStage = null;
 let hasPendingInput = false;
 let lastMessageHash = null; // Prevent duplicate messages
 let stateTimerInterval = null;
@@ -521,6 +525,17 @@ socket.on('state_change', (data) => {
   setState(data.state);
 });
 
+// Real pipeline stage from the backend (C2D2's _stage events, forwarded live).
+// This is the reflective channel: what the substrate is actually doing, not a
+// time-guessed phase. Updates the status line immediately.
+socket.on('stage_update', (data) => {
+  if (!data || typeof data.stage === 'undefined') return;
+  // Empty stage clears back to honest bare "thinking" (e.g. escalating from
+  // C2D2 to the Computer, whose internals we can't see).
+  currentStage = data.stage || null;
+  updateStatusTimer();
+});
+
 // ============================================
 // FOLLOW-UP STATE MACHINE
 // General-purpose: gather context → propose → YES/NO gate → commit or loop
@@ -830,27 +845,10 @@ function formatElapsed(ms) {
   return hrs + "h " + remMins + "m";
 }
 
-var thinkingPhases = [
-  "thinking",
-  "parsing",
-  "reading",
-  "searching",
-  "running tools",
-  "composing",
-  "reviewing"
-];
+// Gate flag for the working-sound ramp (repurposed from the old time-guessed
+// phase machine, which fabricated "searching..."/"composing..." from the clock
+// -- removed in favor of real backend stages pushed via stage_update).
 var lastThinkingPhase = "thinking";
-
-function getThinkingPhase(elapsed) {
-  var secs = Math.floor(elapsed / 1000);
-  if (secs < 2) return "thinking";
-  if (secs < 5) return "parsing";
-  if (secs < 10) return "reading";
-  if (secs < 18) return "searching";
-  if (secs < 30) return "running tools";
-  if (secs < 50) return "composing";
-  return "reviewing";
-}
 
 function updateStatusTimer() {
   var label;
@@ -860,13 +858,16 @@ function updateStatusTimer() {
     label = currentState + " " + formatElapsed(remaining);
   } else if (currentState === "thinking") {
     var elapsed = Date.now() - stateStartTime;
-    var phase = getThinkingPhase(elapsed);
-    if (phase !== "thinking" && lastThinkingPhase === "thinking") {
-      console.log("[SFX] starting working sound at phase:", phase);
+    // The working sound still ramps on elapsed -- it's ambience, not a claim
+    // about what the substrate is doing, so time is a fine trigger for it.
+    if (elapsed > 2000 && lastThinkingPhase === "thinking") {
+      console.log("[SFX] starting working sound");
       playSound("working");
+      lastThinkingPhase = "working";
     }
-    lastThinkingPhase = phase;
-    label = "thinking " + formatElapsed(elapsed) + (phase !== "thinking" ? " (" + phase + "...)" : "");
+    // Reflective label: show the real pushed stage when we have one, else an
+    // honest bare "thinking" -- never a phase fabricated from the clock.
+    label = (currentStage || "thinking") + " " + formatElapsed(elapsed);
   } else {
     var elapsed = Date.now() - stateStartTime;
     label = currentState + " " + formatElapsed(elapsed);
@@ -878,6 +879,7 @@ function updateStatusTimer() {
 function setState(state) {
   currentState = state;
   stateStartTime = Date.now();
+  currentStage = null;  // real stage is per-turn; a new state starts fresh
 
   // Sound effects per state
   stopSound("thinking");

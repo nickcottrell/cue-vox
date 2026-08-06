@@ -299,6 +299,7 @@ def _build_c2d2_prompt(user_text, prefetched_data=None, prefetched_desc=None):
 def _call_c2d2(user_text):
     """Full C2D2 pipeline: tier 0 prefetch -> generate -> tier 1 tool round -> final answer."""
     from ollama_client import generate
+    _emit_stage("C2D2 composing")  # honest: the local model is now generating
 
     # Tier 0: check for hardcoded patterns and prefetch data
     prefetched, desc = _tier0_match(user_text)
@@ -359,26 +360,76 @@ def _c2d2_bench_lines(text):
     return lines
 
 
+def _emit_stage(label):
+    """Push a REAL pipeline stage to the UI's reflective status line. Broadcast
+    (socketio.emit, not emit) so it also works from the background stderr-reader
+    thread. This is the reflective channel: C2D2's own _stage events, forwarded
+    verbatim -- the UI shows what the substrate is actually doing, never a phase
+    guessed from the clock."""
+    try:
+        socketio.emit('stage_update', {'stage': label})
+    except Exception:
+        pass
+
+
+def _c2d2_eval_streamed(q, cid, n, total):
+    """Run one `c2d2 eval` and forward its live stage stream to the UI.
+
+    C2D2 emits its real stages (classify -> route.verb -> composing) on stderr,
+    \\x1e-tagged, when C2D2_STAGE_STREAM is set. A daemon thread pumps those to
+    _emit_stage while the main thread collects the JSON record on stdout -- the
+    same events that drive the TUI spinner, so both surfaces read one truth.
+    Returns the parsed record dict, or None."""
+    import threading
+    env = dict(os.environ, C2D2_STAGE_STREAM="1")
+    proc = subprocess.Popen(
+        ["python3", _C2D2_CLI, "eval", q, "--constellation", cid],
+        cwd=MAESTRO_ROOT, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+        text=True, env=env)
+
+    def _pump():
+        for line in proc.stderr:
+            if line.startswith("\x1e"):
+                stage = line[1:].strip()
+                if stage:
+                    _emit_stage("%d/%d %s" % (n, total, stage))
+    t = threading.Thread(target=_pump, daemon=True)
+    t.start()
+    try:
+        out = proc.stdout.read()
+        proc.wait(timeout=150)
+    except Exception:
+        proc.kill()
+        return None
+    finally:
+        t.join(timeout=1)
+    lines = (out or "").strip().splitlines()
+    if not lines:
+        return None
+    try:
+        return json.loads(lines[-1])
+    except Exception:
+        return None
+
+
 def _run_c2d2_bench(text):
     """Run the @c2d2 batch and emit the echo. Owns its own emits (bypasses the
     normal turn path entirely). Each line runs in sequence through `c2d2 eval`;
-    the constellation id threads the batch's eval tokens into one series."""
+    the constellation id threads the batch's eval tokens into one series. Real
+    per-line stages stream to the UI as the batch runs."""
     import time
     queries = _c2d2_bench_lines(text)
+    total = len(queries)
     cid = "evalbatch_%d" % int(time.time())
     emit('state_change', {'state': 'thinking'})
 
     blocks = ["C2D2 EVAL -- %d quer%s * constellation %s" % (
-        len(queries), "y" if len(queries) == 1 else "ies", cid)]
+        total, "y" if total == 1 else "ies", cid)]
     for n, q in enumerate(queries, 1):
+        _emit_stage("%d/%d dispatching" % (n, total))
         rec = None
         try:
-            r = subprocess.run(
-                ["python3", _C2D2_CLI, "eval", q, "--constellation", cid],
-                cwd=MAESTRO_ROOT, capture_output=True, text=True, timeout=120)
-            out = (r.stdout or "").strip().splitlines()
-            if out:
-                rec = json.loads(out[-1])
+            rec = _c2d2_eval_streamed(q, cid, n, total)
         except Exception as exc:
             blocks.append("\n@c2d2 %s\n-> [bench error: %s]" % (q, exc))
             continue
