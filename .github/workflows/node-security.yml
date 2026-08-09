@@ -1,0 +1,23 @@
+name: node-security
+
+# Runs the node's security verb -- the SAME command the operator runs locally
+# (./node.sh security). Nothing here is CI-only.
+#
+# NOTE: this node still has open red-team findings, so this check reports RED
+# until they are fixed. It is intentionally NOT a required/blocking check yet;
+# the red X is the honest posture (see maestro node-standard "honest
+# degradation"). It flips to green as each gate's finding is remediated.
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  security:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+      - name: node security verb
+        run: ./node.sh security

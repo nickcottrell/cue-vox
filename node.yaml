@@ -1,0 +1,8 @@
+name:        cue-vox
+kind:        service
+bucket:      private-brain
+path:        .
+summary:     voice interface for Claude Code -- Socket.IO + Whisper/TTS
+verbs:
+  security: .node-checks/run.sh
+# entrypoint/endpoints: TODO -- fill when wiring the test/status/deploy verbs
