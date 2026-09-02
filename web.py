@@ -6121,18 +6121,23 @@ def _try_fast_path_note_add(answer, recent_logs):
     return "Note landed on %s — id %s." % (display, note_id)
 
 
-def _try_pin_for_ninja_direction(answer, recent_logs):
-    """Fast-path for 'pin for ninja' YES_NOs: if the last assistant turn carried
-    a [PIN_NINJA: {...}] sibling block and the user clicked Yes, deposit the
-    ratified direction southbound on the handoff chassis (intent='direction')
-    and return the templated confirmation. Returns None to fall through to the
-    normal LLM path -- on No, missing block, malformed JSON, or deposit failure.
+def _try_pin_for_ninja_direction(final_value, recent_logs):
+    """Fast-path for 'pin for ninja': if the last assistant turn carried a
+    [PIN_NINJA: {...}] sibling block and the user ratified it (via ANY input
+    shape -- Yes, a dialed slider, a typed value, a chosen option), deposit the
+    direction southbound on the handoff chassis (intent='direction') carrying the
+    RATIFIED value, and return the templated confirmation. Returns None to fall
+    through to the normal LLM path -- on explicit No, missing block, malformed
+    JSON, or deposit failure.
 
-    Per ninja-direction-channel: cue-vox AUTHORED the direction and proposed its
-    value (the PIN_NINJA block); the 'Yes' is the user's ratification, not the
-    content. cue-vox does not crystallize its own direction notes.
+    Per ninja-direction-channel: cue-vox AUTHORED the direction and PROPOSED the
+    shape+value (the PIN_NINJA block); final_value is the user's ratification --
+    it is the content the user dialed to, not the direction itself.
     """
-    if answer != "Yes" or not recent_logs:
+    if not recent_logs:
+        return None
+    # Explicit rejection of a yes/no direction deposits nothing.
+    if isinstance(final_value, str) and final_value.strip() == "No":
         return None
 
     last_assistant_msg = recent_logs[-1].get('assistant', '') or ''
@@ -6147,11 +6152,19 @@ def _try_pin_for_ninja_direction(answer, recent_logs):
 
     headline = (data.get('headline') or '').strip()
     body = (data.get('body') or '').strip()
+    ratify = data.get('ratify') if isinstance(data.get('ratify'), dict) else {}
     related_files = data.get('related_files') or None
     related_tokens = data.get('related_tokens') or None
     if not headline or not body:
         print("[PIN-NINJA] missing headline/body, falling through")
         return None
+
+    # Record the ratified shape + value on the direction (the dial result). For a
+    # plain "Yes" the proposed value stands; otherwise the user's dial overrides.
+    shape = ratify.get("type") or "yes_no"
+    ratified = final_value if not (isinstance(final_value, str) and final_value == "Yes") \
+        else ratify.get("value", "Yes")
+    body_with_value = "%s\n[ratified: %s = %s]" % (body, shape, ratified)
 
     handoff_lib = MAESTRO_ROOT / "core" / "handoff"
     if str(handoff_lib) not in sys.path:
@@ -6161,7 +6174,7 @@ def _try_pin_for_ninja_direction(answer, recent_logs):
         result = handoff_core.leave(
             intent="direction",
             headline=headline,
-            body=body,
+            body=body_with_value,
             related_files=related_files,
             related_tokens=related_tokens,
         )
@@ -6170,8 +6183,8 @@ def _try_pin_for_ninja_direction(answer, recent_logs):
         return None
 
     slug = result.get('slug', '?')
-    print("[PIN-NINJA] direction deposited for ninja -- slug %s" % slug)
-    return "Pinned for ninja — slug %s. %s" % (slug, headline)
+    print("[PIN-NINJA] direction deposited for ninja -- slug %s (%s=%s)" % (slug, shape, ratified))
+    return "Direction for ninja — slug %s. %s" % (slug, headline)
 
 
 @socketio.on('button_response')
@@ -6617,6 +6630,15 @@ def handle_input_response(data):
             user_message = input_data
 
         emit('state_change', {'state': 'thinking'})
+
+        # Pin-for-ninja: a slider/text/choice submission ratifies a direction too
+        # (not just Yes/No). If the last turn carried a [PIN_NINJA: ...] block,
+        # deposit the direction with the dialed value and skip the LLM round-trip.
+        pin_recent_logs = load_recent_logs(limit=5)
+        pin_response = _try_pin_for_ninja_direction(str(user_message), pin_recent_logs)
+        if pin_response is not None:
+            _respond_and_speak(str(user_message), pin_response)
+            return
 
         # Count input words
         input_word_count = len(str(user_message).split())
