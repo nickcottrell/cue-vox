@@ -1068,8 +1068,8 @@ def sanitize_for_tts(text):
     text, _ = extract_citations(text)
 
     # Strip visual-only tags (rendered as widgets, never spoken).
-    # PIN_NOTE is a structured handoff to the note-add fast-path -- never spoken.
-    text = _strip_bracket_balanced_tags(text, ("GALLERY", "APPROVAL", "DOCUMENT", "CUE", "PIN_NOTE"))
+    # PIN_NOTE / PIN_NINJA are structured handoffs to fast-paths -- never spoken.
+    text = _strip_bracket_balanced_tags(text, ("GALLERY", "APPROVAL", "DOCUMENT", "CUE", "PIN_NOTE", "PIN_NINJA"))
 
 
     # Check if entire message is a YES_NO question - extract the question text
@@ -4587,7 +4587,7 @@ def _parse_case_study_segments(text):
     {"type": "gallery", "data": {...}}.
     Strips non-GALLERY structured tags from narrative text.
     """
-    tag_re = re.compile(r"\[(YES_NO|INPUT|APPROVAL|DOCUMENT|CUE|GALLERY|CITATIONS|PIN_NOTE):\s*")
+    tag_re = re.compile(r"\[(YES_NO|INPUT|APPROVAL|DOCUMENT|CUE|GALLERY|CITATIONS|PIN_NOTE|PIN_NINJA):\s*")
     segments = []
     last_end = 0
 
@@ -6121,6 +6121,59 @@ def _try_fast_path_note_add(answer, recent_logs):
     return "Note landed on %s — id %s." % (display, note_id)
 
 
+def _try_pin_for_ninja_direction(answer, recent_logs):
+    """Fast-path for 'pin for ninja' YES_NOs: if the last assistant turn carried
+    a [PIN_NINJA: {...}] sibling block and the user clicked Yes, deposit the
+    ratified direction southbound on the handoff chassis (intent='direction')
+    and return the templated confirmation. Returns None to fall through to the
+    normal LLM path -- on No, missing block, malformed JSON, or deposit failure.
+
+    Per ninja-direction-channel: cue-vox AUTHORED the direction and proposed its
+    value (the PIN_NINJA block); the 'Yes' is the user's ratification, not the
+    content. cue-vox does not crystallize its own direction notes.
+    """
+    if answer != "Yes" or not recent_logs:
+        return None
+
+    last_assistant_msg = recent_logs[-1].get('assistant', '') or ''
+    m = re.search(r'\[PIN_NINJA:\s*(\{[\s\S]+?\})\s*\]', last_assistant_msg)
+    if not m:
+        return None
+    try:
+        data = json.loads(m.group(1))
+    except (json.JSONDecodeError, ValueError) as exc:
+        print("[PIN-NINJA] block found but JSON parse failed: %s" % exc)
+        return None
+
+    headline = (data.get('headline') or '').strip()
+    body = (data.get('body') or '').strip()
+    related_files = data.get('related_files') or None
+    related_tokens = data.get('related_tokens') or None
+    if not headline or not body:
+        print("[PIN-NINJA] missing headline/body, falling through")
+        return None
+
+    handoff_lib = MAESTRO_ROOT / "core" / "handoff"
+    if str(handoff_lib) not in sys.path:
+        sys.path.insert(0, str(handoff_lib))
+    try:
+        import handoff as handoff_core
+        result = handoff_core.leave(
+            intent="direction",
+            headline=headline,
+            body=body,
+            related_files=related_files,
+            related_tokens=related_tokens,
+        )
+    except Exception as exc:
+        print("[PIN-NINJA] handoff deposit failed (%s) -- falling through" % exc)
+        return None
+
+    slug = result.get('slug', '?')
+    print("[PIN-NINJA] direction deposited for ninja -- slug %s" % slug)
+    return "Pinned for ninja — slug %s. %s" % (slug, headline)
+
+
 @socketio.on('button_response')
 def handle_button_response(data):
     """Handle yes/no button click - treat as voice input"""
@@ -6196,17 +6249,25 @@ CRITICAL: If the user responds "No" to a yes/no question, accept their answer as
 
 IMPORTANT: When speaking, say "Yes OR No" not "yes-no" or "yes slash no"."""
 
-        # Fast-path: if the previous assistant turn carried a [PIN_NOTE: ...]
-        # block and the user said Yes, write the note directly and skip the
-        # Claude subprocess entirely. Drops note-add latency from seconds to
-        # ~HTTP round-trip. Falls through to the LLM path on any failure.
-        fast_response = _try_fast_path_note_add(answer, recent_logs)
-        if fast_response is not None:
-            response = fast_response
+        # Fast-path 1: a ratified [PIN_NINJA: ...] direction deposits southbound
+        # on the handoff chassis and skips the LLM (per ninja-direction-channel).
+        # Checked first -- a PIN_NINJA block is unambiguous.
+        pin_response = _try_pin_for_ninja_direction(answer, recent_logs)
+        if pin_response is not None:
+            response = pin_response
             used_fallback = False
         else:
-            # Send to Claude Code with C2D2 fallback
-            response, used_fallback = _call_claude_or_fallback(enhanced_text, raw_user_text=answer)
+            # Fast-path 2: if the previous assistant turn carried a [PIN_NOTE: ...]
+            # block and the user said Yes, write the note directly and skip the
+            # Claude subprocess entirely. Drops note-add latency from seconds to
+            # ~HTTP round-trip. Falls through to the LLM path on any failure.
+            fast_response = _try_fast_path_note_add(answer, recent_logs)
+            if fast_response is not None:
+                response = fast_response
+                used_fallback = False
+            else:
+                # Send to Claude Code with C2D2 fallback
+                response, used_fallback = _call_claude_or_fallback(enhanced_text, raw_user_text=answer)
 
         if response is None:
             print("[VOID] Claude response discarded (button response was voided)")
