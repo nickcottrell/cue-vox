@@ -13,6 +13,9 @@ venv/
 ENV/
 env/
 
+# Neural TTS voice models (large; fetched via fetch-voice.sh, never committed)
+models/
+
 # Audio files (generated during testing)
 *.wav
 *.mp3

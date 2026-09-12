@@ -723,9 +723,25 @@ except ImportError:
     _pyttsx3_available = False
     print("[TTS] pyttsx3 not installed -- no fallback TTS available")
 
+# Primary neural voice: local Kokoro bf_isabella blend (see kokoro_voice.py).
+# If it or its model is unavailable, we fall back to `say` then pyttsx3, so the
+# voice never hard-fails.
+try:
+    import kokoro_voice
+    _kokoro_available = True
+except Exception as _kokoro_err:
+    _kokoro_available = False
+    print("[TTS] kokoro_voice import failed: %s -- using say" % _kokoro_err)
+
 
 def _say_with_fallback(text, timeout=30):
-    """Run macOS say command. If it produces no audible output, retry via pyttsx3."""
+    """Speak text. Prefer Kokoro (Isabella); fall back to macOS say, then pyttsx3."""
+    if _kokoro_available:
+        try:
+            if kokoro_voice.speak(text):
+                return
+        except Exception as e:
+            print("[TTS] kokoro speak error: %s -- falling back to say" % e)
     try:
         start = time.time()
         cmd = ["say", "-v", TTS_VOICE, text] if TTS_VOICE else ["say", text]
@@ -798,8 +814,9 @@ def flush_speech_queue():
     """Kill current speech and drain the queue. Call this instead of killall say."""
     global tts_interrupted
     tts_interrupted = True
-    # Kill any running say process
+    # Kill any running say process and any Kokoro playback (afplay)
     subprocess.run(["killall", "say"], stderr=subprocess.DEVNULL)
+    subprocess.run(["killall", "afplay"], stderr=subprocess.DEVNULL)
     # Drain pending chunks
     while not _speech_queue.empty():
         try:

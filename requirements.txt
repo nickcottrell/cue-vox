@@ -2,3 +2,4 @@ flask
 flask-socketio
 openai-whisper
 pyttsx3
+sherpa-onnx

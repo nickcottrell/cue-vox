@@ -319,8 +319,14 @@ document.addEventListener('click', (e) => {
 
 async function initAudio() {
   try {
-    const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+    // echoCancellation keeps the mic from hearing our own TTS -- essential for
+    // barge-in in live mode. noiseSuppression/autoGain steady the VAD.
+    const stream = await navigator.mediaDevices.getUserMedia({
+      audio: { echoCancellation: true, noiseSuppression: true, autoGainControl: true },
+    });
+    micStream = stream;
     mediaRecorder = new MediaRecorder(stream);
+    setupVadAnalyser(stream);
 
     mediaRecorder.ondataavailable = (event) => {
       audioChunks.push(event.data);
@@ -391,25 +397,29 @@ document.addEventListener('keydown', (e) => {
       return;
     }
 
-    if (!mediaRecorder) {
-      console.error('❌ MediaRecorder not initialized');
-      return;
-    }
-
-    console.log('🎙️ Starting recording...');
-    isRecording = true;
-    setState('recording');
-    mediaRecorder.start(1000);
-
-    // 30-second recording limit
-    recordingTimeout = setTimeout(function() {
-      if (isRecording) {
-        console.log('⏱️ 30s recording limit reached');
-        stopRecording();
-      }
-    }, RECORDING_LIMIT_MS);
+    startRecording();
   }
 });
+
+function startRecording() {
+  if (isRecording) return;
+  if (!mediaRecorder) {
+    console.error('❌ MediaRecorder not initialized');
+    return;
+  }
+  console.log('🎙️ Starting recording...');
+  isRecording = true;
+  setState('recording');
+  mediaRecorder.start(1000);
+
+  // 30-second recording limit
+  recordingTimeout = setTimeout(function() {
+    if (isRecording) {
+      console.log('⏱️ 30s recording limit reached');
+      stopRecording();
+    }
+  }, RECORDING_LIMIT_MS);
+}
 
 function stopRecording() {
   if (!isRecording) return;
@@ -445,6 +455,106 @@ document.addEventListener('keyup', (e) => {
 window.addEventListener('blur', () => {
   spaceHeld = false;
   if (isRecording) stopRecording();
+});
+
+// ============================================
+// LIVE MODE -- continuous hands-free turns (VAD)
+// Additive: push-to-talk (SPACE) still works exactly as before. This just adds a
+// voice-activity detector that drives the SAME startRecording/stopRecording path
+// so you can talk without holding a key. Toggle with the L key.
+// Dial it live from the console via window.VAD.
+// ============================================
+var micStream = null;
+var liveMode = false;
+var _audioCtx = null, _vadAnalyser = null, _vadBuf = null, _vadTimer = null;
+var _vadState = 'idle';           // 'idle' | 'capturing'
+var _voiceOnset = 0, _lastVoice = 0;
+
+// The tunable knobs -- the "realtime language" made local.
+window.VAD = {
+  threshold: 0.014,   // RMS above this counts as speech (raise it in a noisy room)
+  onsetMs: 150,       // sustained speech required before a turn starts (kills blips)
+  silenceMs: 900,     // trailing silence that ends a turn -- the master feel knob
+  pollMs: 50,
+};
+
+function setupVadAnalyser(stream) {
+  try {
+    _audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+    var src = _audioCtx.createMediaStreamSource(stream);
+    _vadAnalyser = _audioCtx.createAnalyser();
+    _vadAnalyser.fftSize = 1024;
+    _vadBuf = new Float32Array(_vadAnalyser.fftSize);
+    src.connect(_vadAnalyser);
+  } catch (e) {
+    console.error('VAD analyser setup failed:', e);
+  }
+}
+
+function _vadRms() {
+  if (!_vadAnalyser) return 0;
+  _vadAnalyser.getFloatTimeDomainData(_vadBuf);
+  var s = 0;
+  for (var i = 0; i < _vadBuf.length; i++) s += _vadBuf[i] * _vadBuf[i];
+  return Math.sqrt(s / _vadBuf.length);
+}
+
+function _vadTick() {
+  if (!liveMode) return;
+  var now = performance.now();
+  var voiced = _vadRms() > window.VAD.threshold;
+
+  // Barge-in: talking over the assistant cuts it off, then we capture your turn.
+  if (voiced && currentState === 'speaking') {
+    stopAllSounds();
+    socket.emit('interrupt');
+  }
+
+  if (voiced) _lastVoice = now;
+
+  if (_vadState === 'idle') {
+    if (!voiced) { _voiceOnset = 0; return; }
+    if (!micEnabled || hasPendingInput || galleryLightboxOpen) return;
+    if (currentState === 'transcribing') return;   // still processing the last turn
+    if (!_voiceOnset) _voiceOnset = now;
+    if (now - _voiceOnset >= window.VAD.onsetMs) {
+      _vadState = 'capturing';
+      startRecording();
+    }
+  } else { // capturing -- end the turn after enough trailing silence
+    if (now - _lastVoice >= window.VAD.silenceMs) {
+      _vadState = 'idle';
+      _voiceOnset = 0;
+      if (isRecording) stopRecording();   // submits via mediaRecorder.onstop
+    }
+  }
+}
+
+function toggleLiveMode() {
+  liveMode = !liveMode;
+  if (liveMode) {
+    if (_audioCtx && _audioCtx.state === 'suspended') _audioCtx.resume();
+    _vadState = 'idle'; _voiceOnset = 0; _lastVoice = 0;
+    if (!_vadTimer) _vadTimer = setInterval(_vadTick, window.VAD.pollMs);
+    document.body.setAttribute('data-live', '');
+    console.log('🟢 LIVE MODE on -- just talk, no spacebar. Press L to exit.');
+    if (typeof addSystemMessage === 'function') addSystemMessage('Live mode on. Just talk -- no spacebar needed.');
+  } else {
+    if (_vadTimer) { clearInterval(_vadTimer); _vadTimer = null; }
+    if (isRecording) stopRecording();
+    _vadState = 'idle';
+    document.body.removeAttribute('data-live');
+    console.log('⚪ LIVE MODE off -- back to push-to-talk.');
+    if (typeof addSystemMessage === 'function') addSystemMessage('Live mode off. Hold SPACE to talk.');
+  }
+}
+
+// L toggles live mode (ignored while typing in a field).
+document.addEventListener('keydown', (e) => {
+  if (e.target === drawerTextInput || (e.target.matches && e.target.matches('textarea, input[type="text"]'))) return;
+  if (e.code === 'KeyL' && !e.metaKey && !e.ctrlKey && !e.altKey) {
+    toggleLiveMode();
+  }
 });
 
 // ============================================
