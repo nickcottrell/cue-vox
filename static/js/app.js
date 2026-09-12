@@ -337,7 +337,19 @@ async function initAudio() {
       const reader = new FileReader();
       reader.readAsDataURL(audioBlob);
       reader.onloadend = () => {
-        socket.emit('audio_data', { audio: reader.result, activeGallery: window.__activeGallery || "", brevity: currentBrevity(), aperture_hex: currentApertureHex() });
+        // Live mode forces MAX brevity (short conversational turns on the
+        // assistant side) regardless of the aperture slider, and flags the turn
+        // as live so the backend can treat it as informal spoken conversation.
+        socket.emit('audio_data', {
+          audio: reader.result,
+          activeGallery: window.__activeGallery || "",
+          // Live OR expressive forces max brevity: live wants snappy turns, and
+          // expressive (Chatterbox) is slow per sentence so a long reply grinds.
+          brevity: (liveMode || window.VOICE.expressive) ? 0 : currentBrevity(),
+          aperture_hex: (liveMode || window.VOICE.expressive) ? "" : currentApertureHex(),
+          live: !!liveMode,
+          voice: window.VOICE,
+        });
       };
       audioChunks = [];
     };
@@ -474,8 +486,21 @@ var _voiceOnset = 0, _lastVoice = 0;
 window.VAD = {
   threshold: 0.014,   // RMS above this counts as speech (raise it in a noisy room)
   onsetMs: 150,       // sustained speech required before a turn starts (kills blips)
-  silenceMs: 900,     // trailing silence that ends a turn -- the master feel knob
+  silenceMs: 1200,    // trailing silence that ends a turn. Higher = more patient
+                      // with mid-ramble pauses (fewer chopped turns); lower = snappier.
   pollMs: 50,
+};
+
+// Voice prosody knobs, sent with every turn. Tune live from the console.
+// speed = tempo, bright = vibrancy/presence (0 = neutral), gain = loudness.
+// expressive routes synthesis to Chatterbox (real emotional range, slower);
+// exaggeration is Chatterbox's feeling dial (0.3 calm .. 1.6 over the top).
+window.VOICE = {
+  speed: 1.0,        // 0.5 slow .. 2.0 fast   (Kokoro)
+  bright: 0.4,       // -1 duller .. 3 brighter (Kokoro)
+  gain: 1.0,         // 0.1 .. 3.0             (Kokoro)
+  expressive: false, // true = Chatterbox expressive mode
+  exaggeration: 1.4, // Chatterbox feeling dial: 0.3 calm .. ~2.0 wild
 };
 
 function setupVadAnalyser(stream) {
@@ -532,11 +557,13 @@ function _vadTick() {
 
 function toggleLiveMode() {
   liveMode = !liveMode;
+  var instructions = document.querySelector('.canvas__instructions');
   if (liveMode) {
     if (_audioCtx && _audioCtx.state === 'suspended') _audioCtx.resume();
     _vadState = 'idle'; _voiceOnset = 0; _lastVoice = 0;
     if (!_vadTimer) _vadTimer = setInterval(_vadTick, window.VAD.pollMs);
     document.body.setAttribute('data-live', '');
+    if (instructions) instructions.textContent = '🟢 LIVE MODE • just talk • press L to exit';
     console.log('🟢 LIVE MODE on -- just talk, no spacebar. Press L to exit.');
     if (typeof addSystemMessage === 'function') addSystemMessage('Live mode on. Just talk -- no spacebar needed.');
   } else {
@@ -544,6 +571,7 @@ function toggleLiveMode() {
     if (isRecording) stopRecording();
     _vadState = 'idle';
     document.body.removeAttribute('data-live');
+    if (instructions) instructions.textContent = 'Hold SPACE to talk • Release to process';
     console.log('⚪ LIVE MODE off -- back to push-to-talk.');
     if (typeof addSystemMessage === 'function') addSystemMessage('Live mode off. Hold SPACE to talk.');
   }
@@ -554,6 +582,15 @@ document.addEventListener('keydown', (e) => {
   if (e.target === drawerTextInput || (e.target.matches && e.target.matches('textarea, input[type="text"]'))) return;
   if (e.code === 'KeyL' && !e.metaKey && !e.ctrlKey && !e.altKey) {
     toggleLiveMode();
+  }
+  // E toggles expressive (Chatterbox) mode -- real feeling, a bit slower.
+  if (e.code === 'KeyE' && !e.metaKey && !e.ctrlKey && !e.altKey) {
+    window.VOICE.expressive = !window.VOICE.expressive;
+    var on = window.VOICE.expressive;
+    console.log(on ? '🎭 EXPRESSIVE mode on (Chatterbox)' : '⚪ expressive off (Kokoro)');
+    if (typeof addSystemMessage === 'function') {
+      addSystemMessage(on ? 'Expressive voice on (Chatterbox).' : 'Expressive voice off (Kokoro).');
+    }
   }
 });
 

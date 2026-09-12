@@ -19,12 +19,61 @@ import tempfile
 import threading
 import wave
 
+import numpy as np
+
 _DIR = os.path.dirname(os.path.abspath(__file__))
 MODEL_DIR = os.environ.get(
     "CUE_VOX_KOKORO_DIR", os.path.join(_DIR, "models", "kokoro-en-v0_19")
 )
 VOICE_SID = int(os.environ.get("CUE_VOX_VOICE_SID", "8"))  # bf_isabella
 SPEED = float(os.environ.get("CUE_VOX_VOICE_SPEED", "1.0"))
+# Synth threads. Measured sweet spot on a 12-core machine is 8 (RTF ~0.15 vs
+# ~0.36 at 2); beyond ~8 thread contention makes it slower again.
+THREADS = int(os.environ.get("CUE_VOX_VOICE_THREADS", "8"))
+
+# --- Prosody (the low-hanging, cheap, local knobs) ---
+# speed  = tempo (Kokoro-native)
+# bright = high-shelf lift; >0 more present/vibrant, <0 duller/softer
+# gain   = loudness multiplier
+# Set per turn via set_prosody() (the web layer forwards window.VOICE). Defaults
+# come from env so they can be pinned without code changes.
+_speed = SPEED
+_bright = float(os.environ.get("CUE_VOX_VOICE_BRIGHT", "0.0"))
+_gain = float(os.environ.get("CUE_VOX_VOICE_GAIN", "1.0"))
+
+
+def _clamp(v, lo, hi):
+    return max(lo, min(hi, v))
+
+
+def set_prosody(speed=None, bright=None, gain=None):
+    """Update the live prosody knobs. None leaves a knob unchanged. Clamped to sane ranges."""
+    global _speed, _bright, _gain
+    if speed is not None:
+        try:
+            _speed = _clamp(float(speed), 0.5, 2.0)
+        except (TypeError, ValueError):
+            pass
+    if bright is not None:
+        try:
+            _bright = _clamp(float(bright), -1.0, 3.0)
+        except (TypeError, ValueError):
+            pass
+    if gain is not None:
+        try:
+            _gain = _clamp(float(gain), 0.1, 3.0)
+        except (TypeError, ValueError):
+            pass
+
+
+def _brighten(x, k):
+    """High-shelf lift: add back the high-frequency detail (x minus a short moving average)."""
+    if not k:
+        return x
+    kernel = np.ones(7, dtype=np.float32) / 7.0
+    low = np.convolve(x, kernel, mode="same").astype(np.float32)
+    return x + k * (x - low)
+
 
 _tts = None
 _load_failed = False
@@ -56,7 +105,7 @@ def _get_tts():
                     kokoro=sherpa_onnx.OfflineTtsKokoroModelConfig(
                         model=model, voices=voices, tokens=tokens, data_dir=data_dir,
                     ),
-                    num_threads=2,
+                    num_threads=THREADS,
                 ),
             )
             _tts = sherpa_onnx.OfflineTts(cfg)
@@ -91,38 +140,56 @@ def _write_wav(path, samples, sample_rate):
             )
 
 
-def speak(text):
-    """Synthesize `text` as Isabella and play it (blocking). Return True on success.
+def synth_to_file(text):
+    """Synthesize `text` to a temp WAV and return its path (the caller deletes it).
 
-    Returns False on any problem so the caller can fall back to `say`. Playback is
-    a plain `afplay`, so `killall afplay` (see flush_speech_queue) interrupts it the
-    same way `killall say` interrupts the system voice.
+    Returns None if Kokoro is unavailable or synthesis fails, so callers can fall
+    back to `say`. This is the synth half of the pipeline: it does NOT play, which
+    lets a caller synthesize the next chunk while the current one is still playing.
     """
     text = (text or "").strip()
     if not text:
-        return True
+        return None
     tts = _get_tts()
     if tts is None:
-        return False
-    path = None
+        return None
     try:
-        audio = tts.generate(text, sid=VOICE_SID, speed=SPEED)
+        audio = tts.generate(text, sid=VOICE_SID, speed=_speed)
         if not audio.samples:
-            return False
+            return None
+        x = np.asarray(audio.samples, dtype=np.float32)
+        x = _brighten(x, _bright)
+        if _gain != 1.0:
+            x = x * _gain
+        x = np.clip(x, -1.0, 1.0)
         fd, path = tempfile.mkstemp(suffix=".wav", prefix="cuevox-tts-")
         os.close(fd)
-        _write_wav(path, audio.samples, audio.sample_rate)
+        _write_wav(path, x, audio.sample_rate)
+        return path
+    except Exception as e:
+        print("[TTS] Kokoro synth failed: %s -- using fallback" % e)
+        return None
+
+
+def speak(text):
+    """Synthesize `text` as Isabella and play it (blocking). Return True on success.
+
+    Playback is a plain `afplay`, so `killall afplay` (see flush_speech_queue)
+    interrupts it the same way `killall say` interrupts the system voice.
+    """
+    if not (text or "").strip():
+        return True
+    path = synth_to_file(text)
+    if not path:
+        return False
+    try:
         subprocess.run(["afplay", path], check=False)
         return True
-    except Exception as e:
-        print("[TTS] Kokoro speak failed: %s -- using fallback" % e)
-        return False
     finally:
-        if path:
-            try:
-                os.remove(path)
-            except OSError:
-                pass
+        try:
+            os.remove(path)
+        except OSError:
+            pass
 
 
 if __name__ == "__main__":

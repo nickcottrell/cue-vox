@@ -712,8 +712,11 @@ tts_interrupted = False
 # wrong, re-select Siri Voice 2 as the System Voice in the settings above.
 TTS_VOICE = ""
 
-# --- Speech queue: single consumer thread, FIFO, no overlaps ---
-_speech_queue = queue.Queue()
+# --- Speech pipeline: synth worker (text -> audio) feeds play worker (audio ->
+# speakers). Two stages so the next chunk synthesizes while the current one plays;
+# only the first chunk carries synth latency. FIFO, no overlaps. ---
+_speech_queue = queue.Queue()   # text chunks awaiting synthesis
+_play_queue = queue.Queue()     # synthesized items awaiting playback
 
 # Try to import pyttsx3 as fallback TTS engine
 try:
@@ -732,6 +735,20 @@ try:
 except Exception as _kokoro_err:
     _kokoro_available = False
     print("[TTS] kokoro_voice import failed: %s -- using say" % _kokoro_err)
+
+# Expressive voice mode: routes synthesis to the warm Chatterbox sidecar
+# (chatterbox_server.py) for real emotional range. Off by default (heavier/slower
+# than Kokoro); toggled per turn via window.VOICE.expressive. Falls back to Kokoro
+# then say if the sidecar is down. See chatterbox_voice.py.
+try:
+    import chatterbox_voice
+    _chatterbox_imported = True
+except Exception as _cbx_err:
+    _chatterbox_imported = False
+    print("[TTS] chatterbox_voice import failed: %s" % _cbx_err)
+
+_expressive_mode = False   # set per turn from window.VOICE.expressive
+_exaggeration = 0.6        # Chatterbox expressiveness dial for this turn
 
 
 def _say_with_fallback(text, timeout=30):
@@ -774,40 +791,98 @@ def _speak_pyttsx3(text):
         print("[TTS FALLBACK ERROR] pyttsx3 failed: %s" % e)
 
 
-def _speech_consumer():
-    """Daemon thread: pulls chunks from _speech_queue and speaks them one at a time."""
+def _synth_worker():
+    """Stage 1: pull text chunks and synthesize them AHEAD of playback.
+
+    Kokoro synth produces a temp wav that is handed to the play queue; if Kokoro
+    is unavailable the chunk is deferred to the play stage as a `say` item. Running
+    ahead means chunk N+1 is being synthesized while chunk N is still playing, so
+    only the first chunk carries any synth wait.
+    """
     while True:
         item = _speech_queue.get()
         if item is None:
-            # Poison pill -- shut down
+            _play_queue.put(None)          # forward the poison pill
             _speech_queue.task_done()
             break
         chunk_text, chunk_index, emit_events = item
         try:
-            if not tts_interrupted:
+            if tts_interrupted:
+                _play_queue.put(("skip", None, chunk_index, emit_events))
+            else:
+                wav = None
+                # Expressive mode -> warm Chatterbox sidecar (real emotional range).
+                if _expressive_mode and _chatterbox_imported:
+                    print("[TTS] expressive -> chatterbox sidecar (exag=%s)" % _exaggeration, flush=True)
+                    try:
+                        wav = chatterbox_voice.synth_to_file(chunk_text, exaggeration=_exaggeration)
+                    except Exception as e:
+                        print("[TTS] chatterbox synth error: %s -- falling back" % e)
+                # Default (or fallback) -> fast local Kokoro.
+                if wav is None and _kokoro_available:
+                    try:
+                        wav = kokoro_voice.synth_to_file(chunk_text)
+                    except Exception as e:
+                        print("[TTS] kokoro synth error: %s -- deferring to say" % e)
+                if wav:
+                    _play_queue.put(("wav", wav, chunk_index, emit_events))
+                else:
+                    _play_queue.put(("say", chunk_text, chunk_index, emit_events))
+        except Exception as e:
+            print("[TTS SYNTH ERROR] %s" % e)
+            _play_queue.put(("skip", None, chunk_index, emit_events))
+        finally:
+            _speech_queue.task_done()
+
+
+def _play_worker():
+    """Stage 2: play synthesized items in order, one at a time (no overlap)."""
+    while True:
+        item = _play_queue.get()
+        if item is None:
+            _play_queue.task_done()
+            break
+        kind, payload, chunk_index, emit_events = item
+        try:
+            if not tts_interrupted and kind != "skip":
                 if emit_events:
                     socketio.emit("tts_chunk_start", {"index": chunk_index})
                     socketio.sleep(0.05)
-                _say_with_fallback(chunk_text)
+                if kind == "wav":
+                    subprocess.run(["afplay", payload], check=False)
+                else:  # "say" fallback -- synth and play together
+                    _say_with_fallback(payload)
         except Exception as e:
-            print("[TTS CONSUMER ERROR] %s" % e)
+            print("[TTS PLAY ERROR] %s" % e)
         finally:
-            _speech_queue.task_done()
-        # Check after each chunk -- drain if interrupted
-        if tts_interrupted:
-            while not _speech_queue.empty():
+            if kind == "wav" and payload:
                 try:
-                    _speech_queue.get_nowait()
-                    _speech_queue.task_done()
+                    os.remove(payload)
+                except OSError:
+                    pass
+            _play_queue.task_done()
+        # Drain remaining audio if interrupted (delete pending wavs).
+        if tts_interrupted:
+            while not _play_queue.empty():
+                try:
+                    it = _play_queue.get_nowait()
+                    if it and it[0] == "wav" and it[1]:
+                        try:
+                            os.remove(it[1])
+                        except OSError:
+                            pass
+                    _play_queue.task_done()
                 except queue.Empty:
                     break
             if emit_events:
                 socketio.emit("tts_chunk_done")
 
 
-# Start the consumer thread
-_speech_thread = threading.Thread(target=_speech_consumer, daemon=True)
-_speech_thread.start()
+# Start the two pipeline stages
+_synth_thread = threading.Thread(target=_synth_worker, daemon=True)
+_synth_thread.start()
+_play_thread = threading.Thread(target=_play_worker, daemon=True)
+_play_thread.start()
 
 
 def flush_speech_queue():
@@ -817,11 +892,23 @@ def flush_speech_queue():
     # Kill any running say process and any Kokoro playback (afplay)
     subprocess.run(["killall", "say"], stderr=subprocess.DEVNULL)
     subprocess.run(["killall", "afplay"], stderr=subprocess.DEVNULL)
-    # Drain pending chunks
+    # Drain pending text chunks
     while not _speech_queue.empty():
         try:
             _speech_queue.get_nowait()
             _speech_queue.task_done()
+        except queue.Empty:
+            break
+    # Drain pending audio (delete any already-synthesized wavs)
+    while not _play_queue.empty():
+        try:
+            it = _play_queue.get_nowait()
+            if it and it[0] == "wav" and it[1]:
+                try:
+                    os.remove(it[1])
+                except OSError:
+                    pass
+            _play_queue.task_done()
         except queue.Empty:
             break
 
@@ -1044,6 +1131,16 @@ def strip_markdown_for_tts(text):
     text = re.sub(r"`([^`]+)`", r"\1", text)
     # Code fences
     text = re.sub(r"```[\s\S]*?```", "", text)
+    # Emoji / pictographs read as noise (or letter-spelling) in neural TTS -- drop them.
+    text = re.sub(
+        r"[\U0001F000-\U0001FAFF\U00002600-\U000027BF\U0001F1E6-\U0001F1FF\U00002190-\U000021FF\U00002B00-\U00002BFF️]",
+        "", text,
+    )
+    # ALL-CAPS words (2+ letters) get spelled out or over-emphasized by neural TTS.
+    # Lowercase them so "HELL YES" speaks as words, not letters.
+    text = re.sub(r"\b[A-Z]{2,}\b", lambda m: m.group(0).lower(), text)
+    # Collapse whitespace left by removals.
+    text = re.sub(r"[ \t]{2,}", " ", text)
     return text.strip()
 
 
@@ -1212,8 +1309,9 @@ def speak_chunked(text):
         return
     for i, clean_chunk in enumerate(clean_chunks):
         _speech_queue.put((clean_chunk, i, True))
-    # Wait for all chunks to finish (or be flushed)
+    # Wait for all chunks to synthesize, then for all audio to finish playing.
     _speech_queue.join()
+    _play_queue.join()
     if not tts_interrupted:
         emit("tts_chunk_done")
 
@@ -6020,6 +6118,21 @@ def handle_audio(data):
             data.get('brevity'), data.get('aperture_hex')
         )
         length_constraint = aperture_constraint or get_response_length_constraint(input_word_count)
+
+        # Live voice prosody (window.VOICE from the client): tempo / brightness /
+        # gain, plus expressive mode (route synthesis to Chatterbox). Set once per
+        # turn; the synth worker reads these globals.
+        global _expressive_mode, _exaggeration
+        _v = data.get('voice') or {}
+        if _kokoro_available:
+            kokoro_voice.set_prosody(speed=_v.get('speed'), bright=_v.get('bright'), gain=_v.get('gain'))
+        _expressive_mode = bool(_v.get('expressive'))
+        try:
+            _exaggeration = float(_v.get('exaggeration', 0.6))
+        except (TypeError, ValueError):
+            _exaggeration = 0.6
+        print("[VOICE] turn received: voice=%s -> expressive=%s exaggeration=%s"
+              % (_v, _expressive_mode, _exaggeration), flush=True)
 
         # Inject temporal context if query is time-related
         enhanced_text = inject_temporal_context(text)
