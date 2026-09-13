@@ -4426,11 +4426,12 @@ def resolve_instructions(text, base, tone):
     return out
 
 
-def crystallize_package(text, base, tone, steer=""):
+def crystallize_package(text, base, tone, steer="", state=None):
     """Package the current script + dials into an INERT SVG: instructions for the
     future transformational apparatus. Visual is a delivery strip (a swatch per
     span, colour=VRGB, height=gain, gaps=pauses); <metadata> carries the full,
-    executable instruction set. No script, no external refs."""
+    executable instruction set AND a tuner-native `state` block so the package can
+    be imported back into /tune losslessly (the full loop). No script, no external refs."""
     import json
     ops = _ops_from_text(text) or [("say", text, {})]
     instr = []
@@ -4481,7 +4482,8 @@ def crystallize_package(text, base, tone, steer=""):
     out.extend(body)
     meta = {"package": "cue-vox-voice-delivery", "base_register": base, "tone": tone,
             "steer": steer, "script": text, "instructions": instr,
-            "note": "each say carries register/gain/speed/lift/vrgb; pause_ms are gaps; cue is a signature earcon"}
+            "state": state or {},
+            "note": "each say carries register/gain/speed/lift/vrgb; pause_ms are gaps; cue is a signature earcon; state re-imports into /tune"}
     out.append('<metadata id="vrgb-voice-package">%s</metadata>' % json.dumps(meta).replace("&", "&amp;").replace("<", "&lt;"))
     out.append('</svg>')
     return "\n".join(out)
@@ -4729,10 +4731,50 @@ def tune_package():
             return dflt
     tone = {'gamma': _f('gamma', _TONE_GAMMA), 'cap': _f('cap', _TONE_CAP), 'decay': _f('decay', _TONE_DECAY),
             'loud_floor': _f('loud_floor', _LOUD_FLOOR), 'break_mult': _f('break_mult', _BREAK_MULT),
-            'pressure': _f('pressure', _PRESSURE)}
-    svg = crystallize_package(text, base, tone, steer=d.get('steer', ''))
+            'pressure': _f('pressure', _PRESSURE), 'lift': _f('lift', 0.8)}
+    # State mirrors the tuner's own dial keys (register/gamma/cap/decay/loud/brk/
+    # pressure/lift + text/steer) so import maps 1:1 back onto the sliders.
+    state = {'register': base, 'gamma': tone['gamma'], 'cap': tone['cap'], 'decay': tone['decay'],
+             'loud': tone['loud_floor'], 'brk': tone['break_mult'], 'pressure': tone['pressure'],
+             'lift': tone['lift'], 'text': text, 'steer': d.get('steer', '')}
+    svg = crystallize_package(text, base, tone, steer=d.get('steer', ''), state=state)
     return Response(svg, mimetype='image/svg+xml',
                     headers={'Content-Disposition': 'attachment; filename=voice-package.svg'})
+
+
+@app.route('/api/tune/import', methods=['POST'])
+def tune_import():
+    """Read an exported voice package SVG back into a tuner state dict (the full loop).
+    Accepts raw SVG or JSON {svg}. Prefers the tuner-native `state` block; falls back
+    to reconstructing from base_register/tone/script for packages minted before it."""
+    import json
+    raw = request.get_data(as_text=True) or ''
+    if raw.lstrip().startswith('{'):
+        try:
+            raw = (json.loads(raw).get('svg') or raw)
+        except (ValueError, AttributeError):
+            pass
+    m = re.search(r'<metadata[^>]*>(.*?)</metadata>', raw, re.S)
+    if not m:
+        return jsonify(ok=False, error='no <metadata> package block found'), 200
+    # reverse crystallize's escaping: it did & -> &amp; then < -> &lt;
+    body = m.group(1).replace('&lt;', '<').replace('&amp;', '&')
+    try:
+        meta = json.loads(body)
+    except ValueError as e:
+        return jsonify(ok=False, error='package metadata is not valid JSON: %s' % e), 200
+    if meta.get('package') != 'cue-vox-voice-delivery':
+        return jsonify(ok=False, error='not a cue-vox voice package'), 200
+    state = meta.get('state') or {}
+    if not state:                                   # legacy package: rebuild from parts
+        tone = meta.get('tone') or {}
+        state = {'register': meta.get('base_register', 0), 'gamma': tone.get('gamma'),
+                 'cap': tone.get('cap'), 'decay': tone.get('decay'), 'loud': tone.get('loud_floor'),
+                 'brk': tone.get('break_mult'), 'pressure': tone.get('pressure'),
+                 'lift': tone.get('lift', 0.8), 'text': meta.get('script', ''),
+                 'steer': meta.get('steer', '')}
+        state = {k: v for k, v in state.items() if v is not None}
+    return jsonify(ok=True, state=state)
 
 
 @app.route('/api/tune/translate', methods=['POST'])

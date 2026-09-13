@@ -115,6 +115,8 @@
     <div class="row">
       <button id="parse">Parse</button>
       <button class="primary" id="package">Export</button>
+      <button id="import">Import</button>
+      <input type="file" id="importfile" accept=".svg,image/svg+xml" style="display:none;">
     </div>
     <div id="status"></div>
     <div id="parseout" style="margin-top:12px;font-size:12px;color:var(--dim);"></div>
@@ -241,7 +243,8 @@
   });
   function currentParams(){
     return { register:+$("register").value, gamma:+$("gamma").value, cap:+$("cap").value,
-             decay:+$("decay").value, loud_floor:+$("loud").value, break_mult:+$("brk").value, pressure:+$("pressure").value };
+             decay:+$("decay").value, loud_floor:+$("loud").value, break_mult:+$("brk").value,
+             pressure:+$("pressure").value, lift:+$("lift").value };
   }
   $("encode").addEventListener("click", async () => {
     $("status").textContent = "regenerating (steered)...";
@@ -306,6 +309,27 @@
       URL.revokeObjectURL(a.href);
       $("status").textContent = "package exported (text + settings + steering)";
     } catch(e){ $("status").textContent = "package error"; }
+  });
+  // Import closes the loop: read an exported package SVG back into the dials + text.
+  $("import").addEventListener("click", () => $("importfile").click());
+  $("importfile").addEventListener("change", async (e) => {
+    const f = e.target.files[0];
+    if (!f) return;
+    $("status").textContent = "importing package...";
+    try {
+      const svg = await f.text();
+      const r = await fetch("/api/tune/import", { method:"POST", headers:{"Content-Type":"application/json"},
+        body: JSON.stringify({ svg }) });
+      const j = await r.json();
+      if (!j.ok || !j.state) { $("status").textContent = "import failed: " + (j.error || "?"); return; }
+      pushHist();
+      currentPreset = "imported";                 // land it in a working slot
+      PRESETS.imported = Object.assign({}, j.state);
+      loadIntoUI(j.state);                         // sets every dial + steer + text
+      persist();
+      $("status").textContent = "imported package (full loop) -> Hear to play it";
+    } catch(err){ $("status").textContent = "import error"; }
+    finally { e.target.value = ""; }              // allow re-importing the same file
   });
 </script>
 </body>
