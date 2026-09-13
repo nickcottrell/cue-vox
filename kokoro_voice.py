@@ -193,6 +193,17 @@ def _get_tts():
     return _tts
 
 
+def reload():
+    """Drop the cached engine so the next synth rebuilds it, picking up a freshly
+    written register-voices.bin (e.g. after a blend upload + rebuild). Cheap: the
+    heavy model file is memory-mapped by sherpa on next construction."""
+    global _tts, _load_failed
+    with _lock:
+        _tts = None
+        _load_failed = False
+    print("[TTS] Kokoro engine flagged for reload (new blend will load on next synth)")
+
+
 def available():
     """True if the Kokoro engine can be used."""
     return _get_tts() is not None

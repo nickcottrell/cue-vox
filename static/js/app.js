@@ -1,7 +1,30 @@
 // ============================================
 // CUE-VOX V2 - Full Implementation
 // ============================================
-console.log("[cue-vox] app.js build 2026-06-04-editable-captions");
+// --- cvx console: one greppable, styled logger so a whole turn is legible end to
+// end. Every voice-pipeline stage logs under a coloured "cvx:<stage>" chip. Quiet
+// it any time with  window.__cvxDebug = false  in the console.
+const CVX_BUILD = "2026-09-13.1 console-pass";
+const VLOG = (function () {
+  function on() { return window.__cvxDebug !== false; }
+  function mk(stage, bg) {
+    return function () {
+      if (!on()) return;
+      var a = Array.prototype.slice.call(arguments);
+      console.log.apply(console, ["%ccvx:" + stage + "%c",
+        "background:" + bg + ";color:#161616;font-weight:700;border-radius:3px;padding:1px 6px;",
+        "color:#9a9a9a;"].concat(a));
+    };
+  }
+  return {
+    turn: mk("turn", "#eaeaea"), vad: mk("vad", "#7fa7d0"), send: mk("send", "#8fb98f"),
+    recv: mk("recv", "#c9c9c9"), voice: mk("voice", "#d0b57f"), pkg: mk("pkg", "#c9a0d0"),
+    warn: mk("warn", "#d08a5a"),
+  };
+})();
+console.log("%c cue-vox %c client build " + CVX_BUILD + " ",
+  "background:#161616;color:#c9c9c9;font-weight:700;padding:2px 6px;border-radius:4px 0 0 4px;",
+  "background:#c9c9c9;color:#161616;font-weight:700;padding:2px 6px;border-radius:0 4px 4px 0;");
 
 // DOM Elements
 const socket = io();
@@ -351,6 +374,10 @@ async function initAudio() {
           voice: window.VOICE,
           input_level: window.__inputLevel || 0,
         });
+        VLOG.send("audio ->", { live: !!liveMode, expressive: !!window.VOICE.expressive,
+          autotone: !!window.VOICE.autotone, exaggeration: window.VOICE.exaggeration,
+          input_level: +(window.__inputLevel || 0).toFixed(4),
+          brevity: (liveMode || window.VOICE.expressive) ? 0 : currentBrevity() });
       };
       audioChunks = [];
     };
@@ -550,6 +577,7 @@ function _vadTick() {
     if (now - _voiceOnset >= window.VAD.onsetMs) {
       _vadState = 'capturing';
       _lvlSum = 0; _lvlCount = 0;            // start measuring this turn's loudness
+      VLOG.vad("onset -> capturing", { level: +level.toFixed(4), threshold: window.VAD.threshold });
       startRecording();
     }
   } else { // capturing -- accumulate loudness, end the turn after trailing silence
@@ -558,6 +586,7 @@ function _vadTick() {
       window.__inputLevel = _lvlCount ? (_lvlSum / _lvlCount) : 0;  // mean RMS -> server
       _vadState = 'idle';
       _voiceOnset = 0;
+      VLOG.vad("endpoint -> submit", { mean_level: +window.__inputLevel.toFixed(4), frames: _lvlCount });
       if (isRecording) stopRecording();   // submits via mediaRecorder.onstop
     }
   }
@@ -572,7 +601,7 @@ function toggleLiveMode() {
     if (!_vadTimer) _vadTimer = setInterval(_vadTick, window.VAD.pollMs);
     document.body.setAttribute('data-live', '');
     if (instructions) instructions.textContent = '🟢 LIVE MODE • just talk • press L to exit';
-    console.log('🟢 LIVE MODE on -- just talk, no spacebar. Press L to exit.');
+    VLOG.voice("LIVE mode ON", "hands-free VAD, breathy floor; press L to exit");
     if (typeof addSystemMessage === 'function') addSystemMessage('Live mode on. Just talk -- no spacebar needed.');
   } else {
     if (_vadTimer) { clearInterval(_vadTimer); _vadTimer = null; }
@@ -580,7 +609,7 @@ function toggleLiveMode() {
     _vadState = 'idle';
     document.body.removeAttribute('data-live');
     if (instructions) instructions.textContent = 'Hold SPACE to talk • Release to process';
-    console.log('⚪ LIVE MODE off -- back to push-to-talk.');
+    VLOG.voice("LIVE mode OFF", "back to push-to-talk");
     if (typeof addSystemMessage === 'function') addSystemMessage('Live mode off. Hold SPACE to talk.');
   }
 }
@@ -595,7 +624,7 @@ document.addEventListener('keydown', (e) => {
   if (e.code === 'KeyE' && !e.metaKey && !e.ctrlKey && !e.altKey) {
     window.VOICE.expressive = !window.VOICE.expressive;
     var on = window.VOICE.expressive;
-    console.log(on ? '🎭 EXPRESSIVE mode on (Chatterbox)' : '⚪ expressive off (Kokoro)');
+    VLOG.voice(on ? "EXPRESSIVE mode ON" : "EXPRESSIVE mode OFF", on ? "Chatterbox sidecar" : "Kokoro");
     if (typeof addSystemMessage === 'function') {
       addSystemMessage(on ? 'Expressive voice on (Chatterbox).' : 'Expressive voice off (Kokoro).');
     }
@@ -780,7 +809,7 @@ function _followUpPropose(proposal) {
 }
 
 socket.on('transcription', (data) => {
-  console.log('Transcription received:', data.text);
+  VLOG.recv("transcript", '"' + (data.text || "").slice(0, 80) + '"');
   addMessage('user', data.text);
 
   // Follow-up intercept
@@ -820,7 +849,7 @@ socket.on('transcription', (data) => {
 });
 
 socket.on('response', (data) => {
-  console.log('🤖 Response received:', data.text.substring(0, 50) + '...');
+  VLOG.recv("reply", (data.text || "").length + " chars:", '"' + (data.text || "").substring(0, 60) + '..."');
   stopSound("thinking");
   addMessage('assistant', data.text, data.tts_chunks || null);
 

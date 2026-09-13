@@ -832,6 +832,13 @@ def _speak_pyttsx3(text):
         print("[TTS FALLBACK ERROR] pyttsx3 failed: %s" % e)
 
 
+def _vlog(stage, msg=""):
+    """One greppable, consistent server console tag mirroring the browser's
+    cvx:<stage> logger, so a single turn is legible on BOTH sides of the pipeline.
+    Stages: turn -> tone -> register -> reply -> synth -> play (+ pkg/apply)."""
+    print("cvx:%-8s %s" % (stage, msg), flush=True)
+
+
 def _synth_worker():
     """Stage 1: pull text chunks and synthesize them AHEAD of playback.
 
@@ -855,15 +862,19 @@ def _synth_worker():
                 _play_queue.put(("clip", payload, chunk_index, emit_events))
             else:
                 wav = None
+                _preview = (payload or "")[:40].replace("\n", " ")
                 # Expressive mode -> warm Chatterbox sidecar (real emotional range).
                 if _expressive_mode and _chatterbox_imported:
-                    print("[TTS] expressive -> chatterbox sidecar (exag=%s)" % _exaggeration, flush=True)
+                    _vlog("synth", "chunk %d engine=chatterbox exag=%.2f  \"%s\"" % (chunk_index, _exaggeration, _preview))
                     try:
                         wav = chatterbox_voice.synth_to_file(payload, exaggeration=_exaggeration)
                     except Exception as e:
                         print("[TTS] chatterbox synth error: %s -- falling back" % e)
                 # Default (or fallback) -> fast local Kokoro.
                 if wav is None and _kokoro_available:
+                    _vlog("synth", "chunk %d engine=kokoro reg=%d lift=%.2f q=%s  \"%s\""
+                          % (chunk_index, kokoro_voice._register, kokoro_voice._lift,
+                             (payload or "").rstrip().endswith("?"), _preview))
                     try:
                         wav = kokoro_voice.synth_to_file(payload)
                     except Exception as e:
@@ -1391,6 +1402,9 @@ def speak_chunked(text):
                     items.append(("text", clean))
     if not items:
         return
+    _n_clips = sum(1 for k, _ in items if k == "clip")
+    _vlog("reply", "%d chars -> %d chunks (%d spoken, %d cues)"
+          % (len(text or ""), len(items), len(items) - _n_clips, _n_clips))
     for i, (seg_kind, payload) in enumerate(items):
         _speech_queue.put((seg_kind, payload, i, True))
     # Wait for all chunks to synthesize, then for all audio to finish playing.
@@ -4095,6 +4109,13 @@ def tune_page():
     return resp
 
 
+@app.route('/tune/blend')
+def tune_blend_page():
+    # Register ladder is now a tab inside the /tune SPA; keep the old URL working.
+    from flask import redirect
+    return redirect('/tune#blend', code=302)
+
+
 @app.route('/api/tune/params', methods=['POST'])
 def tune_params():
     global _TONE_DECAY, _TONE_CAP, _TONE_GAMMA, _LOUD_FLOOR, _BREAK_MULT, _PRESSURE, _LIVE_REGISTER_FLOOR
@@ -4274,6 +4295,13 @@ def deterministic_markup(text):
 #   <strong>                                        fuller (up two)
 #   <register level="0-4">                          absolute register for a span
 #   <laugh/> <chuckle/>                             signature cue
+# The markup LANGUAGE / parser version. Bump when tag semantics change (new tags,
+# changed counts/stacking, different defaults), so a package records which markup its
+# text was authored against and tools can flag a mismatch. Distinct from
+# PACKAGE_SCHEMA_VERSION (the metadata SHAPE) -- this versions the LANGUAGE the parser
+# speaks. History: v1 = count/stacking model (<break/> beats, <em=n>/<strong=n>).
+MARKUP_VERSION = 1
+
 # --- Voice ontology: t-shirt sizes + <strong>/<em> stacking, encodes to VRGB ---
 # Count model (the standard): one atomic tag + a count. Stacking == counting.
 #   <break/> = 1 beat · <break/><break/><break/> = <break=3/> = 3 beats
@@ -4495,6 +4523,7 @@ def crystallize_package(text, base, tone, steer="", state=None):
     out.append('<text x="20" y="30" fill="#c9c9c9" font-size="13">voice delivery package  ·  v%d</text>' % PACKAGE_SCHEMA_VERSION)
     out.extend(body)
     meta = {"package": "cue-vox-voice-delivery", "version": PACKAGE_SCHEMA_VERSION,
+            "markup_version": MARKUP_VERSION,
             "base_register": base, "tone": tone, "steer": steer, "script": text,
             "instructions": instr, "state": state or {},
             "note": "each say carries register/gain/speed/lift/vrgb; pause_ms are gaps; cue is a signature earcon; state re-imports into /tune"}
@@ -4759,36 +4788,32 @@ def tune_package():
                              'X-Package-Version': str(PACKAGE_SCHEMA_VERSION)})
 
 
-@app.route('/api/tune/import', methods=['POST'])
-def tune_import():
-    """Read an exported voice package SVG back into a tuner state dict (the full loop).
-    Accepts raw SVG or JSON {svg}. Prefers the tuner-native `state` block; falls back
-    to reconstructing from base_register/tone/script for packages minted before it."""
+def _package_meta_from_svg(raw):
+    """Parse a cue-vox voice package (raw SVG or JSON {svg}) into its metadata dict.
+    Raises ValueError if it is not a valid cue-vox package."""
     import json
-    raw = request.get_data(as_text=True) or ''
+    raw = raw or ''
     if raw.lstrip().startswith('{'):
         try:
-            raw = (json.loads(raw).get('svg') or raw)
+            raw = json.loads(raw).get('svg') or raw
         except (ValueError, AttributeError):
             pass
     m = re.search(r'<metadata[^>]*>(.*?)</metadata>', raw, re.S)
     if not m:
-        return jsonify(ok=False, error='no <metadata> package block found'), 200
+        raise ValueError('no <metadata> package block found')
     # reverse crystallize's escaping: it did & -> &amp; then < -> &lt;
     body = m.group(1).replace('&lt;', '<').replace('&amp;', '&')
-    try:
-        meta = json.loads(body)
-    except ValueError as e:
-        return jsonify(ok=False, error='package metadata is not valid JSON: %s' % e), 200
+    meta = json.loads(body)
     if meta.get('package') != 'cue-vox-voice-delivery':
-        return jsonify(ok=False, error='not a cue-vox voice package'), 200
-    ver = meta.get('version', 0)
-    stale = ver != PACKAGE_SCHEMA_VERSION
-    banner = "  cue-vox package IMPORT  |  schema v%s  (current v%d)%s" % (
-        ver, PACKAGE_SCHEMA_VERSION, "  <- STALE" if stale else "")
-    print("\n" + "=" * 52 + "\n" + banner + "\n" + "=" * 52, flush=True)
+        raise ValueError('not a cue-vox voice package')
+    return meta
+
+
+def _state_from_meta(meta):
+    """Tuner-native state dict (register/gamma/cap/decay/loud/brk/pressure/lift/text/
+    steer) from a package meta, with a fallback for legacy packages lacking `state`."""
     state = meta.get('state') or {}
-    if not state:                                   # legacy package: rebuild from parts
+    if not state:
         tone = meta.get('tone') or {}
         state = {'register': meta.get('base_register', 0), 'gamma': tone.get('gamma'),
                  'cap': tone.get('cap'), 'decay': tone.get('decay'), 'loud': tone.get('loud_floor'),
@@ -4796,7 +4821,180 @@ def tune_import():
                  'lift': tone.get('lift', 0.8), 'text': meta.get('script', ''),
                  'steer': meta.get('steer', '')}
         state = {k: v for k, v in state.items() if v is not None}
-    return jsonify(ok=True, state=state, version=ver, current_version=PACKAGE_SCHEMA_VERSION, stale=stale)
+    return state
+
+
+def _apply_live_voice(state):
+    """Apply a package/tuner state dict to the LIVE voice globals. Shared by the
+    deployed-voice boot loader and the deploy endpoint."""
+    global _TONE_GAMMA, _TONE_CAP, _TONE_DECAY, _LOUD_FLOOR, _BREAK_MULT, _PRESSURE, _LIVE_REGISTER_FLOOR
+    try:
+        if state.get('gamma') is not None: _TONE_GAMMA = float(state['gamma'])
+        if state.get('cap') is not None: _TONE_CAP = float(state['cap'])
+        if state.get('decay') is not None: _TONE_DECAY = float(state['decay'])
+        if state.get('loud') is not None: _LOUD_FLOOR = float(state['loud'])
+        if state.get('brk') is not None: _BREAK_MULT = max(0.25, min(4.0, float(state['brk'])))
+        if state.get('pressure') is not None: _PRESSURE = max(0.4, min(2.5, float(state['pressure'])))
+        if state.get('register') is not None:
+            _LIVE_REGISTER_FLOOR = max(0, min(4, int(round(float(state['register'])))))
+        if state.get('lift') is not None and _kokoro_available:
+            kokoro_voice.set_prosody(lift=max(0.0, min(1.5, float(state['lift']))))
+    except (TypeError, ValueError):
+        pass
+
+
+def _deployed_voice_path():
+    """Where the deployed voice package lives. Explicit CUE_VOX_VOICE_PACKAGE wins;
+    otherwise the maestro convention path (config/voice/deployed.svg under MAESTRO_ROOT),
+    so a maestro deployment needs no extra config. Public repo (neither set) -> ''."""
+    p = (os.environ.get('CUE_VOX_VOICE_PACKAGE') or '').strip()
+    if p:
+        return p
+    root = (os.environ.get('MAESTRO_ROOT') or '').strip()
+    return os.path.join(root, 'config', 'voice', 'deployed.svg') if root else ''
+
+
+def _blend_recipe_path():
+    """Where the register-ladder blend recipe (blend.json) lives. Explicit
+    CUE_VOX_BLEND_RECIPE wins; otherwise the maestro convention path. Public repo
+    (neither set) -> '', so the tuner's blend panel is simply inert."""
+    p = (os.environ.get('CUE_VOX_BLEND_RECIPE') or '').strip()
+    if p:
+        return p
+    root = (os.environ.get('MAESTRO_ROOT') or '').strip()
+    return os.path.join(root, 'config', 'voice', 'blend.json') if root else ''
+
+
+def _load_deployed_voice():
+    """On boot, seed the live voice from the maestro-owned deployed package if one is
+    configured (see _deployed_voice_path). Nothing configured -> generic built-in
+    defaults, so the public cue-vox repo ships with no personal voice baked in."""
+    path = _deployed_voice_path()
+    if not path:
+        _vlog('voice', 'no deployed package configured -> generic default voice')
+        return
+    if not os.path.exists(path):
+        _vlog('voice', 'deployed package not found: %s -> generic default' % path)
+        return
+    try:
+        meta = _package_meta_from_svg(open(path, encoding='utf-8').read())
+        _apply_live_voice(_state_from_meta(meta))
+        _vlog('voice', 'deployed voice v%s loaded from %s (reg_floor=%s gamma=%.2f pressure=%.2f)'
+              % (meta.get('version'), path, _LIVE_REGISTER_FLOOR, _TONE_GAMMA, _PRESSURE))
+    except (ValueError, OSError) as e:
+        _vlog('voice', 'failed to load %s: %s -> generic default' % (path, e))
+
+
+@app.route('/api/tune/import', methods=['POST'])
+def tune_import():
+    """Read an exported voice package SVG back into a tuner state dict (the full loop).
+    Accepts raw SVG or JSON {svg}. Prefers the tuner-native `state` block; falls back
+    to reconstructing from base_register/tone/script for packages minted before it."""
+    try:
+        meta = _package_meta_from_svg(request.get_data(as_text=True) or '')
+    except ValueError as e:
+        return jsonify(ok=False, error=str(e)), 200
+    ver = meta.get('version', 0)
+    mver = meta.get('markup_version', 0)
+    stale = ver != PACKAGE_SCHEMA_VERSION
+    markup_stale = mver != MARKUP_VERSION
+    banner = "  cue-vox package IMPORT  |  schema v%s (cur v%d)%s  |  markup v%s (cur v%d)%s" % (
+        ver, PACKAGE_SCHEMA_VERSION, " STALE" if stale else "",
+        mver, MARKUP_VERSION, " STALE" if markup_stale else "")
+    print("\n" + "=" * 62 + "\n" + banner + "\n" + "=" * 62, flush=True)
+    return jsonify(ok=True, state=_state_from_meta(meta), version=ver,
+                   current_version=PACKAGE_SCHEMA_VERSION, stale=stale,
+                   markup_version=mver, current_markup_version=MARKUP_VERSION, markup_stale=markup_stale)
+
+
+@app.route('/api/tune/deploy', methods=['POST'])
+def tune_deploy():
+    """Write the current package to the maestro-owned deployed-voice path
+    (CUE_VOX_VOICE_PACKAGE) and apply it to the live voice immediately. This is how a
+    tuned voice becomes THE voice cue-vox boots with. No env set -> nothing to deploy to."""
+    path = _deployed_voice_path()
+    if not path:
+        return jsonify(ok=False, error='no deploy target: set CUE_VOX_VOICE_PACKAGE or MAESTRO_ROOT'), 200
+    d = request.get_json(force=True, silent=True) or {}
+    text = (d.get('text') or '').strip()
+    base = int(d.get('register', 0))
+
+    def _f(k, dflt):
+        try:
+            return float(d.get(k, dflt))
+        except (TypeError, ValueError):
+            return dflt
+    tone = {'gamma': _f('gamma', _TONE_GAMMA), 'cap': _f('cap', _TONE_CAP), 'decay': _f('decay', _TONE_DECAY),
+            'loud_floor': _f('loud_floor', _LOUD_FLOOR), 'break_mult': _f('break_mult', _BREAK_MULT),
+            'pressure': _f('pressure', _PRESSURE), 'lift': _f('lift', 0.8)}
+    state = {'register': base, 'gamma': tone['gamma'], 'cap': tone['cap'], 'decay': tone['decay'],
+             'loud': tone['loud_floor'], 'brk': tone['break_mult'], 'pressure': tone['pressure'],
+             'lift': tone['lift'], 'text': text, 'steer': d.get('steer', '')}
+    svg = crystallize_package(text, base, tone, steer=d.get('steer', ''), state=state)
+    try:
+        os.makedirs(os.path.dirname(path), exist_ok=True)
+        with open(path, 'w', encoding='utf-8') as fh:
+            fh.write(svg)
+    except OSError as e:
+        return jsonify(ok=False, error='write failed: %s' % e), 200
+    _apply_live_voice(state)     # take effect now, not just next boot
+    _vlog('voice', 'DEPLOYED v%d -> %s (applied live)' % (PACKAGE_SCHEMA_VERSION, path))
+    return jsonify(ok=True, path=path, version=PACKAGE_SCHEMA_VERSION)
+
+
+@app.route('/api/tune/blend', methods=['GET', 'POST'])
+def tune_blend():
+    """The blend recipe loop: GET returns the maestro-owned register-ladder recipe
+    (blend.json); POST uploads an edited recipe back, and (with rebuild) regenerates
+    register-voices.bin via build-refs.sh and hot-reloads the engine so the new blend
+    is live. Nothing configured -> the panel is inert (public repo)."""
+    import json
+    path = _blend_recipe_path()
+    if not path:
+        return jsonify(ok=False, error='no blend recipe configured (set MAESTRO_ROOT or CUE_VOX_BLEND_RECIPE)'), 200
+    if request.method == 'GET':
+        if not os.path.exists(path):
+            return jsonify(ok=False, error='blend recipe not found: %s' % path), 200
+        try:
+            return jsonify(ok=True, path=path, blend=json.load(open(path, encoding='utf-8')))
+        except (ValueError, OSError) as e:
+            return jsonify(ok=False, error='read failed: %s' % e), 200
+    # POST: validate, write, optionally rebuild + reload
+    d = request.get_json(force=True, silent=True) or {}
+    blend = d.get('blend')
+    if isinstance(blend, str):
+        try:
+            blend = json.loads(blend)
+        except ValueError as e:
+            return jsonify(ok=False, error='blend is not valid JSON: %s' % e), 200
+    if not isinstance(blend, dict) or not isinstance(blend.get('registers'), list):
+        return jsonify(ok=False, error='blend must be an object with a "registers" list'), 200
+    try:
+        os.makedirs(os.path.dirname(path), exist_ok=True)
+        with open(path, 'w', encoding='utf-8') as fh:
+            json.dump(blend, fh, indent=2)
+            fh.write('\n')
+    except OSError as e:
+        return jsonify(ok=False, error='write failed: %s' % e), 200
+    _vlog('blend', 'uploaded %d registers -> %s' % (len(blend['registers']), path))
+    rebuilt, rebuild_msg = False, ''
+    if d.get('rebuild'):
+        import subprocess
+        script = os.path.join(os.path.dirname(path), 'build-refs.sh')
+        if os.path.exists(script):
+            try:
+                r = subprocess.run(['bash', script], capture_output=True, text=True, timeout=120)
+                rebuilt = r.returncode == 0
+                rebuild_msg = (r.stdout + r.stderr).strip()[-300:]
+                if rebuilt and _kokoro_available:
+                    kokoro_voice.reload()     # hot-swap the new register-voices.bin
+                _vlog('blend', 'rebuild %s%s' % ('ok + engine reloaded' if rebuilt else 'FAILED',
+                                                 '' if rebuilt else ': ' + rebuild_msg))
+            except (OSError, subprocess.SubprocessError) as e:
+                rebuild_msg = str(e)
+        else:
+            rebuild_msg = 'build-refs.sh not found next to blend.json'
+    return jsonify(ok=True, path=path, rebuilt=rebuilt, rebuild_msg=rebuild_msg)
 
 
 @app.route('/api/tune/translate', methods=['POST'])
@@ -4820,7 +5018,7 @@ def tune_parse():
     instr = resolve_instructions(text, base, tone)
     tags = set(m.lower() for m in re.findall(r"</?([a-zA-Z][\w-]*)", text))
     unknown = sorted(t for t in tags if t not in _KNOWN_TAGS)
-    return jsonify(ok=True, ops=instr, unknown=unknown)
+    return jsonify(ok=True, ops=instr, unknown=unknown, markup_version=MARKUP_VERSION)
 
 
 # Lightweight persistence: one working state (text + settings + steering) so a
@@ -4842,7 +5040,7 @@ def tune_state():
         st = json.load(open(_STATE_PATH)) if os.path.exists(_STATE_PATH) else {}
     except Exception:
         st = {}
-    return jsonify(ok=True, state=st, version=PACKAGE_SCHEMA_VERSION)
+    return jsonify(ok=True, state=st, version=PACKAGE_SCHEMA_VERSION, markup_version=MARKUP_VERSION)
 
 
 @app.route('/api/tune/export.svg')
@@ -6941,6 +7139,8 @@ def handle_audio(data):
             print(f"{'='*60}\n")
 
         emit('transcription', {'text': text, 'segments': segment_info})
+        _vlog("turn", "audio in (live=%s expressive=%s)  \"%s\""
+              % (bool(data.get('live')), bool((data.get('voice') or {}).get('expressive')), (text or "")[:60]))
         emit('state_change', {'state': 'thinking'})
 
         # --- Caption feedback on the active gallery routes to a refine pass ---
@@ -7018,6 +7218,8 @@ def handle_audio(data):
             if _LIVE_REGISTER_FLOOR is not None:
                 live_reg = max(live_reg, _LIVE_REGISTER_FLOOR)
             kokoro_voice.set_register(live_reg)
+            _vlog("register", "live_reg=%d  (exag=%.2f floor=%s autotone=%s)"
+                  % (live_reg, _exaggeration, _LIVE_REGISTER_FLOOR, _v.get('autotone', True)))
 
         # Inject temporal context if query is time-related
         enhanced_text = inject_temporal_context(text)
@@ -8914,6 +9116,8 @@ if __name__ == '__main__':
     print(f"Open: http://localhost:{port}")
     print(f"Logs: {LOG_DIR} (24hr retention)")
     print()
+    # Seed the live voice from the maestro-owned deployed package (if configured).
+    _load_deployed_voice()
     # Silence werkzeug per-request access logs -- ~13% of log volume, and every
     # line is a request path that can carry query PII. Warnings/errors still log.
     import logging as _logging

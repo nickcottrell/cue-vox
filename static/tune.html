@@ -30,14 +30,43 @@
   button:hover { border-color:var(--accent); }
   button.primary { background:#303030; }
   #status { color:var(--dim); font-size:12px; margin-top:12px; min-height:16px; }
+  /* tabs */
+  .tabs { display:flex; gap:6px; margin:0 0 16px; max-width:560px; }
+  .tab { flex:0 0 auto; padding:8px 16px; border:1px solid var(--line); background:#1b1b1b; color:var(--dim);
+         border-radius:9px; font-family:inherit; font-size:13px; cursor:pointer; }
+  .tab:hover { border-color:var(--accent); }
+  .tab.active { background:#303030; color:var(--ink); border-color:var(--accent); }
+  .view[hidden] { display:none; }
+  /* register-ladder slots */
+  .slot { border:1px solid var(--line); border-radius:10px; padding:14px; margin-bottom:14px; background:#1b1b1b; }
+  .slot__head { display:flex; align-items:center; gap:10px; margin-bottom:10px; }
+  .slot__n { font-size:22px; font-weight:600; font-variant-numeric:tabular-nums; }
+  .slot__swatch { width:16px; height:16px; border-radius:4px; border:1px solid #0a0a0a; flex:none; }
+  .slot__label { background:#191919; color:var(--ink); border:1px solid var(--line); border-radius:6px; padding:4px 8px; font-family:inherit; font-size:13px; flex:1; }
+  .voice-row { display:flex; gap:8px; align-items:center; margin:6px 0; }
+  select, input[type=number] { background:#191919; color:var(--ink); border:1px solid var(--line); border-radius:6px; padding:6px 8px; font-family:inherit; font-size:13px; }
+  select { flex:1; }
+  input[type=number] { width:78px; }
+  .sum { font-size:12px; color:var(--dim); margin-top:6px; font-variant-numeric:tabular-nums; }
+  .sum.off { color:#d08a5a; }
+  .mini { padding:4px 9px; font-size:12px; border:1px solid var(--line); background:#262626; color:var(--ink); border-radius:7px; cursor:pointer; flex:0 0 auto; }
+  .mini:hover { border-color:var(--accent); }
 </style>
 </head>
 <body>
-  <h1>cue-vox · voice tuning</h1>
-  <p class="sub">Tune the register and the earn-curve with your hands. Hear it, then crystallize the feel to an SVG.</p>
+  <h1>cue-vox &middot; tuner</h1>
+  <p class="sub">Set the dials, shape the words, hear it, package it, deploy it. The dials below are the input; the numbered steps further down are the operations.</p>
 
+  <div class="tabs">
+    <button class="tab active" id="tab-tuner" data-view="tuner">Tuner</button>
+    <button class="tab" id="tab-blend" data-view="blend">Register Ladder</button>
+  </div>
+
+  <div class="view" id="view-tuner">
   <div class="panel">
-    <div class="section">Register (audition)</div>
+    <div class="section">Dials &middot; shape the delivery</div>
+    <div class="hint">The knobs the voice reads. Audition a register, set the earn-curve and delivery, then work the steps below.</div>
+    <div class="section" style="margin-top:14px;">Register (audition)</div>
     <div class="slider">
       <div class="slider__label"><span>whisper &rarr; dramatic</span><span class="val" id="v_register">0</span></div>
       <input class="slider__input" type="range" id="register" min="0" max="4" step="1" value="3">
@@ -86,7 +115,7 @@
 
     <div class="section">Text (edit freely)</div>
     <textarea id="sample" rows="9" style="width:100%;background:#191919;color:var(--ink);border:1px solid var(--line);border-radius:8px;padding:10px;font-family:inherit;font-size:13px;line-height:1.5;resize:vertical;">Okay &lt;break/&gt; hear me out. &lt;break=2/&gt; At first I thought it was nothing, &lt;aside&gt;just a little idea.&lt;/aside&gt; But it kept coming back. &lt;break=3/&gt; And the more I sat with it, the more it held. &lt;break=2/&gt; And now, &lt;strong=2&gt;I can't sit still.&lt;/strong&gt; &lt;break/&gt; Because &lt;ask&gt;are we onto something real here&lt;/ask&gt;</textarea>
-    <div class="hint">Markup: composites &lt;whisper&gt; &lt;aside&gt; &lt;declare&gt; &lt;ask&gt; &lt;laugh/&gt; &lt;chuckle/&gt; · intensity &lt;em&gt; &lt;strong&gt; &lt;force&gt; &lt;soft&gt; (stack them or use =n, e.g. &lt;strong=2&gt;) · pauses &lt;break/&gt; is one beat, stack or count &lt;break=3/&gt; · precise &lt;prosody gain='1.3'&gt; · questions climb on &lt;ask&gt; or a trailing ?. Full spec in VOICE_ONTOLOGY.md.</div>
+    <div class="hint">Markup: composites &lt;whisper&gt; &lt;aside&gt; &lt;declare&gt; &lt;ask&gt; &lt;laugh/&gt; &lt;chuckle/&gt; · intensity &lt;em&gt; &lt;strong&gt; &lt;force&gt; &lt;soft&gt; (stack them or use =n, e.g. &lt;strong=2&gt;) · pauses &lt;break/&gt; is one beat, stack or count &lt;break=3/&gt; · precise &lt;prosody gain='1.3'&gt; · questions climb on &lt;ask&gt; or a trailing ?. Full spec in VOICE_ONTOLOGY.md (markup v1).</div>
     <div class="hint">Presets are spectral: clicking one snaps every dial into place.</div>
     <div class="row" style="margin-top:8px;flex-wrap:wrap;">
       <button class="preset" data-preset="briefing">briefing</button>
@@ -105,25 +134,59 @@
       <button class="preset" data-preset="welcome">welcome</button>
     </div>
 
+    <div class="section">1 &middot; Shape the words</div>
+    <div class="hint">Edit text + markup above, then iterate: Regenerate augments the markup (words unchanged), Translate infers markup from plain typing, Parse shows how it renders.</div>
+    <div class="row">
+      <button id="encode">Regenerate</button>
+      <button id="translate">Translate</button>
+      <button id="parse">Parse</button>
+      <button id="undo">Undo</button>
+    </div>
+
+    <div class="section">2 &middot; Hear it</div>
+    <div class="hint">Synthesize the text with the current dials. This is the clay: tweak dials or markup, hear, repeat.</div>
     <div class="row">
       <button class="primary" id="hear">Hear sample</button>
       <button id="stop">Stop</button>
-      <button id="encode">Regenerate</button>
-      <button id="translate">Translate</button>
-      <button id="undo">Undo</button>
     </div>
+
+    <div class="section">3 &middot; Package (the loop)</div>
+    <div class="hint">Export crystallizes the whole feel (text + dials) into a portable, versioned SVG. Import reads one back in. Tune &rarr; Export &rarr; Import &rarr; tune.</div>
     <div class="row">
-      <button id="parse">Parse</button>
       <button class="primary" id="package">Export</button>
       <button id="import">Import</button>
       <input type="file" id="importfile" accept=".svg,image/svg+xml" style="display:none;">
     </div>
+
+    <div class="section">4 &middot; Deploy</div>
+    <div class="hint">Apply to live pushes this voice to the running conversation now. Deploy writes it to maestro as the voice cue-vox boots with.</div>
     <div class="row">
       <button class="primary" id="applylive">Apply to live</button>
+      <button id="deploy">Deploy</button>
     </div>
     <div id="status"></div>
     <div id="parseout" style="margin-top:12px;font-size:12px;color:var(--dim);"></div>
+
+    <div class="section">The instrument</div>
+    <div class="hint">The dials above PLAY the register ladder. To change what the ladder IS (the voice blend in each slot), open the <a href="#blend" id="goblend" style="color:var(--accent);">Register Ladder</a> tab.</div>
   </div>
+  </div><!-- /view-tuner -->
+
+  <div class="view" id="view-blend" hidden>
+  <div class="panel">
+    <div class="section">Register ladder &middot; the instrument</div>
+    <div class="hint">The dials in the Tuner PLAY this ladder. Here you set what it IS: each <b>slot</b> (0 breathy &rarr; 4 dramatic) is a blend of base voices. Fill the slots, rebuild, and the live engine hot-swaps.</div>
+    <div class="section" style="margin-top:14px;">Slots</div>
+    <div id="slots"></div>
+    <div class="row">
+      <button id="bl_load">Load</button>
+      <button id="bl_save">Save</button>
+      <button class="primary" id="bl_rebuild">Save &amp; rebuild</button>
+    </div>
+    <div id="bl_status" style="color:var(--dim);font-size:12px;margin-top:12px;min-height:16px;"></div>
+    <div class="hint">Save writes maestro/config/voice/blend.json. Rebuild regenerates register-voices.bin and hot-swaps the running engine, so the next spoken line uses the new blend. Audition slots with the register dial in the Tuner.</div>
+  </div>
+  </div><!-- /view-blend -->
 
 <script>
   const $ = id => document.getElementById(id);
@@ -228,7 +291,8 @@
   (async () => {   // restore the working presets on load
     try {
       const resp = await (await fetch("/api/tune/state")).json();
-      console.log("%c cue-vox tuner  |  package schema v" + (resp.version != null ? resp.version : "?") + " ",
+      console.log("%c cue-vox tuner  |  package schema v" + (resp.version != null ? resp.version : "?")
+        + "  ·  markup v" + (resp.markup_version != null ? resp.markup_version : "?") + " ",
         "font-size:14px;font-weight:700;color:#161616;background:#c9c9c9;padding:3px 8px;border-radius:4px;");
       const st = resp.state || {};
       if (st.presets) Object.keys(st.presets).forEach(k => { PRESETS[k] = Object.assign(PRESETS[k] || {}, st.presets[k]); });
@@ -299,7 +363,7 @@
         ? '<div style="color:#d08a5a;margin-top:8px;">ignored tags (parsed as nothing): '+j.unknown.join(", ")+'</div>'
         : '<div style="color:#6a8a6a;margin-top:8px;">all tags recognized</div>';
       $("parseout").innerHTML = rows + unk;
-      $("status").textContent = (j.ops || []).length + " ops parsed";
+      $("status").textContent = (j.ops || []).length + " ops parsed (markup v" + (j.markup_version != null ? j.markup_version : "?") + ")";
     } catch(e){ $("status").textContent = "parse error"; }
   });
   $("package").addEventListener("click", async () => {
@@ -331,8 +395,9 @@
         body: JSON.stringify({ svg }) });
       const j = await r.json();
       if (!j.ok || !j.state) { $("status").textContent = "import failed: " + (j.error || "?"); return; }
-      console.log("%c cue-vox package v" + j.version + " IMPORTED " + (j.stale ? "(STALE, current v" + j.current_version + ")" : ""),
-        "font-size:14px;font-weight:700;color:#161616;background:" + (j.stale ? "#d08a5a" : "#c9c9c9") + ";padding:3px 8px;border-radius:4px;");
+      console.log("%c cue-vox package v" + j.version + " IMPORTED " + (j.stale ? "(schema STALE, cur v" + j.current_version + ") " : "")
+        + "· markup v" + j.markup_version + (j.markup_stale ? " (STALE, cur v" + j.current_markup_version + ")" : ""),
+        "font-size:14px;font-weight:700;color:#161616;background:" + ((j.stale || j.markup_stale) ? "#d08a5a" : "#c9c9c9") + ";padding:3px 8px;border-radius:4px;");
       pushHist();
       currentPreset = "imported";                 // land it in a working slot
       PRESETS.imported = Object.assign({}, j.state);
@@ -355,6 +420,117 @@
       $("status").textContent = "applied to live (register floor " + j.register_floor + ", lift + earn-curve now live)";
     } catch(e){ $("status").textContent = "apply error"; }
   });
+  // Deploy writes the current package to the maestro-owned deployed-voice path, so
+  // it becomes THE voice cue-vox boots with (and applies it live immediately).
+  $("deploy").addEventListener("click", async () => {
+    $("status").textContent = "deploying to maestro...";
+    try {
+      const body = Object.assign({ text:$("sample").value, steer:$("steer").value }, currentParams());
+      const r = await fetch("/api/tune/deploy", { method:"POST", headers:{"Content-Type":"application/json"},
+        body: JSON.stringify(body) });
+      const j = await r.json();
+      if (!j.ok) { $("status").textContent = "deploy failed: " + (j.error || "?"); return; }
+      console.log("%c cue-vox voice DEPLOYED v" + j.version + " ",
+        "font-size:13px;font-weight:700;color:#161616;background:#c9a0d0;padding:3px 8px;border-radius:4px;", j.path);
+      $("status").textContent = "deployed v" + j.version + " -> " + j.path;
+    } catch(e){ $("status").textContent = "deploy error"; }
+  });
+
+  // ===== SPA tabs: Tuner <-> Register Ladder (one page, no reloads) =====
+  let _blendLoaded = false;
+  function showView(name){
+    ["tuner","blend"].forEach(v => {
+      $("view-" + v).hidden = (v !== name);
+      $("tab-" + v).classList.toggle("active", v === name);
+    });
+    if (name === "blend" && !_blendLoaded) { _blendLoaded = true; blendLoad(); }
+    if (location.hash.slice(1) !== name) history.replaceState(null, "", name === "blend" ? "#blend" : "#");
+  }
+  document.querySelectorAll(".tab").forEach(t => t.addEventListener("click", () => showView(t.dataset.view)));
+  $("goblend").addEventListener("click", (e) => { e.preventDefault(); showView("blend"); });
+
+  // ===== Register Ladder (the instrument) =====
+  let BLEND = null, VOICES = [];
+  const slotHue = n => Math.round(250 - (n / 4) * 220);   // cool breathy -> warm dramatic
+  function voiceRow(voice, weight){
+    const row = document.createElement("div"); row.className = "voice-row";
+    const sel = document.createElement("select");
+    VOICES.forEach(v => { const o = document.createElement("option"); o.value = v; o.textContent = v; if (v === voice) o.selected = true; sel.appendChild(o); });
+    const w = document.createElement("input"); w.type = "number"; w.step = "0.05"; w.min = "0"; w.max = "2";
+    w.value = (weight != null ? weight : 0.5); w.addEventListener("input", updateSums);
+    const del = document.createElement("button"); del.className = "mini"; del.textContent = "remove";
+    del.addEventListener("click", () => { row.remove(); updateSums(); });
+    row.appendChild(sel); row.appendChild(w); row.appendChild(del);
+    return row;
+  }
+  function renderSlots(){
+    const host = $("slots"); host.innerHTML = "";
+    (BLEND.registers || []).forEach((reg, i) => {
+      const slot = reg.slot != null ? reg.slot : i;
+      const card = document.createElement("div"); card.className = "slot"; card.dataset.slot = slot;
+      const head = document.createElement("div"); head.className = "slot__head";
+      const sw = document.createElement("span"); sw.className = "slot__swatch"; sw.style.background = "hsl(" + slotHue(slot) + " 45% 62%)";
+      const n = document.createElement("span"); n.className = "slot__n"; n.textContent = "slot " + slot;
+      const label = document.createElement("input"); label.className = "slot__label"; label.value = reg.label || ""; label.placeholder = "label (e.g. breathy)";
+      head.appendChild(sw); head.appendChild(n); head.appendChild(label); card.appendChild(head);
+      const rows = document.createElement("div"); rows.className = "rows";
+      Object.entries(reg.weights || {}).forEach(([v, w]) => rows.appendChild(voiceRow(v, w)));
+      card.appendChild(rows);
+      const add = document.createElement("button"); add.className = "mini"; add.textContent = "+ voice";
+      add.addEventListener("click", () => { rows.appendChild(voiceRow(VOICES[0], 0.5)); updateSums(); });
+      const sum = document.createElement("div"); sum.className = "sum";
+      card.appendChild(add); card.appendChild(sum); host.appendChild(card);
+    });
+    updateSums();
+  }
+  function updateSums(){
+    document.querySelectorAll(".slot").forEach(card => {
+      let s = 0; card.querySelectorAll(".voice-row input[type=number]").forEach(w => s += (parseFloat(w.value) || 0));
+      const el = card.querySelector(".sum");
+      el.textContent = "weight sum " + s.toFixed(2) + (Math.abs(s - 1) < 0.001 ? "" : "  (normalizes on rebuild)");
+      el.classList.toggle("off", Math.abs(s - 1) > 0.02);
+    });
+  }
+  function collectBlend(){
+    const regs = [];
+    document.querySelectorAll(".slot").forEach(card => {
+      const weights = {};
+      card.querySelectorAll(".voice-row").forEach(r => {
+        const v = r.querySelector("select").value, w = parseFloat(r.querySelector("input[type=number]").value) || 0;
+        if (w) weights[v] = (weights[v] || 0) + w;
+      });
+      regs.push({ slot: +card.dataset.slot, label: card.querySelector(".slot__label").value, weights });
+    });
+    return Object.assign({}, BLEND, { registers: regs });
+  }
+  async function blendLoad(){
+    $("bl_status").textContent = "loading...";
+    try {
+      const j = await (await fetch("/api/tune/blend")).json();
+      if (!j.ok){ $("bl_status").textContent = "load failed: " + (j.error || "?"); return; }
+      BLEND = j.blend; VOICES = BLEND.voice_order || []; renderSlots();
+      VLOG.pkg("blend loaded", j.path);
+      $("bl_status").textContent = "loaded " + j.path;
+    } catch(e){ $("bl_status").textContent = "load error"; }
+  }
+  async function blendSave(rebuild){
+    if (!BLEND){ $("bl_status").textContent = "load first"; return; }
+    $("bl_status").textContent = rebuild ? "saving + rebuilding..." : "saving...";
+    try {
+      const j = await (await fetch("/api/tune/blend", { method:"POST", headers:{"Content-Type":"application/json"},
+        body: JSON.stringify({ blend: collectBlend(), rebuild: !!rebuild }) })).json();
+      if (!j.ok){ $("bl_status").textContent = "save failed: " + (j.error || "?"); return; }
+      VLOG.pkg("blend saved" + (rebuild ? " + rebuilt=" + j.rebuilt : ""), j.path);
+      $("bl_status").textContent = rebuild
+        ? (j.rebuilt ? "saved + rebuilt + engine hot-swapped" : "saved, rebuild failed: " + (j.rebuild_msg || "?"))
+        : "saved -> " + j.path;
+    } catch(e){ $("bl_status").textContent = "save error"; }
+  }
+  $("bl_load").addEventListener("click", blendLoad);
+  $("bl_save").addEventListener("click", () => blendSave(false));
+  $("bl_rebuild").addEventListener("click", () => blendSave(true));
+
+  if (location.hash.slice(1) === "blend") showView("blend");   // deep-link support
 </script>
 </body>
 </html>

@@ -1,5 +1,9 @@
 # Voice Ontology
 
+**Markup version: 1** (the `MARKUP_VERSION` constant in `web.py`). Bump it whenever a
+tag's semantics change so packages record which language their text was authored
+against. History: v1 = the count/stacking model below.
+
 Semantic markup for spoken delivery. One idea runs through all of it:
 
 > **One atomic tag plus a count. Stacking is counting.**
