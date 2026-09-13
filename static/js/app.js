@@ -693,6 +693,12 @@ function toggleExpressive() {
   refreshModeBadges();
 }
 
+// The LIVE screen stroke color tracks the current state, via a CSS var pointed at the
+// matching Spectra --state-* token (so it re-themes). Only visible when data-live.
+function setLiveStroke(state) {
+  document.body.style.setProperty('--live-stroke', 'var(--state-' + state + ', #888)');
+}
+
 // Reflect the current voice modes in the base-page badges (visible + clickable).
 function refreshModeBadges() {
   var live = document.getElementById('modeBadgeLive');
@@ -1132,6 +1138,7 @@ socket.on("tts_chunk_ended", function(data) {
     stateStartTime = Date.now();
     if (stateDot) stateDot.setAttribute('data-state', 'synthing');
     if (drawerStatusDot) drawerStatusDot.setAttribute('data-state', 'synthing');
+    setLiveStroke('synthing');
     if (typeof updateStatusTimer === "function") updateStatusTimer();
     // Inline synth gaps use the lighter "working" (dot-dot-dot / processing) bed,
     // not the full "thinking" loop -- that stays for the initial think.
@@ -1156,6 +1163,7 @@ socket.on("tts_chunk_start", function(data) {
     }
     if (stateDot) stateDot.setAttribute('data-state', 'speaking');
     if (drawerStatusDot) drawerStatusDot.setAttribute('data-state', 'speaking');
+    setLiveStroke('speaking');
     if (typeof updateStatusTimer === "function") updateStatusTimer();
   } else if (currentState === "synthing") {
     // Resuming after a between-paragraph gap: crossfade the working fill back in.
@@ -1164,6 +1172,7 @@ socket.on("tts_chunk_start", function(data) {
     stateStartTime = Date.now();
     if (stateDot) stateDot.setAttribute('data-state', 'speaking');
     if (drawerStatusDot) drawerStatusDot.setAttribute('data-state', 'speaking');
+    setLiveStroke('speaking');
     if (typeof updateStatusTimer === "function") updateStatusTimer();
   }
   setStopControls(true);
@@ -1288,6 +1297,7 @@ function setState(state) {
   if (stateDot) {
     stateDot.setAttribute('data-state', state);
   }
+  setLiveStroke(state);   // the LIVE screen stroke tracks the state color
 
   // Update drawer status
   if (drawerStatusDot) {

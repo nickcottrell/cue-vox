@@ -905,6 +905,33 @@ body {
   animation: cvx-synth-pulse 1s ease-in-out infinite;
 }
 
+/* LIVE mode: a glowing stroke around the whole viewport, colored by the current
+   state. --live-stroke is set by JS to the matching --state-* token, so the frame
+   tracks recording -> synthing -> speaking AND re-themes with Spectra. The state
+   circle breathes in sync. */
+body[data-live]::after {
+  content: "";
+  position: fixed;
+  inset: 0;
+  pointer-events: none;
+  z-index: 60;
+  border: 6px solid var(--live-stroke, var(--state-thinking, #4169e1));
+  border-radius: 16px;
+  box-shadow: inset 0 0 30px color-mix(in srgb, var(--live-stroke, #4169e1) 30%, transparent);
+  animation: live-breathe 3.2s ease-in-out infinite;
+  transition: border-color 0.45s ease, box-shadow 0.45s ease;
+}
+@keyframes live-breathe { 0%, 100% { opacity: 0.5; } 50% { opacity: 1; } }
+
+body[data-live] .state-dot__inner {
+  animation: live-circle 3.2s ease-in-out infinite;
+  box-shadow: 0 0 20px color-mix(in srgb, var(--live-stroke, #4169e1) 55%, transparent);
+}
+@keyframes live-circle {
+  0%, 100% { transform: scale(1); }
+  50% { transform: scale(1.06); }
+}
+
 /* Stop audio button under dot */
 .canvas__stop-btn {
   position: absolute;
