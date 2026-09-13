@@ -28,4 +28,5 @@
   --state-transcribing: var(--warning, #ffa500);
   --state-thinking: var(--primary, #0080ff);
   --state-speaking: var(--success, #00ff00);
+  --state-synthing: var(--accent, #17c3c3);   /* re-synth/render; tuned by Spectra like the rest */
 }

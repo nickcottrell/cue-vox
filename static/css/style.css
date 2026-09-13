@@ -733,6 +733,14 @@ body {
   box-shadow: 0 0 8px color-mix(in srgb, var(--state-speaking, #00ff00) 60%, transparent);
 }
 
+/* synthing: the voice is being resolved/synthesized (re-synths at runtime). */
+.status-dot[data-state="synthing"] {
+  background: var(--state-synthing, #17c3c3);
+  box-shadow: 0 0 8px color-mix(in srgb, var(--state-synthing, #17c3c3) 60%, transparent);
+  animation: cvx-synth-pulse 1s ease-in-out infinite;
+}
+@keyframes cvx-synth-pulse { 0%, 100% { opacity: 1; } 50% { opacity: 0.45; } }
+
 .status-text {
   font-size: var(--font-size-sm, 0.875rem);
   color: var(--text-secondary, #888);
@@ -851,6 +859,11 @@ body {
 
 .state-dot__inner[data-state="speaking"] {
   background: var(--state-speaking, #00ff00);
+}
+
+.state-dot__inner[data-state="synthing"] {
+  background: var(--state-synthing, #17c3c3);
+  animation: cvx-synth-pulse 1s ease-in-out infinite;
 }
 
 /* Stop audio button under dot */

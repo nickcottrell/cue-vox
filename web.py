@@ -1385,11 +1385,30 @@ def _split_laugh_segments(text):
     return segments
 
 
+def _reply_weight(text):
+    """A 0..1 measure of how expressive a reply is, read from its OWN real signals
+    (emphasis, exclamation, questions, length). This is an authentic lever: a heavier
+    line is spoken deeper AND legitimately takes longer to synthesize, so the extra
+    expressive latency becomes the sound of weight gathering, not lag. The same scalar
+    previews the gap ambience on the client."""
+    t = text or ""
+    if not t.strip():
+        return 0.0
+    w = 0.0
+    w += min(t.count("!"), 4) * 0.14                                   # exclamation
+    w += 0.08 if "?" in t else 0.0                                     # a question
+    w += min(len(re.findall(r"\b[A-Z][A-Z']{2,}\b", t)), 4) * 0.11     # SHOUTED words
+    w += min(len(re.findall(r"\*\*?[^*]+\*\*?", t)), 4) * 0.10         # *emphasis*
+    w += min(len(t) / 420.0, 1.0) * 0.24                               # weightier length
+    w += min(sum(t.lower().count(x) for x in _EXCITED_WORDS), 5) * 0.05
+    return max(0.0, min(1.0, w))
+
+
 def speak_chunked(text):
     """Queue a reply for speech: text chunks synthesize, [laugh]/[chuckle] markers
     splice in prebaked clips. Two-stage pipeline, FIFO, no overlap; interrupt via
     flush_speech_queue()."""
-    global tts_interrupted
+    global tts_interrupted, _exaggeration
     tts_interrupted = False
     items = []
     for seg_kind, seg in _split_laugh_segments(text):
@@ -1405,6 +1424,19 @@ def speak_chunked(text):
     _n_clips = sum(1 for k, _ in items if k == "clip")
     _vlog("reply", "%d chars -> %d chunks (%d spoken, %d cues)"
           % (len(text or ""), len(items), len(items) - _n_clips, _n_clips))
+    # Authentic weight lever: heavier lines speak deeper (fuller register + more
+    # Chatterbox exaggeration) and take longer to synth. Broadcast the weight BEFORE
+    # synth so the client's gap ambience previews it and crossfades into the voice.
+    w = _reply_weight(text)
+    if _kokoro_available:
+        kokoro_voice.set_register(max(0, min(4, kokoro_voice._register + int(round(w * 1.5)))))
+    _exaggeration = min(2.0, _exaggeration + w * 0.4)
+    try:
+        socketio.emit("voice_weight", {"weight": round(w, 3), "expressive": bool(_expressive_mode)})
+    except Exception:
+        pass
+    _vlog("weight", "reply weight=%.2f -> reg=%s exag=%.2f (expressive=%s)"
+          % (w, kokoro_voice._register if _kokoro_available else "-", _exaggeration, _expressive_mode))
     for i, (seg_kind, payload) in enumerate(items):
         _speech_queue.put((seg_kind, payload, i, True))
     # Wait for all chunks to synthesize, then for all audio to finish playing.
@@ -9005,6 +9037,19 @@ def handle_speak(data):
         return
     emit("response", {"role": "assistant", "text": text, "tts_chunks": [text]})
     speak_chunked(text)
+
+
+@socketio.on('replay')
+def handle_replay(data):
+    """Re-synthesize existing text at runtime and play it: active memory, not a stored
+    recording. No new chat card -- it re-synths (register resolved, weight applied)
+    every time, which is why the client shows the 'synthing' state on replay."""
+    text = (data or {}).get("text", "").strip()
+    if not text:
+        return
+    flush_speech_queue()                 # interrupt anything currently playing
+    speak_chunked(text)                  # emits voice_weight + tts_chunk_start/done
+    emit('state_change', {'state': 'idle'})
 
 
 @socketio.on('arcade_game_over')

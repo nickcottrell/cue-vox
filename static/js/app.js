@@ -49,6 +49,16 @@ let mediaRecorder;
 let audioChunks = [];
 let isRecording = false;
 let currentState = 'idle';
+// Voice-latency handoff: the server says 'speaking' as soon as it queues the reply,
+// but the actual audio starts later (synth latency, big for expressive). These track
+// the gap so the thinking ambience can SUSTAIN until the voice is truly ready and
+// then crossfade in, instead of leaving dead air.
+let voicePending = false;   // a reply with voice is coming, audio not started yet
+let voiceStarted = false;   // first tts chunk has begun playing this turn
+// 'synthing' is a real state: the voice is being synthesized (register resolved,
+// prosody rendered) and, on replay, RE-synthesized at runtime -- active memory, not
+// a stored recording. Shown before "speaking", which means audio is actually playing.
+const SYNTHING_LABEL = "synthing...";
 // The REAL pipeline stage, pushed by the backend (C2D2's own _stage events).
 // When set, the status line reflects actual state instead of guessing a phase
 // from elapsed time. Cleared on every state change.
@@ -102,6 +112,7 @@ function stopSound(name) {
   if (!sound) return;
   sound.pause();
   sound.currentTime = 0;
+  sound.playbackRate = 1.0;   // clear any weight-deepening for next turn
 }
 
 function stopAllSounds() {
@@ -109,6 +120,42 @@ function stopAllSounds() {
     sfx[key].pause();
     sfx[key].currentTime = 0;
   });
+}
+
+// Crossfade a looping ambience out over `ms` so the handoff into the voice blends
+// instead of hard-cutting. Restores volume/rate afterwards for the next turn.
+function fadeOutSound(name, ms) {
+  var s = sfx[name];
+  if (!s || s.paused) return;
+  var steps = 10, i = 0, v0 = s.volume;
+  var iv = setInterval(function () {
+    i++;
+    s.volume = Math.max(0, v0 * (1 - i / steps));
+    if (i >= steps) {
+      clearInterval(iv);
+      s.pause(); s.currentTime = 0; s.volume = v0; s.playbackRate = 1.0;
+    }
+  }, Math.max(12, (ms || 220) / steps));
+}
+
+// The gap ambience previews the WEIGHT of the reply that is synthesizing: a heavier
+// line pulls the thinking loop lower/slower (a gathering hum), a light one keeps it
+// bright. Authentic -- the wait sounds like what is coming. incomingWeight is 0..1.
+var incomingWeight = 0;
+function applyWeightToAmbience(w) {
+  incomingWeight = Math.max(0, Math.min(1, w || 0));
+  ["thinking", "working"].forEach(function (name) {
+    var s = sfx[name];
+    if (s) s.playbackRate = 1.0 - incomingWeight * 0.35;   // heavier -> deeper/slower
+  });
+}
+
+// Stop-audio controls track ACTUAL playback, not the premature 'speaking' state
+// (which fires during the synth gap). Shown at tts_chunk_start, hidden at chunk_done.
+function setStopControls(show) {
+  var d = show ? 'block' : 'none';
+  if (canvasStopBtn) canvasStopBtn.style.display = d;
+  if (drawerStopLink) drawerStopLink.style.display = d;
 }
 
 // ============================================
@@ -710,7 +757,12 @@ drawerStopLink.addEventListener('click', (e) => {
 
 socket.on('state_change', (data) => {
   console.log('🔄 State change:', data.state);
-  setState(data.state);
+  // The server flips to 'speaking' as soon as it queues the reply, but the voice is
+  // still being synthesized. Show that as its own real state, 'synthing', until the
+  // audio actually starts (tts_chunk_start promotes it to 'speaking').
+  var s = data.state;
+  if (s === 'speaking' && voicePending && !voiceStarted) s = 'synthing';
+  setState(s);
 });
 
 // Real pipeline stage from the backend (C2D2's _stage events, forwarded live).
@@ -854,7 +906,13 @@ socket.on('transcription', (data) => {
 
 socket.on('response', (data) => {
   VLOG.recv("reply", (data.text || "").length + " chars:", '"' + (data.text || "").substring(0, 60) + '..."');
-  stopSound("thinking");
+  // Voice is coming but not synthesized yet: SUSTAIN the thinking ambience through
+  // the synth-latency gap instead of hard-stopping here (that left dead air). It is
+  // crossfaded into the voice at the first tts_chunk_start.
+  var expectsVoice = Array.isArray(data.tts_chunks) && data.tts_chunks.length > 0;
+  voicePending = expectsVoice;
+  voiceStarted = false;
+  if (!expectsVoice) stopSound("thinking");   // text-only reply: nothing to wait for
   addMessage('assistant', data.text, data.tts_chunks || null);
 
   // Retroactively mark the last user bubble with SNR dot
@@ -997,7 +1055,29 @@ socket.on("pull_history_result", function(data) {
   }
 });
 
+socket.on("voice_weight", function(data) {
+  // Preview the incoming reply's weight in the gap ambience (deeper/slower = heavier).
+  applyWeightToAmbience(data && data.weight);
+  VLOG.recv("weight", (data && data.weight), data && data.expressive ? "(expressive)" : "");
+});
+
 socket.on("tts_chunk_start", function(data) {
+  // The moment the voice is truly ready: crossfade the gap ambience into the voice
+  // and reveal the stop-audio controls (audio is actually playing now).
+  if (!voiceStarted) {
+    voiceStarted = true; voicePending = false;
+    fadeOutSound("thinking", 240);
+    fadeOutSound("working", 240);
+    // Audio is playing now: promote synthing -> speaking (a real state flip).
+    if (currentState === "synthing") {
+      currentState = "speaking";
+      stateStartTime = Date.now();
+    }
+    if (stateDot) stateDot.setAttribute('data-state', 'speaking');
+    if (drawerStatusDot) drawerStatusDot.setAttribute('data-state', 'speaking');
+    if (typeof updateStatusTimer === "function") updateStatusTimer();
+  }
+  setStopControls(true);
   var prev = document.querySelector(".tts-speaking");
   if (prev) prev.classList.remove("tts-speaking");
 
@@ -1015,6 +1095,7 @@ socket.on("tts_chunk_start", function(data) {
 socket.on("tts_chunk_done", function() {
   var active = document.querySelector(".tts-speaking");
   if (active) active.classList.remove("tts-speaking");
+  setStopControls(false);   // playback finished -> hide stop-audio controls
   playSound("negatory");
 });
 
@@ -1056,6 +1137,12 @@ function updateStatusTimer() {
     // Reflective label: show the real pushed stage when we have one, else an
     // honest bare "thinking" -- never a phase fabricated from the clock.
     label = (currentStage || "thinking") + " " + formatElapsed(elapsed);
+  } else if (currentState === "synthing") {
+    var elapsed = Date.now() - stateStartTime;
+    label = SYNTHING_LABEL + " " + formatElapsed(elapsed);
+  } else if (currentState === "speaking") {
+    var elapsed = Date.now() - stateStartTime;
+    label = "speaking " + formatElapsed(elapsed);
   } else {
     var elapsed = Date.now() - stateStartTime;
     label = currentState + " " + formatElapsed(elapsed);
@@ -1069,14 +1156,27 @@ function setState(state) {
   stateStartTime = Date.now();
   currentStage = null;  // real stage is per-turn; a new state starts fresh
 
-  // Sound effects per state
-  stopSound("thinking");
-  stopSound("working");
-  lastThinkingPhase = "thinking";
+  // Sound effects per state. SUSTAIN the gap ambience when the server flips to
+  // 'speaking' but the voice audio has not actually started yet (synth latency):
+  // keep thinking/working looping so there is no dead air; tts_chunk_start crossfades
+  // it into the voice. A fresh turn (recording/transcribing/thinking) resets the gap.
+  // 'synthing' sustains the gap ambience (no dead air) until tts_chunk_start.
+  var sustainGap = (state === "synthing");
+  if (!sustainGap) {
+    stopSound("thinking");
+    stopSound("working");
+    lastThinkingPhase = "thinking";
+  }
   if (state === "recording") {
     playSound("record");
   } else if (state === "thinking") {
+    incomingWeight = 0;            // fresh turn: ambience starts neutral until weight arrives
     playSound("thinking");
+  } else if (state === "synthing") {
+    // Keep the ambience going; on a REPLAY it may need to start fresh (from idle).
+    if (sfx.thinking && sfx.thinking.paused) playSound("thinking");
+  } else if (state === "transcribing" || state === "idle") {
+    voicePending = false; voiceStarted = false;   // turn boundary
   }
 
   // Clear previous timer
@@ -1091,7 +1191,7 @@ function setState(state) {
     recordingTimeout = null;
   }
 
-  // Update state dot
+  // Update state dot ('synthing' has its own style; 'speaking' means audio playing).
   if (stateDot) {
     stateDot.setAttribute('data-state', state);
   }
@@ -1102,7 +1202,10 @@ function setState(state) {
   }
 
   // Set initial status text
-  var initialLabel = state === "recording" ? state + " 30s" : state + " 0s";
+  var initialLabel;
+  if (state === "recording") initialLabel = state + " 30s";
+  else if (state === "synthing") initialLabel = SYNTHING_LABEL + " 0s";
+  else initialLabel = state + " 0s";
   if (drawerStatusText) {
     drawerStatusText.textContent = initialLabel;
   }
@@ -1121,16 +1224,9 @@ function setState(state) {
   // Start upcount timer
   stateTimerInterval = setInterval(updateStatusTimer, 1000);
 
-  // Show/hide stop audio controls
-  if (canvasStopBtn && drawerStopLink) {
-    if (state === 'speaking') {
-      canvasStopBtn.style.display = 'block';
-      drawerStopLink.style.display = 'block';
-    } else {
-      canvasStopBtn.style.display = 'none';
-      drawerStopLink.style.display = 'none';
-    }
-  }
+  // A new state means audio is not playing yet (synth gap included) -> hide stop.
+  // Playback drives it back on via tts_chunk_start.
+  setStopControls(false);
 }
 
 // ============================================
@@ -1552,7 +1648,12 @@ function handleTTSClick(e) {
   if (active) active.classList.remove("tts-speaking");
   e.currentTarget.classList.add("tts-speaking");
 
-  socket.emit("narrate_caption", { text: text });
+  // Re-synth at runtime -> show the real 'synthing' state. The audio is not stored;
+  // clicking a block regenerates it (register resolved, weight applied) = active memory.
+  voicePending = true; voiceStarted = false;
+  setState("synthing");
+  VLOG.send("replay ->", '"' + text.slice(0, 60) + '"');
+  socket.emit("replay", { text: text });
 }
 
 // Render message content with embedded structured components
