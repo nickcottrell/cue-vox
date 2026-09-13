@@ -349,6 +349,7 @@ async function initAudio() {
           aperture_hex: (liveMode || window.VOICE.expressive) ? "" : currentApertureHex(),
           live: !!liveMode,
           voice: window.VOICE,
+          input_level: window.__inputLevel || 0,
         });
       };
       audioChunks = [];
@@ -481,6 +482,7 @@ var liveMode = false;
 var _audioCtx = null, _vadAnalyser = null, _vadBuf = null, _vadTimer = null;
 var _vadState = 'idle';           // 'idle' | 'capturing'
 var _voiceOnset = 0, _lastVoice = 0;
+var _lvlSum = 0, _lvlCount = 0;   // accumulate mic RMS over a turn (loudness sensing)
 
 // The tunable knobs -- the "realtime language" made local.
 window.VAD = {
@@ -500,8 +502,10 @@ window.VOICE = {
   bright: 0.4,       // -1 duller .. 3 brighter (Kokoro)
   gain: 1.0,         // 0.1 .. 3.0             (Kokoro)
   expressive: false, // true = Chatterbox expressive mode
-  exaggeration: 1.4, // Chatterbox feeling dial: 0.3 calm .. ~2.0 wild
+  exaggeration: 1.4, // manual feeling dial when autotone is off
+  autotone: true,    // let the server build the register from convo energy + loudness
 };
+window.__inputLevel = 0;   // mean mic RMS of the last live turn (loudness sensing)
 
 function setupVadAnalyser(stream) {
   try {
@@ -527,7 +531,8 @@ function _vadRms() {
 function _vadTick() {
   if (!liveMode) return;
   var now = performance.now();
-  var voiced = _vadRms() > window.VAD.threshold;
+  var level = _vadRms();
+  var voiced = level > window.VAD.threshold;
 
   // Barge-in: talking over the assistant cuts it off, then we capture your turn.
   if (voiced && currentState === 'speaking') {
@@ -544,10 +549,13 @@ function _vadTick() {
     if (!_voiceOnset) _voiceOnset = now;
     if (now - _voiceOnset >= window.VAD.onsetMs) {
       _vadState = 'capturing';
+      _lvlSum = 0; _lvlCount = 0;            // start measuring this turn's loudness
       startRecording();
     }
-  } else { // capturing -- end the turn after enough trailing silence
+  } else { // capturing -- accumulate loudness, end the turn after trailing silence
+    if (voiced) { _lvlSum += level; _lvlCount++; }
     if (now - _lastVoice >= window.VAD.silenceMs) {
+      window.__inputLevel = _lvlCount ? (_lvlSum / _lvlCount) : 0;  // mean RMS -> server
       _vadState = 'idle';
       _voiceOnset = 0;
       if (isRecording) stopRecording();   // submits via mediaRecorder.onstop

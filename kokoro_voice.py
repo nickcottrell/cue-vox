@@ -40,15 +40,31 @@ THREADS = int(os.environ.get("CUE_VOX_VOICE_THREADS", "8"))
 _speed = SPEED
 _bright = float(os.environ.get("CUE_VOX_VOICE_BRIGHT", "0.0"))
 _gain = float(os.environ.get("CUE_VOX_VOICE_GAIN", "1.0"))
+_lift = float(os.environ.get("CUE_VOX_LIFT", "0.8"))   # question rise strength (0 = off).
+# The rise is baked INTO the voice by editing its pitch track with the WORLD vocoder
+# (see _question_intonation): F0 is scaled up on the tail, timbre + tempo untouched.
+# This replaces the old resample bend, which coupled pitch+tempo and read as an artifact.
+# Register: which blend slot to speak (0=breathy Nicole .. 4=dramatic Sarah),
+# from register-voices.bin. Default breathy -- the "hey" whisper entry point.
+_register = int(os.environ.get("CUE_VOX_REGISTER", "0"))
+
+
+def set_register(idx):
+    """Select the voice register 0..4 (breathy -> dramatic) for the next turn."""
+    global _register
+    try:
+        _register = max(0, min(4, int(idx)))
+    except (TypeError, ValueError):
+        pass
 
 
 def _clamp(v, lo, hi):
     return max(lo, min(hi, v))
 
 
-def set_prosody(speed=None, bright=None, gain=None):
+def set_prosody(speed=None, bright=None, gain=None, lift=None):
     """Update the live prosody knobs. None leaves a knob unchanged. Clamped to sane ranges."""
-    global _speed, _bright, _gain
+    global _speed, _bright, _gain, _lift
     if speed is not None:
         try:
             _speed = _clamp(float(speed), 0.5, 2.0)
@@ -64,6 +80,11 @@ def set_prosody(speed=None, bright=None, gain=None):
             _gain = _clamp(float(gain), 0.1, 3.0)
         except (TypeError, ValueError):
             pass
+    if lift is not None:
+        try:
+            _lift = _clamp(float(lift), 0.0, 1.5)
+        except (TypeError, ValueError):
+            pass
 
 
 def _brighten(x, k):
@@ -73,6 +94,58 @@ def _brighten(x, k):
     kernel = np.ones(7, dtype=np.float32) / 7.0
     low = np.convolve(x, kernel, mode="same").astype(np.float32)
     return x + k * (x - low)
+
+
+def _question_intonation(x, sr, amount=0.8, tail=0.55):
+    """Put an ascending question contour INTO the voice by editing its pitch track.
+
+    WORLD decomposes speech into F0 (pitch) + spectral envelope (timbre) + aperiodicity.
+    We scale the F0 up along a smooth ramp over the last `tail` fraction of the utterance
+    and resynthesize. The pitch rises; timbre and tempo are untouched -- no resample
+    chipmunk artifact, because we are editing the actual pitch track, not the samples.
+    Returns the original `x` unchanged if WORLD is unavailable or the clip is too short.
+    """
+    if amount <= 0 or len(x) < int(0.12 * sr):
+        return x
+    try:
+        import pyworld as pw
+    except Exception:
+        return x
+    try:
+        xf = np.ascontiguousarray(x.astype(np.float64))
+        _f0, t = pw.dio(xf, sr, frame_period=5.0)
+        f0 = pw.stonemask(xf, _f0, t, sr)
+        sp = pw.cheaptrick(xf, f0, t, sr)
+        ap = pw.d4c(xf, f0, t, sr)
+        n = len(f0)
+        vidx = np.where(f0 > 0)[0]
+        if n < 4 or vidx.size < 4:
+            return x
+        # Anchor the rise to the last VOICED frame, not the last frame. Words like
+        # "it?" end in an unvoiced consonant (/t/), so the pitch peak must land on the
+        # final vowel or it gets discarded and the question sounds flat. Words like
+        # "huh?" end voiced, so this also covers the easy case.
+        end = int(vidx[-1])
+        k = max(2, int(min(0.6, tail) * n))              # window length up to the last vowel
+        start = max(0, end - k)
+        span_len = max(1, end - start)
+        # pivot = mid pitch of the body BEFORE the rising window (declination-free anchor)
+        body = f0[:start]
+        bv = body[body > 0]
+        pivot = float(np.median(bv)) if bv.size else float(np.median(f0[vidx]))
+        top = 2.0 ** (min(1.5, amount) * 7.0 / 12.0)     # semitone ratio at the last vowel
+        idx = np.arange(start, end + 1)
+        pos = (idx - start) / span_len                   # 0 at window start, 1 at last vowel
+        ease = 0.5 - 0.5 * np.cos(np.pi * pos)           # smooth cosine 0 -> 1
+        target = pivot * (1.0 + (top - 1.0) * ease)      # body pitch climbing to pivot*top
+        f0m = f0.copy()
+        blended = f0[idx] * (1.0 - ease) + target * ease  # seam-free: ease=0 keeps natural
+        f0m[idx] = np.where(f0[idx] > 0, blended, 0.0)    # unvoiced frames in the window stay 0
+        y = pw.synthesize(f0m, sp, ap, sr, frame_period=5.0)
+        return y.astype(np.float32)
+    except Exception as e:
+        print("[TTS] question intonation failed: %s" % e)
+        return x
 
 
 _tts = None
@@ -92,7 +165,11 @@ def _get_tts():
             import sherpa_onnx
 
             model = os.path.join(MODEL_DIR, "model.onnx")
-            voices = os.path.join(MODEL_DIR, "voices.bin")
+            # register-voices.bin bakes the 5 register blends into slots 0..4; fall
+            # back to stock voices.bin if it hasn't been built yet.
+            voices = os.path.join(MODEL_DIR, "register-voices.bin")
+            if not os.path.exists(voices):
+                voices = os.path.join(MODEL_DIR, "voices.bin")
             tokens = os.path.join(MODEL_DIR, "tokens.txt")
             data_dir = os.path.join(MODEL_DIR, "espeak-ng-data")
             missing = [p for p in (model, voices, tokens, data_dir) if not os.path.exists(p)]
@@ -140,12 +217,13 @@ def _write_wav(path, samples, sample_rate):
             )
 
 
-def synth_to_file(text):
+def synth_to_file(text, question=None):
     """Synthesize `text` to a temp WAV and return its path (the caller deletes it).
 
-    Returns None if Kokoro is unavailable or synthesis fails, so callers can fall
-    back to `say`. This is the synth half of the pipeline: it does NOT play, which
-    lets a caller synthesize the next chunk while the current one is still playing.
+    `question`: force the ascending question contour on/off. None = auto-detect from a
+    trailing '?'. Returns None if Kokoro is unavailable or synthesis fails, so callers
+    can fall back to `say`. This is the synth half of the pipeline: it does NOT play,
+    which lets a caller synthesize the next chunk while the current one is still playing.
     """
     text = (text or "").strip()
     if not text:
@@ -153,11 +231,15 @@ def synth_to_file(text):
     tts = _get_tts()
     if tts is None:
         return None
+    is_q = question if question is not None else text.rstrip().endswith("?")
     try:
-        audio = tts.generate(text, sid=VOICE_SID, speed=_speed)
+        audio = tts.generate(text, sid=_register, speed=_speed)
         if not audio.samples:
             return None
         x = np.asarray(audio.samples, dtype=np.float32)
+        if is_q and _lift > 0:
+            # Edit the pitch track BEFORE brighten/gain so DSP rides the final voice.
+            x = _question_intonation(x, audio.sample_rate, amount=_lift)
         x = _brighten(x, _bright)
         if _gain != 1.0:
             x = x * _gain

@@ -52,3 +52,7 @@ drops/
 
 # Runtime feed state -- pipeline_pin polls/mutates this; personal note content, not source
 feeds/
+
+# Ephemeral tuner working state + per-user saved voices (regenerable, not source)
+voice_state.json
+saved_voices.json

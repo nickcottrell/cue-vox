@@ -750,6 +750,46 @@ except Exception as _cbx_err:
 _expressive_mode = False   # set per turn from window.VOICE.expressive
 _exaggeration = 0.6        # Chatterbox expressiveness dial for this turn
 
+# --- Auto-tone: emotion BUILDS from a breathy default -----------------------
+# Each turn emits energy tokens into a decaying pool. When the pool climbs, the
+# register climbs (breathy -> dramatic); when the conversation cools, it settles
+# back. This is the simple stand-in for the thermal-token model; a preponderance
+# of energy past threshold bumps the tone. Tunable, and later can be fed by real
+# cue-mem token emission rates instead of this inline signal.
+_TONE = 0.0
+_prev_live = False         # tracks live-mode edge so we can floor on channel-open
+_TONE_DECAY = 0.6          # prior pool cools to 60% each turn (recency-weighted)
+_TONE_CAP = 9.0            # pool energy for full dramatic (high -> being loud is expensive)
+_TONE_GAMMA = 2.2          # concave-up: you EARN the right to be loud; whisper dominates
+_LOUD_FLOOR = 0.07         # mic RMS below this rests quiet; above spends into the pool
+_LOUD_GAIN = 8.0           # how much loud speech contributes to the energy pool
+_BREAK_MULT = 1.0          # pause-length multiplier: stretch/compress every <break>
+_PRESSURE = 1.0            # volume pressure: gain that intensifies with the register (heat)
+_EXCITED_WORDS = (
+    "wow", "amazing", "incredible", "love", "awesome", "great", "haha", "omg",
+    "excited", "yes", "hilarious", "perfect", "beautiful", "brilliant", "fantastic",
+)
+
+
+def _turn_energy(text):
+    """Cheap per-turn energy signal: exclamations, questions, excited words, length."""
+    t = (text or "").strip()
+    if not t:
+        return 0.0
+    tl = t.lower()
+    e = 0.3                                    # base rate per turn
+    e += t.count("!") * 0.8
+    e += t.count("?") * 0.2
+    e += sum(tl.count(w) for w in _EXCITED_WORDS) * 0.7
+    e += min(1.0, len(t.split()) / 40.0)       # longer, more engaged turns add a little
+    # Pauses EARN capital: a deliberate pause banks the budget that pays for the
+    # fuller delivery after it (silence buys emphasis). Ellipses count most; the
+    # comma/semicolon micro-pauses add a little.
+    e += t.count("...") * 0.6
+    e += tl.count(" um") * 0.3 + tl.count(" well,") * 0.2
+    e += (t.count(",") + t.count(";")) * 0.05
+    return e
+
 
 def _say_with_fallback(text, timeout=30):
     """Speak text. Prefer Kokoro (Isabella); fall back to macOS say, then pyttsx3."""
@@ -805,32 +845,34 @@ def _synth_worker():
             _play_queue.put(None)          # forward the poison pill
             _speech_queue.task_done()
             break
-        chunk_text, chunk_index, emit_events = item
         try:
+            seg_kind, payload, chunk_index, emit_events = item
             if tts_interrupted:
                 _play_queue.put(("skip", None, chunk_index, emit_events))
+            elif seg_kind == "clip":
+                # A [laugh]/[chuckle] marker -> play a prebaked in-voice clip, no synth.
+                _play_queue.put(("clip", payload, chunk_index, emit_events))
             else:
                 wav = None
                 # Expressive mode -> warm Chatterbox sidecar (real emotional range).
                 if _expressive_mode and _chatterbox_imported:
                     print("[TTS] expressive -> chatterbox sidecar (exag=%s)" % _exaggeration, flush=True)
                     try:
-                        wav = chatterbox_voice.synth_to_file(chunk_text, exaggeration=_exaggeration)
+                        wav = chatterbox_voice.synth_to_file(payload, exaggeration=_exaggeration)
                     except Exception as e:
                         print("[TTS] chatterbox synth error: %s -- falling back" % e)
                 # Default (or fallback) -> fast local Kokoro.
                 if wav is None and _kokoro_available:
                     try:
-                        wav = kokoro_voice.synth_to_file(chunk_text)
+                        wav = kokoro_voice.synth_to_file(payload)
                     except Exception as e:
                         print("[TTS] kokoro synth error: %s -- deferring to say" % e)
                 if wav:
                     _play_queue.put(("wav", wav, chunk_index, emit_events))
                 else:
-                    _play_queue.put(("say", chunk_text, chunk_index, emit_events))
+                    _play_queue.put(("say", payload, chunk_index, emit_events))
         except Exception as e:
-            print("[TTS SYNTH ERROR] %s" % e)
-            _play_queue.put(("skip", None, chunk_index, emit_events))
+            print("[TTS SYNTH ERROR] %s -- item dropped" % e)
         finally:
             _speech_queue.task_done()
 
@@ -848,7 +890,7 @@ def _play_worker():
                 if emit_events:
                     socketio.emit("tts_chunk_start", {"index": chunk_index})
                     socketio.sleep(0.05)
-                if kind == "wav":
+                if kind in ("wav", "clip"):
                     subprocess.run(["afplay", payload], check=False)
                 else:  # "say" fallback -- synth and play together
                     _say_with_fallback(payload)
@@ -1291,24 +1333,65 @@ def tts_chunk_split(text):
     return chunks if chunks else [text.strip()]
 
 
+# Spliced-in clips for [laugh]/[chuckle] markers -- an in-voice, deliberately
+# robotic "circuits laugh" rather than a faked human one. Swap the wavs to retune.
+_SFX_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "models", "sfx")
+_LAUGH_RE = re.compile(r"\[(laugh|chuckle)\]", re.IGNORECASE)
+
+
+def _clip_for(name):
+    """Resolve [laugh]/[chuckle] to a signature cue derived from the voice. In
+    expressive mode the cue is keyed to the current register (dial index 0..4);
+    otherwise the Isabella-default cue. A functional quantized voice->sound map."""
+    if _expressive_mode:
+        style = max(0.0, min(1.0, _exaggeration - 1.0))
+        idx = int(round(style * 4))
+        p = os.path.join(_SFX_DIR, "%s-%d.wav" % (name, idx))
+        if os.path.exists(p):
+            return p
+    p = os.path.join(_SFX_DIR, "%s.wav" % name)
+    return p if os.path.exists(p) else None
+
+
+def _split_laugh_segments(text):
+    """Split reply text into ('text', str) and ('clip', wav_path) segments on
+    [laugh]/[chuckle] markers. A missing clip just drops the marker."""
+    segments = []
+    text = text or ""
+    last = 0
+    for m in _LAUGH_RE.finditer(text):
+        pre = text[last:m.start()]
+        if pre.strip():
+            segments.append(("text", pre))
+        clip = _clip_for(m.group(1).lower())
+        if clip:
+            segments.append(("clip", clip))
+        last = m.end()
+    tail = text[last:]
+    if tail.strip():
+        segments.append(("text", tail))
+    return segments
+
+
 def speak_chunked(text):
-    """Enqueue text as paragraph-sized chunks for the speech consumer thread.
-    Emits tts_chunk_start/done events via the consumer. FIFO ordering,
-    no overlapping audio. Use flush_speech_queue() to interrupt."""
+    """Queue a reply for speech: text chunks synthesize, [laugh]/[chuckle] markers
+    splice in prebaked clips. Two-stage pipeline, FIFO, no overlap; interrupt via
+    flush_speech_queue()."""
     global tts_interrupted
     tts_interrupted = False
-    chunks = tts_chunk_split(text)
-    if not chunks:
+    items = []
+    for seg_kind, seg in _split_laugh_segments(text):
+        if seg_kind == "clip":
+            items.append(("clip", seg))
+        else:
+            for chunk in tts_chunk_split(seg):
+                clean = strip_markdown_for_tts(chunk)
+                if clean:
+                    items.append(("text", clean))
+    if not items:
         return
-    clean_chunks = []
-    for chunk in chunks:
-        clean = strip_markdown_for_tts(chunk)
-        if clean:
-            clean_chunks.append(clean)
-    if not clean_chunks:
-        return
-    for i, clean_chunk in enumerate(clean_chunks):
-        _speech_queue.put((clean_chunk, i, True))
+    for i, (seg_kind, payload) in enumerate(items):
+        _speech_queue.put((seg_kind, payload, i, True))
     # Wait for all chunks to synthesize, then for all audio to finish playing.
     _speech_queue.join()
     _play_queue.join()
@@ -4000,6 +4083,714 @@ def index():
     return render_template('index.html', cache_bust=int(_time.time()))
 
 
+# --- Voice tuning panel: tune the register + earn-curve with sliders, hear it,
+# and crystallize the feel to an inert SVG. ---
+@app.route('/tune')
+def tune_page():
+    # No-store so the tuner never serves a stale cached page after an edit.
+    resp = send_from_directory(app.static_folder, 'tune.html')
+    resp.headers['Cache-Control'] = 'no-store, must-revalidate'
+    resp.headers['Pragma'] = 'no-cache'
+    return resp
+
+
+@app.route('/api/tune/params', methods=['POST'])
+def tune_params():
+    global _TONE_DECAY, _TONE_CAP, _TONE_GAMMA, _LOUD_FLOOR, _BREAK_MULT, _PRESSURE
+    d = request.get_json(force=True, silent=True) or {}
+    try:
+        if 'decay' in d: _TONE_DECAY = float(d['decay'])
+        if 'cap' in d: _TONE_CAP = float(d['cap'])
+        if 'gamma' in d: _TONE_GAMMA = float(d['gamma'])
+        if 'loud_floor' in d: _LOUD_FLOOR = float(d['loud_floor'])
+        if 'break_mult' in d: _BREAK_MULT = max(0.25, min(4.0, float(d['break_mult'])))
+        if 'pressure' in d: _PRESSURE = max(0.4, min(2.5, float(d['pressure'])))
+    except (TypeError, ValueError):
+        return jsonify(ok=False, error='bad value'), 400
+    print("[TUNE] decay=%.2f cap=%.1f gamma=%.2f loud_floor=%.3f break=%.2fx pressure=%.2f"
+          % (_TONE_DECAY, _TONE_CAP, _TONE_GAMMA, _LOUD_FLOOR, _BREAK_MULT, _PRESSURE), flush=True)
+    return jsonify(ok=True, decay=_TONE_DECAY, cap=_TONE_CAP, gamma=_TONE_GAMMA,
+                   loud_floor=_LOUD_FLOOR, break_mult=_BREAK_MULT, pressure=_PRESSURE)
+
+
+# Deterministic emphasis -> tone. Markdown markup in the text varies the register:
+# *italic* is the intimate set-aside (a notch down, slower, lean-in), **bold** hits
+# fuller (registers up), normal rests at the base. This is the deterministic layer
+# on top of the earned auto-tone.
+_EMPH = re.compile(r'(\*\*\*.+?\*\*\*|___.+?___|\*\*.+?\*\*|__.+?__|\*.+?\*|_.+?_)', re.DOTALL)
+_EMPH_MAP = {                       # emphasis -> (register offset, speed)
+    "normal": (0, 1.0),
+    "italic": (-1, 0.92),          # set-aside: intimate, slower
+    "bold": (2, 1.0),             # fuller, spends capital
+    "bolditalic": (2, 0.95),      # emphatic but deliberate
+}
+
+
+def parse_emphasis(text):
+    """Split text into (span, emphasis) where emphasis is normal/italic/bold/bolditalic."""
+    spans, pos = [], 0
+    for m in _EMPH.finditer(text or ""):
+        if m.start() > pos:
+            spans.append((text[pos:m.start()], "normal"))
+        tok = m.group(1)
+        if tok[:3] in ("***", "___"):
+            spans.append((tok[3:-3], "bolditalic"))
+        elif tok[:2] in ("**", "__"):
+            spans.append((tok[2:-2], "bold"))
+        else:
+            spans.append((tok[1:-1], "italic"))
+        pos = m.end()
+    if pos < len(text or ""):
+        spans.append((text[pos:], "normal"))
+    return [(t, e) for t, e in spans if t.strip()]
+
+
+def _overlay_tail(speech_path, cue_path, lead=0.22):
+    """Mix an earcon so it rides CONCURRENTLY under the tail of `speech_path`,
+    starting `lead` seconds before the speech ends and extending a touch past it.
+    Returns a new temp wav path (the cue plays over the voice, not after it)."""
+    import wave
+    import tempfile
+    import numpy as np
+    try:
+        with wave.open(speech_path) as w:
+            sr = w.getframerate()
+            sp = np.frombuffer(w.readframes(w.getnframes()), dtype="<i2").astype(np.float32)
+        with wave.open(cue_path) as w:
+            cue = np.frombuffer(w.readframes(w.getnframes()), dtype="<i2").astype(np.float32)
+    except Exception:
+        return None
+    start = max(0, len(sp) - int(lead * sr))
+    out_len = max(len(sp), start + len(cue))
+    buf = np.zeros(out_len, dtype=np.float32)
+    buf[:len(sp)] += sp
+    buf[start:start + len(cue)] += cue
+    peak = float(np.max(np.abs(buf)) or 0.0)
+    if peak > 32767.0:
+        buf *= 32767.0 / peak     # only pull down if the sum clipped
+    fd, path = tempfile.mkstemp(suffix=".wav", prefix="cuevox-ask-")
+    os.close(fd)
+    with wave.open(path, "w") as w:
+        w.setnchannels(1); w.setsampwidth(2); w.setframerate(sr)
+        w.writeframes(buf.astype("<i2").tobytes())
+    return path
+
+
+def _concat_wavs(paths, out):
+    import wave
+    import numpy as np
+    chunks, rate = [], 24000
+    for p in paths:
+        with wave.open(p) as w:
+            rate = w.getframerate()
+            chunks.append(np.frombuffer(w.readframes(w.getnframes()), dtype="<i2"))
+        chunks.append(np.zeros(int(rate * 0.04), dtype="<i2"))   # tiny gap between spans
+    alld = np.concatenate(chunks) if chunks else np.zeros(1, dtype="<i2")
+    with wave.open(out, "w") as w:
+        w.setnchannels(1); w.setsampwidth(2); w.setframerate(rate); w.writeframes(alld.tobytes())
+
+
+# Deterministic pause indicators: [pause], [pause=long|short|med], or [pause=600] (ms).
+# A pause is authored silence -- and it earns capital for the fuller line after it.
+_PAUSE = re.compile(r'\[pause(?:[=:]\s*([a-z0-9]+))?\]', re.I)
+
+
+def _pause_ms(arg):
+    if not arg:
+        return 450
+    a = str(arg).lower().strip()
+    if a in ("short", "sm"):
+        return 220
+    if a in ("long", "lg"):
+        return 850
+    if a in ("med", "medium"):
+        return 450
+    try:
+        if a.endswith("ms"):
+            return max(60, min(3000, int(float(a[:-2]))))
+        if a.endswith("s"):
+            return max(60, min(3000, int(float(a[:-1]) * 1000)))
+        return max(60, min(3000, int(float(a))))
+    except ValueError:
+        return 450
+
+
+def parse_script(text):
+    """Render ops honoring [pause] tags AND *italic*/**bold** emphasis, in order.
+    Yields ('say', span, emphasis) and ('pause', ms)."""
+    ops, pos = [], 0
+    text = text or ""
+    for m in _PAUSE.finditer(text):
+        for span, emph in parse_emphasis(text[pos:m.start()]):
+            ops.append(("say", span, emph))
+        ops.append(("pause", _pause_ms(m.group(1))))
+        pos = m.end()
+    for span, emph in parse_emphasis(text[pos:]):
+        ops.append(("say", span, emph))
+    return ops
+
+
+def _silence_wav(ms, out, rate=24000):
+    import wave
+    import numpy as np
+    n = int(rate * ms / 1000.0)
+    with wave.open(out, "w") as w:
+        w.setnchannels(1); w.setsampwidth(2); w.setframerate(rate); w.writeframes(np.zeros(n, dtype="<i2").tobytes())
+
+
+def deterministic_markup(text):
+    """Rule-based translation of raw typographic signals into voice markup. No model,
+    fully deterministic. Not perfect on purpose -- a draft to hand-tweak.
+      **bold**/*italic* -> tags · ALL CAPS -> emphasis (lowercased) ·
+      ... -> long break · ' -- ' -> break
+    """
+    s = text or ""
+    s = re.sub(r"\*\*\*(.+?)\*\*\*", r"<strong=2>\1</strong>", s)
+    s = re.sub(r"\*\*(.+?)\*\*", r"<strong>\1</strong>", s)
+    s = re.sub(r"\*(.+?)\*", r"<em>\1</em>", s)
+    # ALL-CAPS runs (2+ letters, one or more words) -> strong (level 2), lowercased so
+    # the synth speaks words not letters. Single-letter caps (I, A) are left alone.
+    s = re.sub(r"\b[A-Z][A-Z']+(?:\s+[A-Z][A-Z']*)*\b",
+               lambda m: "<strong=2>%s</strong>" % m.group(0).lower(), s)
+    s = s.replace("...", " <break=3/> ")
+    s = re.sub(r"\s--\s", " <break/> ", s)
+    s = re.sub(r"[ \t]{2,}", " ", s).strip()
+    return s
+
+
+# Semantic voice markup (the smart layer). Intent lives in tags; the renderer maps
+# intent -> register/pause/cue. Vocabulary (SSML-flavoured where it fits):
+#   <break time="500ms"/> or <break dur="long"/>   a pause (earns capital)
+#   <emphasis level="strong|moderate|reduced">      fuller / softer
+#   <aside> or <em>                                 intimate set-aside (down a notch, slower)
+#   <strong>                                        fuller (up two)
+#   <register level="0-4">                          absolute register for a span
+#   <laugh/> <chuckle/>                             signature cue
+# --- Voice ontology: t-shirt sizes + <strong>/<em> stacking, encodes to VRGB ---
+# Count model (the standard): one atomic tag + a count. Stacking == counting.
+#   <break/> = 1 beat · <break/><break/><break/> = <break=3/> = 3 beats
+#   <em=2> = <em><em> · <strong=3> = <strong><strong><strong>
+_BEAT_MS = 250                             # one <break/> unit
+_EM_STEP = 1.15                            # force per <em> step (multiplies, so stacks)
+_STRONG_STEP = 1.30                        # force per <strong> step
+_FORCE_STEP = 1.20                         # force per <force> step
+_SOFT_STEP = 0.80                          # force per <soft> step (quieter)
+
+# Legacy t-shirt sizing, still parsed so old scripts do not break. Authoring standard
+# is counts (above); sizes are a quiet fallback.
+_SIZE_IDX = {"xs": 0, "s": 1, "m": 2, "l": 3, "xl": 4}
+_REGISTER_SZ = [0, 1, 2, 3, 4]
+_BREAK_SZ = [120, 250, 450, 800, 1400]     # ms
+_FORCE_SZ = [0.7, 0.85, 1.0, 1.3, 1.7]     # gain multiplier
+_RATE_SZ = [0.8, 0.9, 1.0, 1.12, 1.25]     # speed multiplier
+
+# <tag=n> / <tag=n/> is friendly shorthand; expand to <tag n="n"> so the XML parser
+# (which forbids '=' in a tag name) can read the count off an attribute.
+_COUNT_SHORTHAND = re.compile(r"<([a-zA-Z][\w-]*)=(-?[\d.]+)\s*(/?)>")
+
+
+def _expand_counts(s):
+    return _COUNT_SHORTHAND.sub(r'<\1 n="\2"\3>', s or "")
+
+
+def _count(el, default=1.0):
+    """Read a tag's count (the n attribute), defaulting to 1 (a bare tag = one step)."""
+    try:
+        return float(el.get("n") if el.get("n") is not None else default)
+    except (TypeError, ValueError):
+        return default
+
+
+def _sz(table, size, default):
+    i = _SIZE_IDX.get((size or "").lower())
+    return table[i] if i is not None else default
+
+
+def _tag_contrib(tag, el):
+    """A tag's contribution to the accumulating delivery context. Composites expand
+    to dimensions; dimension tags read t-shirt size or a precise value."""
+    t = tag.lower()
+    g = el.get
+    if t in ("em", "i"):
+        return {"force": _EM_STEP ** _count(el)}          # <em=n> == n stacked <em>
+    if t in ("strong", "b"):
+        return {"force": _STRONG_STEP ** _count(el)}       # <strong=n> == n stacked <strong>
+    if t == "emphasis":
+        return {"force": {"strong": 1.5, "moderate": 1.25, "reduced": 0.8}.get((g("level") or "moderate").lower(), 1.25)}
+    if t == "aside":
+        return {"reg_off": -1, "force": 0.85, "rate": 0.92}
+    if t == "soft":
+        return {"force": _SOFT_STEP ** _count(el)}          # <soft=n> == n stacked <soft>
+    if t == "whisper":
+        return {"reg": 0, "force": 0.7}
+    if t == "declare":
+        return {"reg": 4, "force": 1.3}
+    if t == "ask":
+        return {"lift": True}
+    if t == "amp":
+        # multiplier tag: scales the force of everything inside by x (stacks).
+        try:
+            return {"force": float(g("x") or g("by") or "1.5")}
+        except ValueError:
+            return {"force": 1.5}
+    if t == "force":
+        if g("gain"):
+            try:
+                return {"force": float(g("gain"))}          # precise escape
+            except ValueError:
+                return {}
+        if g("size"):
+            return {"force": _sz(_FORCE_SZ, g("size"), 1.0)}  # legacy t-shirt
+        return {"force": _FORCE_STEP ** _count(el)}          # <force=n> == n stacked <force>
+    if t == "rate":
+        try:
+            return {"rate": float(g("rate"))} if g("rate") else {"rate": _sz(_RATE_SZ, g("size"), 1.0)}
+        except ValueError:
+            return {}
+    if t == "register":
+        if g("level") is not None:
+            try:
+                return {"reg": int(round(float(g("level"))))}
+            except ValueError:
+                return {}
+        i = _SIZE_IDX.get((g("size") or "").lower())
+        return {"reg": _REGISTER_SZ[i]} if i is not None else {}
+    if t == "prosody":
+        c = {}
+        for k, dst, cast in (("register", "reg", lambda v: int(round(float(v)))),
+                             ("rate", "speed", float), ("speed", "speed", float),
+                             ("gain", "gain", float), ("pressure", "gain", float)):
+            if g(k) is not None:
+                try:
+                    c[dst] = cast(g(k))
+                except ValueError:
+                    pass
+        return c
+    return {}
+
+
+def _merge_ctx(ctx, c):
+    """Accumulate a contribution into the context: reg_off sums, force/rate multiply,
+    reg/speed/gain/lift override. This is how <strong><em> stacks."""
+    n = dict(ctx)
+    if "reg_off" in c:
+        n["reg_off"] = n.get("reg_off", 0) + c["reg_off"]
+    if "force" in c:
+        n["force"] = n.get("force", 1.0) * c["force"]
+    if "rate" in c:
+        n["rate"] = n.get("rate", 1.0) * c["rate"]
+    for k in ("reg", "speed", "gain", "lift"):
+        if k in c:
+            n[k] = c[k]
+    return n
+
+
+def directive_to_vrgb(dv, base=0):
+    """Encode a resolved span directive as a VRGB colour: hue=register (breathy cool
+    -> dramatic warm), saturation=force, lightness=rate."""
+    import colorsys
+    reg = dv["reg"] if "reg" in dv else base + dv.get("reg_off", 0)
+    reg = max(0, min(4, reg))
+    force = dv.get("force", 1.0)
+    rate = dv.get("speed", dv.get("rate", 1.0))
+    hue = (250 - (reg / 4.0) * 220) % 360
+    sat = max(0.15, min(1.0, 0.35 + (force - 1.0) * 0.6))
+    light = max(0.30, min(0.85, 0.55 + (rate - 1.0) * 0.6))
+    r, gg, b = colorsys.hls_to_rgb(hue / 360.0, light, sat)
+    return "#%02x%02x%02x" % (int(r * 255), int(gg * 255), int(b * 255))
+
+
+_KNOWN_TAGS = {"vox", "break", "pause", "laugh", "chuckle", "emphasis", "aside", "em", "i",
+               "strong", "b", "soft", "whisper", "declare", "ask", "amp", "force", "rate",
+               "register", "prosody"}
+
+
+def resolve_instructions(text, base, tone):
+    """Resolve markup to the executable instruction list (what the renderer will do)."""
+    ops = _ops_from_text(text) or [("say", text, {})]
+    out = []
+    for op in ops:
+        if op[0] == "say":
+            _, span, dv = op
+            reg = dv["reg"] if "reg" in dv else base + dv.get("reg_off", 0)
+            reg = max(0, min(4, int(reg)))
+            gain = float(dv["gain"]) if "gain" in dv else tone.get("pressure", 1.0) * (1.0 + 0.08 * reg) * dv.get("force", 1.0)
+            out.append({"say": span.strip(), "register": reg, "gain": round(max(0.4, min(2.5, gain)), 3),
+                        "speed": round(float(dv.get("speed", dv.get("rate", 1.0))), 3),
+                        "lift": bool(dv.get("lift") or span.rstrip().endswith("?")),
+                        "vrgb": directive_to_vrgb(dv, base)})
+        elif op[0] == "pause":
+            out.append({"pause_ms": int(op[1] * tone.get("break_mult", 1.0))})
+        elif op[0] == "clip":
+            out.append({"cue": op[1]})
+    return out
+
+
+def crystallize_package(text, base, tone, steer=""):
+    """Package the current script + dials into an INERT SVG: instructions for the
+    future transformational apparatus. Visual is a delivery strip (a swatch per
+    span, colour=VRGB, height=gain, gaps=pauses); <metadata> carries the full,
+    executable instruction set. No script, no external refs."""
+    import json
+    ops = _ops_from_text(text) or [("say", text, {})]
+    instr = []
+    for op in ops:
+        if op[0] == "say":
+            _, span, dv = op
+            reg = dv["reg"] if "reg" in dv else base + dv.get("reg_off", 0)
+            reg = max(0, min(4, int(reg)))
+            if "gain" in dv:
+                gain = float(dv["gain"])
+            else:
+                gain = tone.get("pressure", 1.0) * (1.0 + 0.08 * reg) * dv.get("force", 1.0)
+            instr.append({"say": span.strip(), "register": reg,
+                          "gain": round(max(0.4, min(2.5, gain)), 3),
+                          "speed": round(float(dv.get("speed", dv.get("rate", 1.0))), 3),
+                          "lift": bool(dv.get("lift") or span.rstrip().endswith("?")),
+                          "vrgb": directive_to_vrgb(dv, base)})
+        elif op[0] == "pause":
+            instr.append({"pause_ms": int(op[1] * tone.get("break_mult", 1.0))})
+        elif op[0] == "clip":
+            instr.append({"cue": op[1]})
+
+    H, y0 = 190, 150
+    x = 20
+    body = []
+    for it in instr:
+        if "say" in it:
+            w = max(28, min(240, len(it["say"]) * 4))
+            h = int(28 + (it["gain"] - 0.4) / 2.1 * 90)     # gain -> height
+            body.append('<rect x="%d" y="%d" width="%d" height="%d" rx="3" fill="%s" data-register="%d" data-gain="%s"/>'
+                        % (x, y0 - h, w, h, it["vrgb"], it["register"], it["gain"]))
+            label = (it["say"][:16] + ("..." if len(it["say"]) > 16 else "")).replace("&", "&amp;").replace("<", "&lt;")
+            body.append('<text x="%d" y="%d" fill="#9a9a9a" font-size="10">%s</text>' % (x, y0 + 14, label))
+            x += w + 6
+        elif "pause_ms" in it:
+            g = max(6, int(it["pause_ms"] * 0.05))          # pause -> gap width
+            body.append('<line x1="%d" y1="%d" x2="%d" y2="%d" stroke="#3a3a3a" stroke-width="1"/>' % (x + g // 2, y0 - 10, x + g // 2, y0))
+            x += g
+        elif "cue" in it:
+            body.append('<circle cx="%d" cy="%d" r="7" fill="none" stroke="#c9c9c9" stroke-width="1.2"/>' % (x + 8, y0 - 20))
+            x += 22
+    W = x + 20
+    out = ['<svg xmlns="http://www.w3.org/2000/svg" width="%d" height="%d" viewBox="0 0 %d %d" font-family="Zilla Slab, Georgia, serif">' % (W, H, W, H)]
+    out.append('<title>cue-vox voice delivery package</title>')
+    out.append('<desc>Instructions for the transformational apparatus. Each swatch is a spoken span: fill is its VRGB coordinate (hue=register, saturation=force, lightness=rate), height is gain; gaps are pauses. The full executable instruction set is in the metadata.</desc>')
+    out.append('<rect width="%d" height="%d" fill="#161616"/>' % (W, H))
+    out.append('<text x="20" y="30" fill="#c9c9c9" font-size="13">voice delivery package</text>')
+    out.extend(body)
+    meta = {"package": "cue-vox-voice-delivery", "base_register": base, "tone": tone,
+            "steer": steer, "script": text, "instructions": instr,
+            "note": "each say carries register/gain/speed/lift/vrgb; pause_ms are gaps; cue is a signature earcon"}
+    out.append('<metadata id="vrgb-voice-package">%s</metadata>' % json.dumps(meta).replace("&", "&amp;").replace("<", "&lt;"))
+    out.append('</svg>')
+    return "\n".join(out)
+
+
+def parse_vox(text):
+    """Parse voice XML into render ops with ACCUMULATING context (nested tags stack).
+    Ops: ('say', text, directive), ('pause', ms), ('clip', name)."""
+    import xml.etree.ElementTree as ET
+    s = _expand_counts((text or "").strip())    # <tag=n> -> <tag n="n">
+    if "<" not in s or ">" not in s:
+        return None
+    if not s.startswith("<vox"):
+        s = "<vox>" + s + "</vox>"
+    try:
+        root = ET.fromstring(s)
+    except ET.ParseError:
+        return None
+    ops = []
+
+    def say(t, ctx):
+        if t and t.strip():
+            ops.append(("say", t, dict(ctx)))
+
+    def walk(el, ctx):
+        say(el.text, ctx)
+        for ch in el:
+            tag = ch.tag.lower()
+            if tag in ("break", "pause"):
+                if ch.get("n") is not None:
+                    ms = _count(ch) * _BEAT_MS                 # <break=n/> = n beats
+                elif ch.get("size"):
+                    i = _SIZE_IDX.get(ch.get("size").lower())
+                    ms = _BREAK_SZ[i] if i is not None else _BEAT_MS   # legacy t-shirt
+                elif ch.get("time") or ch.get("dur"):
+                    ms = _pause_ms(ch.get("time") or ch.get("dur"))    # legacy precise
+                else:
+                    ms = _BEAT_MS                              # bare <break/> = 1 beat
+                ops.append(("pause", int(ms)))
+            elif tag in ("laugh", "chuckle"):
+                ops.append(("clip", tag))
+            else:
+                walk(ch, _merge_ctx(ctx, _tag_contrib(tag, ch)))   # nested tags accumulate
+            say(ch.tail, ctx)
+
+    walk(root, {})
+    return ops
+
+
+def _fold_orphan_punct(ops):
+    """Style-guide safety net: a say span that is only punctuation (a stray '.' left
+    outside its parent tag) gets folded onto the previous spoken span, never voiced
+    alone. Empty/whitespace spans are dropped. Authoring rule: keep the period INSIDE
+    its tag (write '<aside>all green.</aside>', not '<aside>all green</aside>.')."""
+    out = []
+    for op in ops:
+        if op and op[0] == "say":
+            span = op[1] or ""
+            if not span.strip():
+                continue                                  # drop empty/whitespace spans
+            if not any(c.isalnum() for c in span):        # punctuation-only orphan
+                for j in range(len(out) - 1, -1, -1):
+                    if out[j][0] == "say":
+                        prev = out[j]
+                        out[j] = ("say", prev[1].rstrip() + span.strip(), prev[2])
+                        break
+                continue                                  # nothing to attach to -> drop
+        # Coalesce adjacent pauses so stacked <break/><break/> == <break=2/> exactly
+        # (one op, no inter-segment gap), not just equal in total duration.
+        if op and op[0] == "pause" and out and out[-1][0] == "pause":
+            out[-1] = ("pause", out[-1][1] + op[1])
+            continue
+        out.append(op)
+    return out
+
+
+def _ops_from_text(text):
+    """Semantic XML if it parses, else fall back to markdown/[pause] tags. Unified ops."""
+    ov = parse_vox(text)
+    if ov is not None:
+        return _fold_orphan_punct(ov)
+    ops = []
+    for op in parse_script(text):
+        if op[0] == "say":
+            _, span, emph = op
+            off, spd = _EMPH_MAP.get(emph, (0, 1.0))
+            ops.append(("say", span, {"reg_off": off, "speed": spd}))
+        else:
+            ops.append(op)
+    return _fold_orphan_punct(ops)
+
+
+@app.route('/api/tune/sample', methods=['POST'])
+def tune_sample():
+    d = request.get_json(force=True, silent=True) or {}
+    base = int(d.get('register', 0))
+    # Delivery settings straight from the request so Hear renders the exact current
+    # slider state (no dependence on the debounced params push). Fall back to globals.
+    try:
+        pressure = float(d.get('pressure', _PRESSURE))
+    except (TypeError, ValueError):
+        pressure = _PRESSURE
+    try:
+        break_mult = float(d.get('break_mult', _BREAK_MULT))
+    except (TypeError, ValueError):
+        break_mult = _BREAK_MULT
+    try:
+        lift_amt = float(d.get('lift_amount', 0.8))   # WORLD F0 question-rise strength
+    except (TypeError, ValueError):
+        lift_amt = 0.8
+    kokoro_voice.set_prosody(lift=lift_amt)   # question-rise strength for this render
+    text = d.get('text') or "Hey. Just kicking it here with you. This is the register."
+    if not _kokoro_available:
+        return jsonify(ok=False, error='kokoro unavailable'), 200
+
+    import tempfile
+    ops = _ops_from_text(text) or [("say", text, {})]
+    parts = []
+    for op in ops:
+        if op[0] == "say":
+            _, span, dv = op
+            reg = dv["reg"] if "reg" in dv else base + dv.get("reg_off", 0)
+            regc = max(0, min(4, int(reg)))
+            kokoro_voice.set_register(regc)
+            # Precise <prosody gain=...> overrides; otherwise volume pressure that
+            # intensifies with the register (heat), scaled by accumulated force.
+            if "gain" in dv:
+                gain = float(dv["gain"])
+            else:
+                gain = pressure * (1.0 + 0.08 * regc) * dv.get("force", 1.0)
+            gain = max(0.4, min(2.5, gain))
+            speed = float(dv.get("speed", dv.get("rate", 1.0)))
+            kokoro_voice.set_prosody(speed=speed, gain=gain)
+            # A question (<ask> or trailing ?) gets the rise baked INTO the voice via
+            # the WORLD F0-contour edit -- not a faked bend, not an earcon alongside.
+            is_q = bool(dv.get("lift") or span.rstrip().endswith("?"))
+            p = kokoro_voice.synth_to_file(span, question=is_q)
+            if p:
+                parts.append(p)
+        elif op[0] == "pause":
+            fd, sp = tempfile.mkstemp(suffix=".wav", prefix="pause-")
+            os.close(fd)
+            _silence_wav(int(op[1] * break_mult), sp)   # break-length multiplier (live)
+            parts.append(sp)
+        elif op[0] == "clip":
+            cue = os.path.join(_SFX_DIR, "%s-%d.wav" % (op[1], max(0, min(4, base))))
+            if not os.path.exists(cue):
+                cue = os.path.join(_SFX_DIR, "%s.wav" % op[1])
+            if os.path.exists(cue):
+                parts.append(cue)
+    kokoro_voice.set_prosody(speed=1.0, gain=1.0)   # reset so it doesn't leak to live turns
+    if not parts:
+        return jsonify(ok=False), 200
+
+    fd, out = tempfile.mkstemp(suffix=".wav", prefix="tune-")
+    os.close(fd)
+    _concat_wavs(parts, out)
+    for p in parts:
+        if p.startswith(_SFX_DIR):
+            continue   # shared cue file, keep it
+        try:
+            os.remove(p)
+        except OSError:
+            pass
+
+    def _play_clean(o):
+        try:
+            subprocess.run(['afplay', o], check=False)
+        finally:
+            try:
+                os.remove(o)
+            except OSError:
+                pass
+    threading.Thread(target=_play_clean, args=(out,), daemon=True).start()
+    return jsonify(ok=True, ops=len(ops))
+
+
+@app.route('/api/tune/stop', methods=['POST'])
+def tune_stop():
+    subprocess.run(['killall', 'afplay'], stderr=subprocess.DEVNULL)
+    return jsonify(ok=True)
+
+
+_ENCODE_PROMPT = """You refine voice markup, shaping the delivery like clay. The text below may already contain tags an author placed by hand. PRESERVE their tags and their exact words. Only add or adjust markup where it clearly helps the read.
+
+Tags you may use:
+- <break dur='short'/>, <break dur='long'/>, or precise <break time='350ms'/> for pauses.
+- <aside>...</aside> intimate set-aside (thrown away, lowered).
+- <emphasis level='strong'>...</emphasis> for the few words that land hardest.
+- <register level='0-4'>...</register> to shift a whole span (0 breathy, 4 dramatic).
+- <prosody register='0-4' rate='0.9' gain='1.3'>...</prosody> for precise per-span control.
+- <laugh/> or <chuckle/> for a light reaction.
+
+Rules: AUGMENT ONLY. Keep every word exactly as given, do not add, remove, reorder, or change any word (not even contractions). You may ONLY insert or adjust markup tags around the existing words, and keep the author's existing tags. Do not over-tag. Return ONLY the annotated text, nothing else.
+
+The design direction may be about the DELIVERY (the feel) OR about the MARKUP itself, for example: "put the period inside the emphasis tag", "wrap X in an aside", "move the break before Y", "tighten the pauses", "make the whole thing breathier". Apply it to the tags and to punctuation placement, while keeping every word.
+
+Example
+TEXT: Okay hear me out. I wasn't sure at first but now I think we are onto something.
+REFINED: Okay <break dur='short'/> hear me out. <break/> I wasn't sure at first, <aside>honestly</aside> but now <break/> I think we're onto <emphasis level='strong'>something real</emphasis>."""
+
+
+@app.route('/api/tune/encode', methods=['POST'])
+def tune_encode():
+    d = request.get_json(force=True, silent=True) or {}
+    text = (d.get('text') or '').strip()
+    if not text:
+        return jsonify(ok=False, error='no text'), 400
+    steer = (d.get('steer') or '').strip()
+    # Refine in place, steered: pass the current markup as-is plus an optional
+    # design direction so the model shapes what's there toward the steer.
+    steer_block = ("\nDESIGN DIRECTION (apply this): %s\n" % steer) if steer else ""
+    prompt = "%s%s\nTEXT: %s\nREFINED:" % (_ENCODE_PROMPT, steer_block, text)
+    try:
+        from ollama_client import generate
+        out = (generate(prompt, max_tokens=500, timeout=45, temperature=0.35) or '').strip()
+    except Exception as e:
+        return jsonify(ok=False, error=str(e)), 200
+    if out.upper().startswith('REFINED:'):
+        out = out.split(':', 1)[1].strip()
+
+    # Augment-only guard: the words (tags stripped) must be unchanged. If the model
+    # altered any word, keep the author's text untouched rather than mangle it.
+    def _wtok(s):
+        return re.findall(r"[a-z0-9']+", re.sub(r"<[^>]+>", "", s or "").lower())
+    if not out:
+        return jsonify(ok=False, error='empty'), 200
+    if _wtok(out) != _wtok(text):
+        return jsonify(ok=True, text=text, augmented=False,
+                       warning='kept your words unchanged (regen tried to alter them)')
+    return jsonify(ok=True, text=out, augmented=True)
+
+
+@app.route('/api/tune/package', methods=['POST'])
+def tune_package():
+    from flask import Response
+    d = request.get_json(force=True, silent=True) or {}
+    text = (d.get('text') or '').strip()
+    base = int(d.get('register', 0))
+
+    def _f(k, dflt):
+        try:
+            return float(d.get(k, dflt))
+        except (TypeError, ValueError):
+            return dflt
+    tone = {'gamma': _f('gamma', _TONE_GAMMA), 'cap': _f('cap', _TONE_CAP), 'decay': _f('decay', _TONE_DECAY),
+            'loud_floor': _f('loud_floor', _LOUD_FLOOR), 'break_mult': _f('break_mult', _BREAK_MULT),
+            'pressure': _f('pressure', _PRESSURE)}
+    svg = crystallize_package(text, base, tone, steer=d.get('steer', ''))
+    return Response(svg, mimetype='image/svg+xml',
+                    headers={'Content-Disposition': 'attachment; filename=voice-package.svg'})
+
+
+@app.route('/api/tune/translate', methods=['POST'])
+def tune_translate():
+    d = request.get_json(force=True, silent=True) or {}
+    return jsonify(ok=True, text=deterministic_markup(d.get('text') or ''))
+
+
+@app.route('/api/tune/parse', methods=['POST'])
+def tune_parse():
+    d = request.get_json(force=True, silent=True) or {}
+    text = d.get('text') or ''
+    base = int(d.get('register', 0))
+
+    def _f(k, dflt):
+        try:
+            return float(d.get(k, dflt))
+        except (TypeError, ValueError):
+            return dflt
+    tone = {'pressure': _f('pressure', _PRESSURE), 'break_mult': _f('break_mult', _BREAK_MULT)}
+    instr = resolve_instructions(text, base, tone)
+    tags = set(m.lower() for m in re.findall(r"</?([a-zA-Z][\w-]*)", text))
+    unknown = sorted(t for t in tags if t not in _KNOWN_TAGS)
+    return jsonify(ok=True, ops=instr, unknown=unknown)
+
+
+# Lightweight persistence: one working state (text + settings + steering) so a
+# refresh doesn't lose progress. Save writes it; the panel restores it on load.
+_STATE_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "voice_state.json")
+
+
+@app.route('/api/tune/state', methods=['GET', 'POST'])
+def tune_state():
+    import json
+    if request.method == 'POST':
+        d = request.get_json(force=True, silent=True) or {}
+        try:
+            json.dump(d, open(_STATE_PATH, 'w'), indent=2)
+        except Exception as e:
+            return jsonify(ok=False, error=str(e)), 200
+        return jsonify(ok=True)
+    try:
+        st = json.load(open(_STATE_PATH)) if os.path.exists(_STATE_PATH) else {}
+    except Exception:
+        st = {}
+    return jsonify(ok=True, state=st)
+
+
+@app.route('/api/tune/export.svg')
+def tune_export():
+    from flask import Response
+    import voice_crystallize
+    models_dir = os.path.dirname(kokoro_voice.MODEL_DIR) if _kokoro_available else 'models'
+    svg = voice_crystallize.crystallize(models_dir, tone={'decay': _TONE_DECAY, 'cap': _TONE_CAP, 'gamma': _TONE_GAMMA})
+    return Response(svg, mimetype='image/svg+xml',
+                    headers={'Content-Disposition': 'attachment; filename=voice-register-ladder.svg'})
+
+
 # Vault image resolver -- searches all vault HOT directories
 _VAULT_SEARCH_PATHS = [
     MAESTRO_ROOT / "vault-hot" / "HOT",
@@ -6122,17 +6913,43 @@ def handle_audio(data):
         # Live voice prosody (window.VOICE from the client): tempo / brightness /
         # gain, plus expressive mode (route synthesis to Chatterbox). Set once per
         # turn; the synth worker reads these globals.
-        global _expressive_mode, _exaggeration
+        global _expressive_mode, _exaggeration, _TONE, _prev_live
         _v = data.get('voice') or {}
+        live = bool(data.get('live'))
+        # Live mode opens a private channel -> reset to the breathy "hey" floor.
+        if live and not _prev_live:
+            _TONE = 0.0
+        _prev_live = live
+
         if _kokoro_available:
             kokoro_voice.set_prosody(speed=_v.get('speed'), bright=_v.get('bright'), gain=_v.get('gain'))
         _expressive_mode = bool(_v.get('expressive'))
-        try:
-            _exaggeration = float(_v.get('exaggeration', 0.6))
-        except (TypeError, ValueError):
-            _exaggeration = 0.6
-        print("[VOICE] turn received: voice=%s -> expressive=%s exaggeration=%s"
-              % (_v, _expressive_mode, _exaggeration), flush=True)
+
+        if _v.get('autotone', True):
+            try:
+                lvl = float(data.get('input_level') or 0.0)
+            except (TypeError, ValueError):
+                lvl = 0.0
+            # Loudness above a normal-quiet floor SPENDS energy into the pool -- being
+            # loud is a capital expenditure, not a free jump. Excited words add too.
+            loud_energy = max(0.0, lvl - _LOUD_FLOOR) * _LOUD_GAIN
+            _TONE = _TONE * _TONE_DECAY + _turn_energy(text) + loud_energy
+            # Concave-up: you EARN the right to be loud. Whisper is the strong default,
+            # the top registers cost progressively more sustained energy.
+            norm = min(1.0, _TONE / _TONE_CAP)
+            style = norm ** _TONE_GAMMA
+            _exaggeration = 1.0 + style
+            print("[TONE] pool=%.2f norm=%.2f -> style=%.2f dial=%.2f (loud +%.2f)"
+                  % (_TONE, norm, style, _exaggeration, loud_energy), flush=True)
+        else:
+            try:
+                _exaggeration = float(_v.get('exaggeration', 0.6))
+            except (TypeError, ValueError):
+                _exaggeration = 0.6
+
+        # Drive the fast Kokoro register (0..4) from the same dial.
+        if _kokoro_available:
+            kokoro_voice.set_register(int(round(max(0.0, min(1.0, _exaggeration - 1.0)) * 4)))
 
         # Inject temporal context if query is time-related
         enhanced_text = inject_temporal_context(text)
@@ -7297,7 +8114,7 @@ def handle_narrate_caption(data):
     flush_speech_queue()
     global tts_interrupted
     tts_interrupted = False
-    _speech_queue.put((text, 0, False))
+    _speech_queue.put(("text", text, 0, False))
 
     def _wait_done():
         _speech_queue.join()
@@ -7515,7 +8332,7 @@ def api_cuesheet_launch():
         announce_text = doc.get("announce", "")
         if announce_text:
             socketio.emit("response", {"role": "assistant", "text": announce_text, "tts_chunks": [announce_text]})
-            _speech_queue.put((announce_text, 0, False))
+            _speech_queue.put(("text", announce_text, 0, False))
 
         sheet_name = doc.get("name", p.stem)
         socketio.emit("cuesheet_launched", {"name": sheet_name, "path": str(p)})
@@ -7727,7 +8544,7 @@ def handle_cuesheet_launch(data):
         announce_text = doc.get("announce", "")
         if announce_text:
             socketio.emit("response", {"role": "assistant", "text": announce_text, "tts_chunks": [announce_text]})
-            _speech_queue.put((announce_text, 0, False))
+            _speech_queue.put(("text", announce_text, 0, False))
 
         print("[CUESHEET] Launched: %s (%d tokens created)" % (sheet_name, len(created_tokens)))
 
@@ -7752,7 +8569,7 @@ def api_speak():
     socketio.emit("response", {"role": "assistant", "text": text, "tts_chunks": [text]})
     global tts_interrupted
     tts_interrupted = False
-    _speech_queue.put((text, 0, False))
+    _speech_queue.put(("text", text, 0, False))
     _speech_queue.join()
     return {"ok": True}
 
@@ -7813,7 +8630,7 @@ def api_converse():
             start_speech_tracking(result["clean_response"])
             speak_text = strip_markdown_for_tts(result["tts_text"])
             if speak_text:
-                _speech_queue.put((speak_text, 0, False))
+                _speech_queue.put(("text", speak_text, 0, False))
                 _speech_queue.join()
             finish_speech()
             socketio.emit('state_change', {'state': 'idle'})
