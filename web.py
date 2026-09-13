@@ -717,6 +717,11 @@ TTS_VOICE = ""
 # only the first chunk carries synth latency. FIFO, no overlaps. ---
 _speech_queue = queue.Queue()   # text chunks awaiting synthesis
 _play_queue = queue.Queue()     # synthesized items awaiting playback
+# Hold gate for the barge/objection protocol: cleared = HOLD (the play worker blocks at
+# the next chunk boundary, keeping remaining chunks); set = play. Distinct from
+# flush (which discards). Lets a reply be paused and resumed, or flushed on a sustained.
+_play_gate = threading.Event()
+_play_gate.set()
 
 # Try to import pyttsx3 as fallback TTS engine
 try:
@@ -969,6 +974,9 @@ def _synth_worker():
 def _play_worker():
     """Stage 2: play synthesized items in order, one at a time (no overlap)."""
     while True:
+        # HOLD point: block before taking the next chunk while the gate is held, so a
+        # barge holds the reply at a clean chunk boundary (current chunk already played).
+        _play_gate.wait()
         item = _play_queue.get()
         if item is None:
             _play_queue.task_done()
@@ -1046,6 +1054,24 @@ def flush_speech_queue():
             _play_queue.task_done()
         except queue.Empty:
             break
+
+
+def hold_speech():
+    """Barge HOLD: pause playback at the next chunk boundary, keeping remaining chunks.
+    The current chunk finishes; the rest wait. Unlike flush, nothing is discarded."""
+    _play_gate.clear()
+
+
+def resume_speech():
+    """OVERRULED / resume-with-context: release a HOLD so held chunks play again."""
+    _play_gate.set()
+
+
+def flush_held():
+    """SUSTAINED: drop the held remainder and clear the hold (the user has the floor)."""
+    _play_gate.set()
+    flush_speech_queue()
+
 
 # Active Claude process -- set before communicate(), cleared after
 _active_claude_process = None
@@ -2128,6 +2154,46 @@ def handle_request_prompt_file(data=None):
 # Session-level challenge: solve once per session, all tokens get signed
 _challenge_sessions = {}  # sid -> {proof, confidence, challenge_id, verified_at}
 _pending_challenges = {}  # sid -> challenge dict
+
+# --- Barge / objection protocol: the gate primitive wired into LIVE ---------------
+# OBJECT (barge during speaking) -> hold the reply + open a gate (challenge) -> the cue
+# card shows the prompt -> the answer rules: SUSTAINED flushes the held remainder and
+# yields; OVERRULED resumes it. gate.py composes cue-mem/lib/challenge.py.
+try:
+    import gate as _gate_mod
+
+    @socketio.on("object")
+    def handle_object(data=None):
+        """Raise an objection: hold the reply and open a gate for the ruling."""
+        from flask_socketio import emit
+        if not _gate_mod.available():
+            flush_speech_queue()   # no gate engine -> fall back to the old hard cut
+            emit("gate_ruling", {"sustained": True, "reason": "no gate engine"})
+            return
+        hold_speech()
+        d = data or {}
+        g = _gate_mod.open_gate(context={"held": True}, kind=d.get("kind", "arithmetic"),
+                                weight=float(d.get("weight", 1.0)))
+        _vlog("gate", "OBJECT -> hold + gate %s  \"%s\"" % (g["gate_id"], g["prompt"]))
+        emit("gate_challenge", {"gate_id": g["gate_id"], "prompt": g["prompt"], "kind": g["kind"]})
+
+    @socketio.on("gate_answer")
+    def handle_gate_answer(data):
+        """Rule on an open gate: SUSTAINED flushes the held reply, OVERRULED resumes it."""
+        from flask_socketio import emit
+        d = data or {}
+        ruling = _gate_mod.rule(d.get("gate_id"), d.get("response"), attention=d.get("attention"))
+        if ruling["sustained"]:
+            flush_held()
+        else:
+            resume_speech()
+        _vlog("gate", "RULING %s  preponderance=%s" %
+              ("SUSTAINED" if ruling["sustained"] else "OVERRULED", ruling.get("preponderance")))
+        emit("gate_ruling", ruling)
+
+    print("✓ Gate primitive wired (barge/objection protocol)")
+except Exception as _gate_err:
+    print("⚠️  Gate primitive not wired: %s" % _gate_err)
 
 try:
     import challenge as _challenge_mod
