@@ -56,6 +56,7 @@ let currentState = 'idle';
 let voicePending = false;   // a reply with voice is coming, audio not started yet
 let voiceStarted = false;   // first tts chunk has begun playing this turn
 let interChunkTimer = null; // debounce for the between-paragraph synth gap
+let pendingResponse = null; // assistant reply held until the voice actually plays
 // 'synthing' is a real state: the voice is being synthesized (register resolved,
 // prosody rendered) and, on replay, RE-synthesized at runtime -- active memory, not
 // a stored recording. Shown before "speaking", which means audio is actually playing.
@@ -951,10 +952,21 @@ socket.on('response', (data) => {
   var expectsVoice = Array.isArray(data.tts_chunks) && data.tts_chunks.length > 0;
   voicePending = expectsVoice;
   voiceStarted = false;
-  if (!expectsVoice) stopSound("thinking");   // text-only reply: nothing to wait for
-  addMessage('assistant', data.text, data.tts_chunks || null);
+  if (expectsVoice) {
+    // Hold the text until the voice is actually playing: render it at the first
+    // tts_chunk_start, so words and audio arrive together (no text hanging in the gap).
+    pendingResponse = data;
+  } else {
+    stopSound("thinking");   // text-only reply: nothing to wait for
+    renderAssistantResponse(data);
+  }
+});
 
-  // Retroactively mark the last user bubble with SNR dot
+// Render the assistant card + retro-mark the user bubble's SNR dot. Deferred until
+// voice starts when there is voice (see pendingResponse / tts_chunk_start).
+function renderAssistantResponse(data) {
+  if (!data) return;
+  addMessage('assistant', data.text, data.tts_chunks || null);
   if (data.snr_hex) {
     var userCards = conversation.querySelectorAll(".card.user");
     var lastUser = userCards[userCards.length - 1];
@@ -969,7 +981,15 @@ socket.on('response', (data) => {
       }
     }
   }
-});
+}
+
+function flushPendingResponse() {
+  if (pendingResponse) {
+    var d = pendingResponse;
+    pendingResponse = null;
+    renderAssistantResponse(d);
+  }
+}
 
 socket.on("caption_update", function(data) {
   if (!data || !data.slug || !Array.isArray(data.images)) return;
@@ -1012,6 +1032,7 @@ socket.on("caption_update", function(data) {
 
 socket.on('error', (data) => {
   console.error('❌ Socket error:', data.message);
+  pendingResponse = null;   // drop any held reply; the error supersedes it
   stopSound("thinking");
   playSound("error");
   addSystemMessage('Error: ' + data.message);
@@ -1121,6 +1142,7 @@ socket.on("tts_chunk_ended", function(data) {
 
 socket.on("tts_chunk_start", function(data) {
   clearTimeout(interChunkTimer);   // next paragraph is ready: no gap to fill
+  flushPendingResponse();          // voice is playing now: reveal the held text
   // The moment the voice is truly ready: crossfade the gap ambience into the voice
   // and reveal the stop-audio controls (audio is actually playing now).
   if (!voiceStarted) {
@@ -1161,6 +1183,7 @@ socket.on("tts_chunk_start", function(data) {
 
 socket.on("tts_chunk_done", function() {
   clearTimeout(interChunkTimer);   // reply finished: no more between-paragraph gaps
+  flushPendingResponse();          // safety: reveal text even if no chunk_start fired
   fadeOutSound("thinking", 200);   // clear any initial-gap fill
   fadeOutSound("working", 200);    // clear any inline-gap (working) fill
   var active = document.querySelector(".tts-speaking");
