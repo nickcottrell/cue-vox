@@ -4091,19 +4091,42 @@ def _no_cache_static(response):
     return response
 
 
+def _compute_cvx_version():
+    """A single build stamp for the running server, computed once at startup from the
+    newest of the core source files. It changes whenever code changes AND the service
+    is restarted, so both pages printing it lets you eyeball that they match (same
+    up-to-date server). Format: MMDD-HHMM of the newest source file."""
+    import time as _t
+    base = os.path.dirname(os.path.abspath(__file__))
+    files = ['web.py', 'static/js/app.js', 'static/tune.html']
+    try:
+        newest = max(os.path.getmtime(os.path.join(base, f))
+                     for f in files if os.path.exists(os.path.join(base, f)))
+        return _t.strftime('%m%d-%H%M', _t.localtime(newest))
+    except (OSError, ValueError):
+        return 'unknown'
+
+
+CVX_VERSION = _compute_cvx_version()
+
+
 @app.route('/')
 def index():
     print("📄 Serving index.html")
     import time as _time
-    return render_template('index.html', cache_bust=int(_time.time()))
+    return render_template('index.html', cache_bust=int(_time.time()), cvx_version=CVX_VERSION)
 
 
 # --- Voice tuning panel: tune the register + earn-curve with sliders, hear it,
 # and crystallize the feel to an inert SVG. ---
 @app.route('/tune')
 def tune_page():
-    # No-store so the tuner never serves a stale cached page after an edit.
-    resp = send_from_directory(app.static_folder, 'tune.html')
+    # No-store so the tuner never serves a stale cached page after an edit. Inject the
+    # server build stamp so the tuner console prints the same version as the main app.
+    from flask import Response
+    html = open(os.path.join(app.static_folder, 'tune.html'), encoding='utf-8').read()
+    html = html.replace('__CVX_VERSION__', CVX_VERSION)
+    resp = Response(html, mimetype='text/html')
     resp.headers['Cache-Control'] = 'no-store, must-revalidate'
     resp.headers['Pragma'] = 'no-cache'
     return resp

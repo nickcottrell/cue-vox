@@ -4,6 +4,7 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>cue-vox · voice tuning</title>
+<script>window.__CVX_VERSION = "__CVX_VERSION__";</script>
 <style>
   @font-face { font-family:'Zilla Slab'; font-weight:400; font-style:normal; font-display:swap; src:url('/static/fonts/zilla-400.woff2') format('woff2'); }
   @font-face { font-family:'Zilla Slab'; font-weight:400; font-style:italic; font-display:swap; src:url('/static/fonts/zilla-400i.woff2') format('woff2'); }
@@ -291,9 +292,11 @@
   (async () => {   // restore the working presets on load
     try {
       const resp = await (await fetch("/api/tune/state")).json();
-      console.log("%c cue-vox tuner  |  package schema v" + (resp.version != null ? resp.version : "?")
-        + "  ·  markup v" + (resp.markup_version != null ? resp.markup_version : "?") + " ",
-        "font-size:14px;font-weight:700;color:#161616;background:#c9c9c9;padding:3px 8px;border-radius:4px;");
+      console.log("%c cue-vox %c version " + (window.__CVX_VERSION || "?") + " %c  tuner · package schema v"
+        + (resp.version != null ? resp.version : "?") + " · markup v" + (resp.markup_version != null ? resp.markup_version : "?"),
+        "background:#161616;color:#c9c9c9;font-weight:700;padding:2px 6px;border-radius:4px 0 0 4px;",
+        "background:#c9c9c9;color:#161616;font-weight:700;padding:2px 6px;border-radius:0 4px 4px 0;",
+        "color:#9a9a9a;");
       const st = resp.state || {};
       if (st.presets) Object.keys(st.presets).forEach(k => { PRESETS[k] = Object.assign(PRESETS[k] || {}, st.presets[k]); });
       if (st.current && PRESETS[st.current]) currentPreset = st.current;

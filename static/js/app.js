@@ -22,9 +22,13 @@ const VLOG = (function () {
     warn: mk("warn", "#d08a5a"),
   };
 })();
-console.log("%c cue-vox %c client build " + CVX_BUILD + " ",
+// The version to eyeball across pages: the server build stamp injected at serve
+// time (window.__CVX_VERSION). Both /tune and the main app print the SAME number
+// when they are on the same up-to-date server. CVX_BUILD is the static app.js tag.
+console.log("%c cue-vox %c version " + (window.__CVX_VERSION || "?") + " %c  (app.js " + CVX_BUILD + ")",
   "background:#161616;color:#c9c9c9;font-weight:700;padding:2px 6px;border-radius:4px 0 0 4px;",
-  "background:#c9c9c9;color:#161616;font-weight:700;padding:2px 6px;border-radius:0 4px 4px 0;");
+  "background:#c9c9c9;color:#161616;font-weight:700;padding:2px 6px;border-radius:0 4px 4px 0;",
+  "color:#9a9a9a;");
 
 // DOM Elements
 const socket = io();
