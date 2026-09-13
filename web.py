@@ -765,6 +765,7 @@ _LOUD_FLOOR = 0.07         # mic RMS below this rests quiet; above spends into t
 _LOUD_GAIN = 8.0           # how much loud speech contributes to the energy pool
 _BREAK_MULT = 1.0          # pause-length multiplier: stretch/compress every <break>
 _PRESSURE = 1.0            # volume pressure: gain that intensifies with the register (heat)
+_LIVE_REGISTER_FLOOR = None  # apply-to-live: live register never drops below this (None = off)
 _EXCITED_WORDS = (
     "wow", "amazing", "incredible", "love", "awesome", "great", "haha", "omg",
     "excited", "yes", "hilarious", "perfect", "beautiful", "brilliant", "fantastic",
@@ -4096,7 +4097,7 @@ def tune_page():
 
 @app.route('/api/tune/params', methods=['POST'])
 def tune_params():
-    global _TONE_DECAY, _TONE_CAP, _TONE_GAMMA, _LOUD_FLOOR, _BREAK_MULT, _PRESSURE
+    global _TONE_DECAY, _TONE_CAP, _TONE_GAMMA, _LOUD_FLOOR, _BREAK_MULT, _PRESSURE, _LIVE_REGISTER_FLOOR
     d = request.get_json(force=True, silent=True) or {}
     try:
         if 'decay' in d: _TONE_DECAY = float(d['decay'])
@@ -4105,12 +4106,19 @@ def tune_params():
         if 'loud_floor' in d: _LOUD_FLOOR = float(d['loud_floor'])
         if 'break_mult' in d: _BREAK_MULT = max(0.25, min(4.0, float(d['break_mult'])))
         if 'pressure' in d: _PRESSURE = max(0.4, min(2.5, float(d['pressure'])))
+        # Apply-to-live extras: register becomes a floor the autotone won't drop below
+        # (survives turns), and lift sets the live question-rise strength.
+        if 'register' in d and d['register'] is not None:
+            _LIVE_REGISTER_FLOOR = max(0, min(4, int(round(float(d['register'])))))
+        if 'lift' in d and _kokoro_available:
+            kokoro_voice.set_prosody(lift=max(0.0, min(1.5, float(d['lift']))))
     except (TypeError, ValueError):
         return jsonify(ok=False, error='bad value'), 400
-    print("[TUNE] decay=%.2f cap=%.1f gamma=%.2f loud_floor=%.3f break=%.2fx pressure=%.2f"
-          % (_TONE_DECAY, _TONE_CAP, _TONE_GAMMA, _LOUD_FLOOR, _BREAK_MULT, _PRESSURE), flush=True)
+    print("[TUNE] decay=%.2f cap=%.1f gamma=%.2f loud_floor=%.3f break=%.2fx pressure=%.2f reg_floor=%s"
+          % (_TONE_DECAY, _TONE_CAP, _TONE_GAMMA, _LOUD_FLOOR, _BREAK_MULT, _PRESSURE, _LIVE_REGISTER_FLOOR), flush=True)
     return jsonify(ok=True, decay=_TONE_DECAY, cap=_TONE_CAP, gamma=_TONE_GAMMA,
-                   loud_floor=_LOUD_FLOOR, break_mult=_BREAK_MULT, pressure=_PRESSURE)
+                   loud_floor=_LOUD_FLOOR, break_mult=_BREAK_MULT, pressure=_PRESSURE,
+                   register_floor=_LIVE_REGISTER_FLOOR)
 
 
 # Deterministic emphasis -> tone. Markdown markup in the text varies the register:
@@ -4426,6 +4434,12 @@ def resolve_instructions(text, base, tone):
     return out
 
 
+# Dumb versioning: one integer stamped onto every exported package. Bump it by hand
+# whenever the <metadata> shape changes. Import compares against it and shouts in the
+# console so a stale package is obvious while debugging.
+PACKAGE_SCHEMA_VERSION = 1
+
+
 def crystallize_package(text, base, tone, steer="", state=None):
     """Package the current script + dials into an INERT SVG: instructions for the
     future transformational apparatus. Visual is a delivery strip (a swatch per
@@ -4478,11 +4492,11 @@ def crystallize_package(text, base, tone, steer="", state=None):
     out.append('<title>cue-vox voice delivery package</title>')
     out.append('<desc>Instructions for the transformational apparatus. Each swatch is a spoken span: fill is its VRGB coordinate (hue=register, saturation=force, lightness=rate), height is gain; gaps are pauses. The full executable instruction set is in the metadata.</desc>')
     out.append('<rect width="%d" height="%d" fill="#161616"/>' % (W, H))
-    out.append('<text x="20" y="30" fill="#c9c9c9" font-size="13">voice delivery package</text>')
+    out.append('<text x="20" y="30" fill="#c9c9c9" font-size="13">voice delivery package  ·  v%d</text>' % PACKAGE_SCHEMA_VERSION)
     out.extend(body)
-    meta = {"package": "cue-vox-voice-delivery", "base_register": base, "tone": tone,
-            "steer": steer, "script": text, "instructions": instr,
-            "state": state or {},
+    meta = {"package": "cue-vox-voice-delivery", "version": PACKAGE_SCHEMA_VERSION,
+            "base_register": base, "tone": tone, "steer": steer, "script": text,
+            "instructions": instr, "state": state or {},
             "note": "each say carries register/gain/speed/lift/vrgb; pause_ms are gaps; cue is a signature earcon; state re-imports into /tune"}
     out.append('<metadata id="vrgb-voice-package">%s</metadata>' % json.dumps(meta).replace("&", "&amp;").replace("<", "&lt;"))
     out.append('</svg>')
@@ -4738,8 +4752,11 @@ def tune_package():
              'loud': tone['loud_floor'], 'brk': tone['break_mult'], 'pressure': tone['pressure'],
              'lift': tone['lift'], 'text': text, 'steer': d.get('steer', '')}
     svg = crystallize_package(text, base, tone, steer=d.get('steer', ''), state=state)
+    print("\n" + "=" * 52 + "\n  cue-vox package EXPORT  |  schema v%d\n" % PACKAGE_SCHEMA_VERSION
+          + "=" * 52, flush=True)
     return Response(svg, mimetype='image/svg+xml',
-                    headers={'Content-Disposition': 'attachment; filename=voice-package.svg'})
+                    headers={'Content-Disposition': 'attachment; filename=voice-package-v%d.svg' % PACKAGE_SCHEMA_VERSION,
+                             'X-Package-Version': str(PACKAGE_SCHEMA_VERSION)})
 
 
 @app.route('/api/tune/import', methods=['POST'])
@@ -4765,6 +4782,11 @@ def tune_import():
         return jsonify(ok=False, error='package metadata is not valid JSON: %s' % e), 200
     if meta.get('package') != 'cue-vox-voice-delivery':
         return jsonify(ok=False, error='not a cue-vox voice package'), 200
+    ver = meta.get('version', 0)
+    stale = ver != PACKAGE_SCHEMA_VERSION
+    banner = "  cue-vox package IMPORT  |  schema v%s  (current v%d)%s" % (
+        ver, PACKAGE_SCHEMA_VERSION, "  <- STALE" if stale else "")
+    print("\n" + "=" * 52 + "\n" + banner + "\n" + "=" * 52, flush=True)
     state = meta.get('state') or {}
     if not state:                                   # legacy package: rebuild from parts
         tone = meta.get('tone') or {}
@@ -4774,7 +4796,7 @@ def tune_import():
                  'lift': tone.get('lift', 0.8), 'text': meta.get('script', ''),
                  'steer': meta.get('steer', '')}
         state = {k: v for k, v in state.items() if v is not None}
-    return jsonify(ok=True, state=state)
+    return jsonify(ok=True, state=state, version=ver, current_version=PACKAGE_SCHEMA_VERSION, stale=stale)
 
 
 @app.route('/api/tune/translate', methods=['POST'])
@@ -4820,7 +4842,7 @@ def tune_state():
         st = json.load(open(_STATE_PATH)) if os.path.exists(_STATE_PATH) else {}
     except Exception:
         st = {}
-    return jsonify(ok=True, state=st)
+    return jsonify(ok=True, state=st, version=PACKAGE_SCHEMA_VERSION)
 
 
 @app.route('/api/tune/export.svg')
@@ -6989,9 +7011,13 @@ def handle_audio(data):
             except (TypeError, ValueError):
                 _exaggeration = 0.6
 
-        # Drive the fast Kokoro register (0..4) from the same dial.
+        # Drive the fast Kokoro register (0..4) from the same dial. An applied package
+        # can raise the floor so the live voice never drops below its register.
         if _kokoro_available:
-            kokoro_voice.set_register(int(round(max(0.0, min(1.0, _exaggeration - 1.0)) * 4)))
+            live_reg = int(round(max(0.0, min(1.0, _exaggeration - 1.0)) * 4))
+            if _LIVE_REGISTER_FLOOR is not None:
+                live_reg = max(live_reg, _LIVE_REGISTER_FLOOR)
+            kokoro_voice.set_register(live_reg)
 
         # Inject temporal context if query is time-related
         enhanced_text = inject_temporal_context(text)

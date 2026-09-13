@@ -118,6 +118,9 @@
       <button id="import">Import</button>
       <input type="file" id="importfile" accept=".svg,image/svg+xml" style="display:none;">
     </div>
+    <div class="row">
+      <button class="primary" id="applylive">Apply to live</button>
+    </div>
     <div id="status"></div>
     <div id="parseout" style="margin-top:12px;font-size:12px;color:var(--dim);"></div>
   </div>
@@ -224,7 +227,10 @@
   ["sample","steer"].forEach(id => $(id).addEventListener("input", () => { stashCurrent(); persist(); }));
   (async () => {   // restore the working presets on load
     try {
-      const st = ((await (await fetch("/api/tune/state")).json()).state) || {};
+      const resp = await (await fetch("/api/tune/state")).json();
+      console.log("%c cue-vox tuner  |  package schema v" + (resp.version != null ? resp.version : "?") + " ",
+        "font-size:14px;font-weight:700;color:#161616;background:#c9c9c9;padding:3px 8px;border-radius:4px;");
+      const st = resp.state || {};
       if (st.presets) Object.keys(st.presets).forEach(k => { PRESETS[k] = Object.assign(PRESETS[k] || {}, st.presets[k]); });
       if (st.current && PRESETS[st.current]) currentPreset = st.current;
       loadIntoUI(PRESETS[currentPreset]);
@@ -302,12 +308,15 @@
       const body = Object.assign({ text:$("sample").value, steer:$("steer").value }, currentParams());
       const r = await fetch("/api/tune/package", { method:"POST", headers:{"Content-Type":"application/json"},
         body: JSON.stringify(body) });
+      const ver = r.headers.get("X-Package-Version") || "?";
       const svg = await r.text();
       const a = document.createElement("a");
       a.href = URL.createObjectURL(new Blob([svg], {type:"image/svg+xml"}));
-      a.download = "voice-package.svg"; document.body.appendChild(a); a.click(); a.remove();
+      a.download = "voice-package-v" + ver + ".svg"; document.body.appendChild(a); a.click(); a.remove();
       URL.revokeObjectURL(a.href);
-      $("status").textContent = "package exported (text + settings + steering)";
+      console.log("%c cue-vox package v" + ver + " EXPORTED ",
+        "font-size:14px;font-weight:700;color:#161616;background:#c9c9c9;padding:3px 8px;border-radius:4px;");
+      $("status").textContent = "package v" + ver + " exported (text + settings + steering)";
     } catch(e){ $("status").textContent = "package error"; }
   });
   // Import closes the loop: read an exported package SVG back into the dials + text.
@@ -322,14 +331,29 @@
         body: JSON.stringify({ svg }) });
       const j = await r.json();
       if (!j.ok || !j.state) { $("status").textContent = "import failed: " + (j.error || "?"); return; }
+      console.log("%c cue-vox package v" + j.version + " IMPORTED " + (j.stale ? "(STALE, current v" + j.current_version + ")" : ""),
+        "font-size:14px;font-weight:700;color:#161616;background:" + (j.stale ? "#d08a5a" : "#c9c9c9") + ";padding:3px 8px;border-radius:4px;");
       pushHist();
       currentPreset = "imported";                 // land it in a working slot
       PRESETS.imported = Object.assign({}, j.state);
       loadIntoUI(j.state);                         // sets every dial + steer + text
       persist();
-      $("status").textContent = "imported package (full loop) -> Hear to play it";
+      $("status").textContent = "imported package v" + j.version + (j.stale ? " (STALE)" : "") + " -> Hear or Apply to live";
     } catch(err){ $("status").textContent = "import error"; }
     finally { e.target.value = ""; }              // allow re-importing the same file
+  });
+  $("applylive").addEventListener("click", async () => {
+    $("status").textContent = "applying to live conversation...";
+    try {
+      const r = await fetch("/api/tune/params", { method:"POST", headers:{"Content-Type":"application/json"},
+        body: JSON.stringify(currentParams()) });    // register + lift + earn-curve + breaks + pressure
+      const j = await r.json();
+      if (!j.ok) { $("status").textContent = "apply failed: " + (j.error || "?"); return; }
+      console.log("%c cue-vox voice APPLIED to live ",
+        "font-size:13px;font-weight:700;color:#161616;background:#8fb98f;padding:3px 8px;border-radius:4px;",
+        "register floor " + j.register_floor);
+      $("status").textContent = "applied to live (register floor " + j.register_floor + ", lift + earn-curve now live)";
+    } catch(e){ $("status").textContent = "apply error"; }
   });
 </script>
 </body>
