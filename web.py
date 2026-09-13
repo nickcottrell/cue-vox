@@ -1220,6 +1220,9 @@ def strip_markdown_for_tts(text):
     text = re.sub(r"`([^`]+)`", r"\1", text)
     # Code fences
     text = re.sub(r"```[\s\S]*?```", "", text)
+    # SSML / XML tags: strip to bare words so they are never spoken literally. (The
+    # tuner path renders SSML properly via _ops_from_text; this guards the plain path.)
+    text = re.sub(r"</?[a-zA-Z][^>]*>", "", text)
     # Emoji / pictographs read as noise (or letter-spelling) in neural TTS -- drop them.
     text = re.sub(
         r"[\U0001F000-\U0001FAFF\U00002600-\U000027BF\U0001F1E6-\U0001F1FF\U00002190-\U000021FF\U00002B00-\U00002BFF️]",
@@ -4368,134 +4371,123 @@ def deterministic_markup(text):
       ... -> long break · ' -- ' -> break
     """
     s = text or ""
-    s = re.sub(r"\*\*\*(.+?)\*\*\*", r"<strong=2>\1</strong>", s)
-    s = re.sub(r"\*\*(.+?)\*\*", r"<strong>\1</strong>", s)
-    s = re.sub(r"\*(.+?)\*", r"<em>\1</em>", s)
-    # ALL-CAPS runs (2+ letters, one or more words) -> strong (level 2), lowercased so
+    s = re.sub(r"\*\*\*(.+?)\*\*\*", r'<emphasis level="strong">\1</emphasis>', s)
+    s = re.sub(r"\*\*(.+?)\*\*", r'<emphasis level="strong">\1</emphasis>', s)
+    s = re.sub(r"\*(.+?)\*", r'<emphasis level="moderate">\1</emphasis>', s)
+    # ALL-CAPS runs (2+ letters, one or more words) -> strong emphasis, lowercased so
     # the synth speaks words not letters. Single-letter caps (I, A) are left alone.
     s = re.sub(r"\b[A-Z][A-Z']+(?:\s+[A-Z][A-Z']*)*\b",
-               lambda m: "<strong=2>%s</strong>" % m.group(0).lower(), s)
-    s = s.replace("...", " <break=3/> ")
-    s = re.sub(r"\s--\s", " <break/> ", s)
+               lambda m: '<emphasis level="strong">%s</emphasis>' % m.group(0).lower(), s)
+    s = s.replace("...", ' <break time="600ms"/> ')
+    s = re.sub(r"\s--\s", ' <break time="300ms"/> ', s)
     s = re.sub(r"[ \t]{2,}", " ", s).strip()
     return s
 
 
-# Semantic voice markup (the smart layer). Intent lives in tags; the renderer maps
-# intent -> register/pause/cue. Vocabulary (SSML-flavoured where it fits):
-#   <break time="500ms"/> or <break dur="long"/>   a pause (earns capital)
-#   <emphasis level="strong|moderate|reduced">      fuller / softer
-#   <aside> or <em>                                 intimate set-aside (down a notch, slower)
-#   <strong>                                        fuller (up two)
-#   <register level="0-4">                          absolute register for a span
-#   <laugh/> <chuckle/>                             signature cue
-# The markup LANGUAGE / parser version. Bump when tag semantics change (new tags,
-# changed counts/stacking, different defaults), so a package records which markup its
-# text was authored against and tools can flag a mismatch. Distinct from
-# PACKAGE_SCHEMA_VERSION (the metadata SHAPE) -- this versions the LANGUAGE the parser
-# speaks. History: v1 = count/stacking model (<break/> beats, <em=n>/<strong=n>).
-MARKUP_VERSION = 1
-
-# --- Voice ontology: t-shirt sizes + <strong>/<em> stacking, encodes to VRGB ---
-# Count model (the standard): one atomic tag + a count. Stacking == counting.
-#   <break/> = 1 beat · <break/><break/><break/> = <break=3/> = 3 beats
-#   <em=2> = <em><em> · <strong=3> = <strong><strong><strong>
-_BEAT_MS = 250                             # one <break/> unit
-_EM_STEP = 1.15                            # force per <em> step (multiplies, so stacks)
-_STRONG_STEP = 1.30                        # force per <strong> step
-_FORCE_STEP = 1.20                         # force per <force> step
-_SOFT_STEP = 0.80                          # force per <soft> step (quieter)
-
-# Legacy t-shirt sizing, still parsed so old scripts do not break. Authoring standard
-# is counts (above); sizes are a quiet fallback.
-_SIZE_IDX = {"xs": 0, "s": 1, "m": 2, "l": 3, "xl": 4}
-_REGISTER_SZ = [0, 1, 2, 3, 4]
-_BREAK_SZ = [120, 250, 450, 800, 1400]     # ms
-_FORCE_SZ = [0.7, 0.85, 1.0, 1.3, 1.7]     # gain multiplier
-_RATE_SZ = [0.8, 0.9, 1.0, 1.12, 1.25]     # speed multiplier
-
-# <tag=n> / <tag=n/> is friendly shorthand; expand to <tag n="n"> so the XML parser
-# (which forbids '=' in a tag name) can read the count off an attribute.
-_COUNT_SHORTHAND = re.compile(r"<([a-zA-Z][\w-]*)=(-?[\d.]+)\s*(/?)>")
+# --- SSML is the standard markup, both surfaces (tuner + agent input) ------------
+# The renderer maps a W3C SSML subset onto the voice engine:
+#   <break time="400ms"/> or <break strength="weak|medium|strong|x-strong"/>  pause
+#   <emphasis level="strong|moderate|reduced">                                force
+#   <prosody rate= volume= pitch=>                                            speed/gain/pitch
+#   <p> / <s>                                                                 paragraph / sentence pause
+#   <say-as interpret-as=> / <sub alias="..">                                 spoken form
+#   <voice name="breathy|mid|dramatic|0-4">                                   register/blend slot
+#   <laugh/> <chuckle/>                                                       signature earcons (cvx extension)
+# The markup LANGUAGE / parser version. Bump when tag semantics change, so a package
+# records which markup its text was authored against. v1 = count/stacking model
+# (retired); v2 = SSML.
+MARKUP_VERSION = 2
 
 
-def _expand_counts(s):
-    return _COUNT_SHORTHAND.sub(r'<\1 n="\2"\3>', s or "")
+def _ssml_break_ms(el):
+    """SSML <break time=|strength=> -> milliseconds. Bare break defaults to medium."""
+    t = el.get("time") or el.get("dur")
+    if t:
+        return _pause_ms(t)
+    strength = (el.get("strength") or "").lower()
+    return {"none": 0, "x-weak": 100, "weak": 200, "medium": 400,
+            "strong": 800, "x-strong": 1400}.get(strength, 400)
 
 
-def _count(el, default=1.0):
-    """Read a tag's count (the n attribute), defaulting to 1 (a bare tag = one step)."""
+def _ssml_rate(v):
+    """SSML prosody rate (named / percentage / number) -> speed multiplier."""
+    v = (v or "").strip().lower()
+    named = {"x-slow": 0.7, "slow": 0.85, "medium": 1.0, "default": 1.0, "fast": 1.15, "x-fast": 1.3}
+    if v in named:
+        return named[v]
     try:
-        return float(el.get("n") if el.get("n") is not None else default)
-    except (TypeError, ValueError):
-        return default
+        return max(0.5, min(2.0, float(v[:-1]) / 100.0 if v.endswith("%") else float(v)))
+    except ValueError:
+        return 1.0
 
 
-def _sz(table, size, default):
-    i = _SIZE_IDX.get((size or "").lower())
-    return table[i] if i is not None else default
+def _ssml_volume(v):
+    """SSML prosody volume (named / dB / number) -> gain multiplier."""
+    v = (v or "").strip().lower()
+    named = {"silent": 0.1, "x-soft": 0.6, "soft": 0.8, "medium": 1.0, "default": 1.0, "loud": 1.3, "x-loud": 1.7}
+    if v in named:
+        return named[v]
+    try:
+        if v.endswith("db"):
+            return max(0.1, min(2.5, 10 ** (float(v[:-2]) / 20.0)))
+        return max(0.1, min(2.5, float(v[:-1]) / 100.0 if v.endswith("%") else float(v)))
+    except ValueError:
+        return 1.0
+
+
+def _ssml_pitch_off(v):
+    """SSML prosody pitch -> a register offset (our engine's pitch/brightness axis).
+    Named low/high, or a signed +Nst / -N% just reads as down/up by one step."""
+    v = (v or "").strip().lower()
+    named = {"x-low": -2, "low": -1, "medium": 0, "default": 0, "high": 1, "x-high": 2}
+    if v in named:
+        return named[v]
+    if v.startswith("+"):
+        return 1
+    if v.startswith("-"):
+        return -1
+    return 0
+
+
+def _ssml_voice(name):
+    """SSML <voice name=> -> a register slot 0..4 (breathy -> dramatic)."""
+    n = (name or "").strip().lower()
+    m = {"breathy": 0, "nicole": 0, "soft": 1, "mid": 2, "neutral": 2, "sky": 2,
+         "warm": 3, "dramatic": 4, "sarah": 4}
+    if n in m:
+        return {"reg": m[n]}
+    try:
+        return {"reg": max(0, min(4, int(n)))}
+    except ValueError:
+        return {}
 
 
 def _tag_contrib(tag, el):
-    """A tag's contribution to the accumulating delivery context. Composites expand
-    to dimensions; dimension tags read t-shirt size or a precise value."""
+    """An SSML tag's contribution to the accumulating delivery context. Nested tags
+    stack via _merge_ctx (reg_off sums, force/rate multiply, reg/speed/gain/lift set)."""
     t = tag.lower()
     g = el.get
-    if t in ("em", "i"):
-        return {"force": _EM_STEP ** _count(el)}          # <em=n> == n stacked <em>
-    if t in ("strong", "b"):
-        return {"force": _STRONG_STEP ** _count(el)}       # <strong=n> == n stacked <strong>
     if t == "emphasis":
-        return {"force": {"strong": 1.5, "moderate": 1.25, "reduced": 0.8}.get((g("level") or "moderate").lower(), 1.25)}
-    if t == "aside":
-        return {"reg_off": -1, "force": 0.85, "rate": 0.92}
-    if t == "soft":
-        return {"force": _SOFT_STEP ** _count(el)}          # <soft=n> == n stacked <soft>
-    if t == "whisper":
-        return {"reg": 0, "force": 0.7}
-    if t == "declare":
-        return {"reg": 4, "force": 1.3}
-    if t == "ask":
-        return {"lift": True}
-    if t == "amp":
-        # multiplier tag: scales the force of everything inside by x (stacks).
-        try:
-            return {"force": float(g("x") or g("by") or "1.5")}
-        except ValueError:
-            return {"force": 1.5}
-    if t == "force":
-        if g("gain"):
-            try:
-                return {"force": float(g("gain"))}          # precise escape
-            except ValueError:
-                return {}
-        if g("size"):
-            return {"force": _sz(_FORCE_SZ, g("size"), 1.0)}  # legacy t-shirt
-        return {"force": _FORCE_STEP ** _count(el)}          # <force=n> == n stacked <force>
-    if t == "rate":
-        try:
-            return {"rate": float(g("rate"))} if g("rate") else {"rate": _sz(_RATE_SZ, g("size"), 1.0)}
-        except ValueError:
-            return {}
-    if t == "register":
-        if g("level") is not None:
-            try:
-                return {"reg": int(round(float(g("level"))))}
-            except ValueError:
-                return {}
-        i = _SIZE_IDX.get((g("size") or "").lower())
-        return {"reg": _REGISTER_SZ[i]} if i is not None else {}
+        return {"force": {"strong": 1.5, "moderate": 1.25, "reduced": 0.8, "none": 1.0}
+                .get((g("level") or "moderate").lower(), 1.25)}
+    if t in ("strong", "b"):        # markdown-fallback shorthand -> strong emphasis
+        return {"force": 1.5}
+    if t in ("em", "i"):            # markdown-fallback shorthand -> moderate emphasis
+        return {"force": 1.25}
     if t == "prosody":
         c = {}
-        for k, dst, cast in (("register", "reg", lambda v: int(round(float(v)))),
-                             ("rate", "speed", float), ("speed", "speed", float),
-                             ("gain", "gain", float), ("pressure", "gain", float)):
-            if g(k) is not None:
-                try:
-                    c[dst] = cast(g(k))
-                except ValueError:
-                    pass
+        if g("rate") is not None:
+            c["rate"] = _ssml_rate(g("rate"))
+        if g("volume") is not None:
+            c["gain"] = _ssml_volume(g("volume"))
+        if g("pitch") is not None:
+            off = _ssml_pitch_off(g("pitch"))
+            c["reg_off"] = off
+            if off > 0:
+                c["lift"] = True     # a pitch-up reads as the question/rise contour
         return c
+    if t == "voice":
+        return _ssml_voice(g("name"))
     return {}
 
 
@@ -4530,9 +4522,8 @@ def directive_to_vrgb(dv, base=0):
     return "#%02x%02x%02x" % (int(r * 255), int(gg * 255), int(b * 255))
 
 
-_KNOWN_TAGS = {"vox", "break", "pause", "laugh", "chuckle", "emphasis", "aside", "em", "i",
-               "strong", "b", "soft", "whisper", "declare", "ask", "amp", "force", "rate",
-               "register", "prosody"}
+_KNOWN_TAGS = {"speak", "break", "pause", "emphasis", "prosody", "p", "s", "say-as",
+               "sub", "voice", "em", "i", "strong", "b", "laugh", "chuckle"}
 
 
 def resolve_instructions(text, base, tone):
@@ -4627,19 +4618,25 @@ def crystallize_package(text, base, tone, steer="", state=None):
 
 
 def parse_vox(text):
-    """Parse voice XML into render ops with ACCUMULATING context (nested tags stack).
-    Ops: ('say', text, directive), ('pause', ms), ('clip', name)."""
+    """Parse SSML into render ops with ACCUMULATING context (nested tags stack).
+    Ops: ('say', text, directive), ('pause', ms), ('clip', name). Returns None if the
+    text has no tags (caller falls back to plain-text/markdown handling)."""
     import xml.etree.ElementTree as ET
-    s = _expand_counts((text or "").strip())    # <tag=n> -> <tag n="n">
+    s = (text or "").strip()
     if "<" not in s or ">" not in s:
         return None
-    if not s.startswith("<vox"):
-        s = "<vox>" + s + "</vox>"
+    # Accept a full <speak>..</speak> document or bare markup; wrap so it has one root.
+    if not s.lstrip().startswith("<speak"):
+        s = "<speak>" + s + "</speak>"
     try:
         root = ET.fromstring(s)
     except ET.ParseError:
         return None
     ops = []
+
+    def _tag(el):
+        t = el.tag.lower()
+        return t.split('}', 1)[1] if '}' in t else t     # tolerate xmlns
 
     def say(t, ctx):
         if t and t.strip():
@@ -4648,20 +4645,16 @@ def parse_vox(text):
     def walk(el, ctx):
         say(el.text, ctx)
         for ch in el:
-            tag = ch.tag.lower()
+            tag = _tag(ch)
             if tag in ("break", "pause"):
-                if ch.get("n") is not None:
-                    ms = _count(ch) * _BEAT_MS                 # <break=n/> = n beats
-                elif ch.get("size"):
-                    i = _SIZE_IDX.get(ch.get("size").lower())
-                    ms = _BREAK_SZ[i] if i is not None else _BEAT_MS   # legacy t-shirt
-                elif ch.get("time") or ch.get("dur"):
-                    ms = _pause_ms(ch.get("time") or ch.get("dur"))    # legacy precise
-                else:
-                    ms = _BEAT_MS                              # bare <break/> = 1 beat
-                ops.append(("pause", int(ms)))
+                ops.append(("pause", int(_ssml_break_ms(ch))))
             elif tag in ("laugh", "chuckle"):
                 ops.append(("clip", tag))
+            elif tag == "sub":
+                say(ch.get("alias") or "", ctx)              # speak the alias, not the text
+            elif tag in ("p", "s"):
+                walk(ch, ctx)                                # content, then a boundary pause
+                ops.append(("pause", 600 if tag == "p" else 250))
             else:
                 walk(ch, _merge_ctx(ctx, _tag_contrib(tag, ch)))   # nested tags accumulate
             say(ch.tail, ctx)

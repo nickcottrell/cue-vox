@@ -1,83 +1,46 @@
 # Voice Ontology
 
-**Markup version: 1** (the `MARKUP_VERSION` constant in `web.py`). Bump it whenever a
-tag's semantics change so packages record which language their text was authored
-against. History: v1 = the count/stacking model below.
+**Markup version: 2 (SSML)** (the `MARKUP_VERSION` constant in `web.py`). SSML is the
+standard markup across both surfaces: the tuner and the agent's spoken replies. v1 (the
+count/stacking model) is retired.
 
-Semantic markup for spoken delivery. One idea runs through all of it:
-
-> **One atomic tag plus a count. Stacking is counting.**
-
-`<break/><break/><break/>` and `<break=3/>` mean the same thing. `<em><em>` and
-`<em=2>` mean the same thing. There is no t-shirt sizing to memorize: a bare tag is
-one step, and you get more by stacking the tag or writing a count.
-
-Everything maps deterministically to the render engine (Kokoro register blend + DSP
-+ pause splices). No hidden model magic.
+Cue-vox parses a practical subset of W3C SSML and maps it onto the voice engine
+(Kokoro register blend + DSP + pause splices + the WORLD pitch edit). Author inline;
+you do not need to wrap a reply in `<speak>` (the parser tolerates it either way).
 
 ---
 
-## Pauses
+## Tags
 
-| Form                         | Means                          |
-|------------------------------|--------------------------------|
-| `<break/>`                   | one beat (250ms)               |
-| `<break/><break/><break/>`   | three beats                    |
-| `<break=3/>`                 | three beats (same as above)    |
-| `<break=2.5/>`               | fractional counts are fine     |
+| Tag | Does | Maps to |
+|-----|------|---------|
+| `<break time="400ms"/>` | a pause | silence splice |
+| `<break strength="x-weak\|weak\|medium\|strong\|x-strong"/>` | a sized pause | 100 / 200 / 400 / 800 / 1400 ms |
+| `<emphasis level="strong\|moderate\|reduced">` | land / soften a phrase | force (gain) |
+| `<prosody rate="slow\|fast\|1.2\|80%">` | pace | speed |
+| `<prosody volume="soft\|loud\|+6dB">` | loudness | gain |
+| `<prosody pitch="high\|low\|+2st">` | pitch | register offset; a pitch-up carries the rising/question contour |
+| `<voice name="breathy\|mid\|dramatic\|0-4">` | shift the register for a span | register slot 0..4 |
+| `<p>` / `<s>` | paragraph / sentence | boundary pause (600 / 250 ms) |
+| `<sub alias="three D math">3DMATH</sub>` | say it differently than written | speaks the alias |
+| `<say-as interpret-as="...">` | spoken form | content spoken as-is (passthrough) |
+| `<laugh/>` `<chuckle/>` | reaction earcon | prebaked signature cue (cvx extension) |
 
-The **Break length** dial in `/tune` multiplies every beat, so one preset can run
-airy and another tight without touching the text.
-
----
-
-## Intensity
-
-Each tag is one step; stack it or add `=n` for more. Steps compound, so
-`<em><em>` and `<em=2>` land identically.
-
-| Tag           | One step does            | Example        |
-|---------------|--------------------------|----------------|
-| `<em>`        | a light lift             | `<em=2>really</em>` |
-| `<strong>`    | a heavier lift           | `<strong=2>no key, no cloud.</strong>` |
-| `<force>`     | louder                   | `<force=2>out loud.</force>` |
-| `<soft>`      | quieter (steps down)     | `<soft=2>barely there.</soft>` |
-
----
-
-## Composites (semantic, everyday vocabulary)
-
-Bundles that set several things at once. These stay word-shaped, not counted.
-
-| Tag             | Means                        |
-|-----------------|------------------------------|
-| `<whisper>`     | hushed, close                |
-| `<aside>`       | intimate set-aside           |
-| `<declare>`     | full, theatrical             |
-| `<ask>`         | question contour (pitch climbs on the final syllable) |
-| `<laugh/>` `<chuckle/>` | reaction earcon (register-keyed) |
-
-A trailing `?` also triggers the question rise. The **Question rise** dial sets how
-far it climbs.
-
----
-
-## Precise escape
-
-When you need an exact value, `<prosody register= rate= gain=>` still takes raw
-numbers. Reach for it rarely; counts cover almost everything.
+Nested tags accumulate: `<prosody volume="loud"><emphasis level="strong">…</emphasis></prosody>`
+stacks force. A trailing `?` also raises the final syllable on its own; the **Question
+rise** dial sets how far.
 
 ---
 
 ## Example
 
 ```
-<whisper>Hey, keeping it low.</whisper>
-<break=2/>
-I pushed the branch, <aside>it's all green.</aside>
-<break=3/>
-So <strong=2>are we good to ship?</strong>
-<declare>Let's go.</declare> <chuckle/>
+<voice name="breathy">Hey, keeping it low.</voice>
+<break time="500ms"/>
+I pushed the branch, <prosody rate="slow" volume="soft">it's all green.</prosody>
+<break strength="strong"/>
+So <emphasis level="strong">are we good to ship?</emphasis>
+<voice name="dramatic">Let's go.</voice> <chuckle/>
 ```
 
 ---
@@ -85,23 +48,16 @@ So <strong=2>are we good to ship?</strong>
 ## Authoring style
 
 **Keep terminal punctuation INSIDE its parent tag.** A period left just outside a
-closing tag becomes its own span and gets voiced alone, which mangles the delivery.
+closing tag becomes its own span and gets voiced alone.
 
-Do:
-
-    <aside>it is all green.</aside>
-    <strong=2>I can't sit still.</strong>
-
-Don't:
-
-    <aside>it is all green</aside>.
-    <strong=2>I can't sit still</strong>.
+Do: `<emphasis level="strong">I can't sit still.</emphasis>`
+Don't: `<emphasis level="strong">I can't sit still</emphasis>.`
 
 The renderer folds an orphan punctuation span onto the previous span as a safety net
-(see `_fold_orphan_punct`), but author it correctly so the intent is explicit.
+(`_fold_orphan_punct`), but author it correctly so the intent is explicit.
 
 ---
 
-Plain text, `*italic*`/`**bold**`, and `[pause]` remain as low-effort fallbacks, and
-legacy `size='xs..xl'` still parses so old scripts keep working. Counts are the
-standard; the rest is the dumb layer underneath.
+Plain text and `*italic*`/`**bold**` still work (the deterministic translator converts
+them to `<emphasis>` and typographic signals like `...` to `<break/>`). SSML is the
+standard; the markdown fallback is the dumb layer underneath.
