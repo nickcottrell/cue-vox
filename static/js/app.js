@@ -629,10 +629,12 @@ function _vadTick() {
   var level = _vadRms();
   var voiced = level > window.VAD.threshold;
 
-  // Barge-in: talking over the assistant cuts it off, then we capture your turn.
+  // OBJECTION (barge): voice over the assistant raises an objection -> HOLD + gate,
+  // not a hard cut. The server holds the reply and sends a gate_challenge; the ruling
+  // decides sustained (yield) vs overruled (resume).
   if (voiced && currentState === 'speaking') {
-    stopAllSounds();
-    socket.emit('interrupt');
+    socket.emit('object', { kind: 'arithmetic' });
+    setState('holding');
   }
 
   if (voiced) _lastVoice = now;
@@ -1165,9 +1167,11 @@ socket.on("tts_chunk_start", function(data) {
     if (drawerStatusDot) drawerStatusDot.setAttribute('data-state', 'speaking');
     setLiveStroke('speaking');
     if (typeof updateStatusTimer === "function") updateStatusTimer();
-  } else if (currentState === "synthing") {
-    // Resuming after a between-paragraph gap: crossfade the working fill back in.
+  } else if (currentState === "synthing" || currentState === "holding") {
+    // Resuming after a between-paragraph gap OR an OVERRULED objection: crossfade the
+    // fill back into the voice.
     fadeOutSound("working", 200);
+    fadeOutSound("thinking", 200);
     currentState = "speaking";
     stateStartTime = Date.now();
     if (stateDot) stateDot.setAttribute('data-state', 'speaking');
@@ -1200,6 +1204,51 @@ socket.on("tts_chunk_done", function() {
   setStopControls(false);   // playback finished -> hide stop-audio controls
   playSound("negatory");
 });
+
+// ===== Objection gate: the ruling gate made visible (the cue card) =====
+var _gateId = null;
+function hideGateCard() {
+  var card = document.getElementById("gateCard");
+  if (card) card.hidden = true;
+  _gateId = null;
+}
+socket.on("gate_challenge", function(data) {
+  // The reply is held; present the challenge (typed-var gate) as the cue card.
+  _gateId = data.gate_id;
+  var p = document.getElementById("gateCardPrompt");
+  if (p) p.textContent = (data.prompt || "") + " = ?";
+  var card = document.getElementById("gateCard");
+  if (card) card.hidden = false;
+  var inp = document.getElementById("gateCardInput");
+  if (inp) { inp.value = ""; inp.focus(); }
+  if (currentState !== "holding") setState("holding");
+  VLOG.recv("gate", "challenge:", data.prompt);
+});
+socket.on("gate_ruling", function(data) {
+  hideGateCard();
+  if (data.sustained) {
+    VLOG.recv("gate", "SUSTAINED", "preponderance " + data.preponderance);
+    stopSound("thinking"); stopSound("working");
+    setState("idle");   // objection sustained: the floor is yours, live VAD takes the turn
+  } else {
+    // OVERRULED: the held reply resumes; the resumed tts_chunk_start flips us back to
+    // speaking and crossfades the hold ambience out (handled in tts_chunk_start).
+    VLOG.recv("gate", "OVERRULED", "resuming");
+  }
+});
+(function initGateCard() {
+  var form = document.getElementById("gateCardForm");
+  if (!form) return;
+  form.addEventListener("submit", function(e) {
+    e.preventDefault();
+    if (!_gateId) return;
+    var inp = document.getElementById("gateCardInput");
+    var resp = inp ? inp.value.trim() : "";
+    if (resp === "") return;
+    socket.emit("gate_answer", { gate_id: _gateId, response: resp });
+    VLOG.send("gate_answer", resp);
+  });
+})();
 
 // ============================================
 // State Management
@@ -1242,6 +1291,8 @@ function updateStatusTimer() {
   } else if (currentState === "synthing") {
     var elapsed = Date.now() - stateStartTime;
     label = SYNTHING_LABEL + " " + formatElapsed(elapsed);
+  } else if (currentState === "holding") {
+    label = "holding for a response " + formatElapsed(Date.now() - stateStartTime);
   } else if (currentState === "speaking") {
     var elapsed = Date.now() - stateStartTime;
     label = "speaking " + formatElapsed(elapsed);
@@ -1262,8 +1313,8 @@ function setState(state) {
   // 'speaking' but the voice audio has not actually started yet (synth latency):
   // keep thinking/working looping so there is no dead air; tts_chunk_start crossfades
   // it into the voice. A fresh turn (recording/transcribing/thinking) resets the gap.
-  // 'synthing' sustains the gap ambience (no dead air) until tts_chunk_start.
-  var sustainGap = (state === "synthing");
+  // 'synthing' and 'holding' sustain an ambience (no dead air) rather than cut it.
+  var sustainGap = (state === "synthing" || state === "holding");
   if (!sustainGap) {
     stopSound("thinking");
     stopSound("working");
@@ -1276,6 +1327,9 @@ function setState(state) {
     playSound("thinking");
   } else if (state === "synthing") {
     // Keep the ambience going; on a REPLAY it may need to start fresh (from idle).
+    if (sfx.thinking && sfx.thinking.paused) playSound("thinking");
+  } else if (state === "holding") {
+    // Objection raised: hold ambience while the ruling gate is pending.
     if (sfx.thinking && sfx.thinking.paused) playSound("thinking");
   } else if (state === "transcribing" || state === "idle") {
     voicePending = false; voiceStarted = false;   // turn boundary
@@ -1308,6 +1362,7 @@ function setState(state) {
   var initialLabel;
   if (state === "recording") initialLabel = state + " 30s";
   else if (state === "synthing") initialLabel = SYNTHING_LABEL + " 0s";
+  else if (state === "holding") initialLabel = "holding for a response 0s";
   else initialLabel = state + " 0s";
   if (drawerStatusText) {
     drawerStatusText.textContent = initialLabel;

@@ -905,6 +905,54 @@ body {
   animation: cvx-synth-pulse 1s ease-in-out infinite;
 }
 
+.state-dot__inner[data-state="holding"] {
+  background: var(--state-holding, #d0a85a);
+  animation: cvx-synth-pulse 0.7s ease-in-out infinite;
+}
+.status-dot[data-state="holding"] {
+  background: var(--state-holding, #d0a85a);
+  box-shadow: 0 0 8px color-mix(in srgb, var(--state-holding, #d0a85a) 60%, transparent);
+  animation: cvx-synth-pulse 0.7s ease-in-out infinite;
+}
+
+/* Objection gate cue card: the visible ruling gate while HOLDING. */
+.gate-card {
+  position: fixed;
+  top: 50%; left: 50%;
+  transform: translate(-50%, -50%);
+  z-index: 70;
+  background: var(--panel, #1f1f1f);
+  border: 2px solid var(--state-holding, #d0a85a);
+  border-radius: 14px;
+  padding: 22px 26px;
+  text-align: center;
+  box-shadow: 0 8px 40px rgba(0, 0, 0, 0.5),
+              0 0 24px color-mix(in srgb, var(--state-holding, #d0a85a) 35%, transparent);
+  font-family: inherit;
+  min-width: 220px;
+}
+.gate-card[hidden] { display: none; }
+.gate-card__label {
+  font-size: 11px; letter-spacing: 0.1em; text-transform: uppercase;
+  color: var(--state-holding, #d0a85a); margin-bottom: 8px;
+}
+.gate-card__prompt {
+  font-size: 30px; font-weight: 600; color: var(--ink, #eaeaea);
+  font-variant-numeric: tabular-nums; margin-bottom: 14px;
+}
+.gate-card__form { display: flex; gap: 8px; justify-content: center; }
+.gate-card__input {
+  width: 100px; text-align: center; font-size: 18px; padding: 8px 10px;
+  background: #191919; color: var(--ink, #eaeaea);
+  border: 1px solid var(--line, #343434); border-radius: 8px; font-family: inherit;
+}
+.gate-card__submit {
+  padding: 8px 16px; font-size: 14px; cursor: pointer; font-family: inherit;
+  background: var(--state-holding, #d0a85a); color: var(--bg, #161616);
+  border: 0; border-radius: 8px; font-weight: 600;
+}
+.gate-card__hint { font-size: 11px; color: var(--dim, #9a9a9a); margin-top: 12px; }
+
 /* LIVE mode: a glowing stroke around the whole viewport, colored by the current
    state. --live-stroke is set by JS to the matching --state-* token, so the frame
    tracks recording -> synthing -> speaking AND re-themes with Spectra. The state

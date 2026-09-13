@@ -155,6 +155,18 @@
             <div class="state-dot__inner" data-state="idle"></div>
         </div>
 
+        <!-- Objection gate cue card: shown while HOLDING for a ruling -->
+        <div class="gate-card" id="gateCard" hidden>
+            <div class="gate-card__label">holding for a response</div>
+            <div class="gate-card__prompt" id="gateCardPrompt">2 + 2 = ?</div>
+            <form class="gate-card__form" id="gateCardForm">
+                <input class="gate-card__input" id="gateCardInput" type="text"
+                       inputmode="numeric" autocomplete="off" placeholder="answer">
+                <button class="gate-card__submit" type="submit">rule</button>
+            </form>
+            <div class="gate-card__hint">answer to sustain &middot; wrong or wait overrules</div>
+        </div>
+
         <!-- Stop Audio Button (only visible when speaking) -->
         <button class="btn btn--secondary canvas__stop-btn" id="canvasStopBtn" style="display: none;">
             Stop Audio
