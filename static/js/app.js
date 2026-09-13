@@ -668,7 +668,7 @@ function toggleLiveMode() {
     _vadState = 'idle'; _voiceOnset = 0; _lastVoice = 0;
     if (!_vadTimer) _vadTimer = setInterval(_vadTick, window.VAD.pollMs);
     document.body.setAttribute('data-live', '');
-    if (instructions) instructions.textContent = '🟢 LIVE MODE • just talk • press L to exit';
+    if (instructions) instructions.textContent = 'LIVE MODE • just talk • press L to exit';
     VLOG.voice("LIVE mode ON", "hands-free VAD, breathy floor; press L to exit");
     if (typeof addSystemMessage === 'function') addSystemMessage('Live mode on. Just talk -- no spacebar needed.');
   } else {
