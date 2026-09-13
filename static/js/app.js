@@ -1326,7 +1326,19 @@ function setState(state) {
 // Message Rendering (Haberdash Cards)
 // ============================================
 
+// Strip SSML delivery tags for DISPLAY. The tags shape the spoken voice (server-side);
+// the chat shows clean prose. <sub alias=".."> displays the alias, not the tag.
+function stripSSML(s) {
+  if (!s) return s;
+  s = s.replace(/<sub\b[^>]*\balias=["']([^"']*)["'][^>]*>[\s\S]*?<\/sub>/gi, "$1");
+  return s.replace(/<\/?[a-zA-Z][^>]*>/g, "");
+}
+
 function addMessage(role, text, ttsChunks) {
+  if (role === "assistant") {
+    text = stripSSML(text);
+    if (Array.isArray(ttsChunks)) ttsChunks = ttsChunks.map(stripSSML);
+  }
   // Create a simple hash for deduplication
   const messageKey = `${role}:${text.substring(0, 50)}`;
   const now = Date.now();

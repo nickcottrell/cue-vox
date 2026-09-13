@@ -870,6 +870,52 @@ def _vlog(stage, msg=""):
     print("cvx:%-8s %s" % (stage, msg), flush=True)
 
 
+def _render_ssml_to_wav(text):
+    """Render one SSML chunk into a single wav via the shared engine: each say-span
+    synthed with its own register/gain/speed/lift, pauses spliced as silence, cues as
+    prebaked clips, all concatenated. Plain text (no tags) takes the cheap flat path.
+    Returns a wav path (the play worker deletes it) or None. This is what makes the
+    agent's SSML actually shape the LIVE delivery, not just the tuner."""
+    import tempfile
+    base = kokoro_voice._register            # the turn's base register (autotone + weight)
+    tone = {"pressure": _PRESSURE, "break_mult": _BREAK_MULT}
+    instr = resolve_instructions(text, base, tone)
+    if len(instr) == 1 and "say" in instr[0]:    # plain span -> flat synth
+        return kokoro_voice.synth_to_file(instr[0]["say"], question=instr[0].get("lift"))
+    parts = []
+    for it in instr:
+        if "say" in it:
+            kokoro_voice.set_register(it["register"])
+            kokoro_voice.set_prosody(speed=it["speed"], gain=it["gain"])
+            p = kokoro_voice.synth_to_file(it["say"], question=it.get("lift"))
+            if p:
+                parts.append(p)
+        elif "pause_ms" in it:
+            fd, sp = tempfile.mkstemp(suffix=".wav", prefix="cvx-pause-"); os.close(fd)
+            _silence_wav(int(it["pause_ms"]), sp)
+            parts.append(sp)
+        elif "cue" in it:
+            cue = os.path.join(_SFX_DIR, "%s-%d.wav" % (it["cue"], max(0, min(4, base))))
+            if not os.path.exists(cue):
+                cue = os.path.join(_SFX_DIR, "%s.wav" % it["cue"])
+            if os.path.exists(cue):
+                parts.append(cue)
+    kokoro_voice.set_register(base)           # restore for the next chunk
+    if not parts:
+        return None
+    if len(parts) == 1 and not parts[0].startswith(_SFX_DIR):
+        return parts[0]
+    fd, out = tempfile.mkstemp(suffix=".wav", prefix="cvx-ssml-"); os.close(fd)
+    _concat_wavs(parts, out)
+    for p in parts:
+        if not p.startswith(_SFX_DIR):
+            try:
+                os.remove(p)
+            except OSError:
+                pass
+    return out
+
+
 def _synth_worker():
     """Stage 1: pull text chunks and synthesize them AHEAD of playback.
 
@@ -901,13 +947,13 @@ def _synth_worker():
                         wav = chatterbox_voice.synth_to_file(payload, exaggeration=_exaggeration)
                     except Exception as e:
                         print("[TTS] chatterbox synth error: %s -- falling back" % e)
-                # Default (or fallback) -> fast local Kokoro.
+                # Default (or fallback) -> fast local Kokoro, rendering the chunk's SSML
+                # per-span (register/gain/speed/lift + pauses + cues), not flat.
                 if wav is None and _kokoro_available:
-                    _vlog("synth", "chunk %d engine=kokoro reg=%d lift=%.2f q=%s  \"%s\""
-                          % (chunk_index, kokoro_voice._register, kokoro_voice._lift,
-                             (payload or "").rstrip().endswith("?"), _preview))
+                    _vlog("synth", "chunk %d engine=kokoro (ssml) base_reg=%d  \"%s\""
+                          % (chunk_index, kokoro_voice._register, _preview))
                     try:
-                        wav = kokoro_voice.synth_to_file(payload)
+                        wav = _render_ssml_to_wav(payload)
                     except Exception as e:
                         print("[TTS] kokoro synth error: %s -- deferring to say" % e)
                 if wav:
@@ -936,7 +982,7 @@ def _play_worker():
                 if kind in ("wav", "clip"):
                     subprocess.run(["afplay", payload], check=False)
                 else:  # "say" fallback -- synth and play together
-                    _say_with_fallback(payload)
+                    _say_with_fallback(strip_markdown_for_tts(payload))   # say can't render SSML
                 # Chunk audio ended. If the next paragraph is not ready yet, the client
                 # fills that between-paragraph gap with the synthing ambience (Amex-style).
                 if emit_events and not tts_interrupted:
@@ -1204,9 +1250,10 @@ def strip_system_reminders(text):
     return text.strip()
 
 
-def strip_markdown_for_tts(text):
-    """Strip markdown formatting so macOS say gets clean prose.
-    Bullet/number prefixes, bold/italic markers, heading hashes, code fences."""
+def strip_markdown_only(text):
+    """Clean markdown/emoji/ALL-CAPS for TTS but LEAVE SSML tags intact, so the SSML
+    renderer can shape delivery. (strip_markdown_for_tts also removes SSML, for the
+    plain/expressive paths that cannot render it.)"""
     # Headings: ## Title -> Title
     text = re.sub(r"^#{1,6}\s+", "", text, flags=re.MULTILINE)
     # Bold/italic: **text** or __text__ or *text* or _text_
@@ -1220,9 +1267,6 @@ def strip_markdown_for_tts(text):
     text = re.sub(r"`([^`]+)`", r"\1", text)
     # Code fences
     text = re.sub(r"```[\s\S]*?```", "", text)
-    # SSML / XML tags: strip to bare words so they are never spoken literally. (The
-    # tuner path renders SSML properly via _ops_from_text; this guards the plain path.)
-    text = re.sub(r"</?[a-zA-Z][^>]*>", "", text)
     # Emoji / pictographs read as noise (or letter-spelling) in neural TTS -- drop them.
     text = re.sub(
         r"[\U0001F000-\U0001FAFF\U00002600-\U000027BF\U0001F1E6-\U0001F1FF\U00002190-\U000021FF\U00002B00-\U00002BFF️]",
@@ -1234,6 +1278,12 @@ def strip_markdown_for_tts(text):
     # Collapse whitespace left by removals.
     text = re.sub(r"[ \t]{2,}", " ", text)
     return text.strip()
+
+
+def strip_markdown_for_tts(text):
+    """As strip_markdown_only, plus removes SSML tags (for the plain/expressive paths
+    that speak the words directly and cannot render SSML)."""
+    return re.sub(r"</?[a-zA-Z][^>]*>", "", strip_markdown_only(text)).strip()
 
 
 def _strip_bracket_balanced_tags(text, tag_types):
@@ -1454,7 +1504,9 @@ def speak_chunked(text):
             items.append(("clip", seg))
         else:
             for chunk in tts_chunk_split(seg):
-                clean = strip_markdown_for_tts(chunk)
+                # Kokoro path keeps SSML (rendered per-span by _render_ssml_to_wav);
+                # expressive (Chatterbox) can't render it, so strip to plain there.
+                clean = strip_markdown_for_tts(chunk) if _expressive_mode else strip_markdown_only(chunk)
                 if clean:
                     items.append(("text", clean))
     if not items:
