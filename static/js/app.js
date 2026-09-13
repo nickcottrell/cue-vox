@@ -55,6 +55,7 @@ let currentState = 'idle';
 // then crossfade in, instead of leaving dead air.
 let voicePending = false;   // a reply with voice is coming, audio not started yet
 let voiceStarted = false;   // first tts chunk has begun playing this turn
+let interChunkTimer = null; // debounce for the between-paragraph synth gap
 // 'synthing' is a real state: the voice is being synthesized (register resolved,
 // prosody rendered) and, on replay, RE-synthesized at runtime -- active memory, not
 // a stored recording. Shown before "speaking", which means audio is actually playing.
@@ -120,6 +121,21 @@ function stopAllSounds() {
     sfx[key].pause();
     sfx[key].currentTime = 0;
   });
+}
+
+// Fade a looping ambience IN over `ms` (used to fill between-paragraph synth gaps
+// without a hard blip). Keeps the weight-driven playbackRate.
+function fadeInSound(name, ms) {
+  var s = sfx[name];
+  if (!s) return;
+  s.currentTime = 0; s.volume = 0;
+  s.play().catch(function () {});
+  var steps = 10, i = 0;
+  var iv = setInterval(function () {
+    i++;
+    s.volume = Math.min(1, i / steps);
+    if (i >= steps) { clearInterval(iv); s.volume = 1; }
+  }, Math.max(12, (ms || 180) / steps));
 }
 
 // Crossfade a looping ambience out over `ms` so the handoff into the voice blends
@@ -663,7 +679,35 @@ function toggleLiveMode() {
     VLOG.voice("LIVE mode OFF", "back to push-to-talk");
     if (typeof addSystemMessage === 'function') addSystemMessage('Live mode off. Hold SPACE to talk.');
   }
+  refreshModeBadges();
 }
+
+function toggleExpressive() {
+  window.VOICE.expressive = !window.VOICE.expressive;
+  var on = window.VOICE.expressive;
+  VLOG.voice(on ? "EXPRESSIVE mode ON" : "EXPRESSIVE mode OFF", on ? "Chatterbox sidecar" : "Kokoro");
+  if (typeof addSystemMessage === 'function') {
+    addSystemMessage(on ? 'Expressive voice on (Chatterbox).' : 'Expressive voice off (Kokoro).');
+  }
+  refreshModeBadges();
+}
+
+// Reflect the current voice modes in the base-page badges (visible + clickable).
+function refreshModeBadges() {
+  var live = document.getElementById('modeBadgeLive');
+  var expr = document.getElementById('modeBadgeExpressive');
+  if (live) live.setAttribute('data-on', liveMode ? 'true' : 'false');
+  if (expr) expr.setAttribute('data-on', window.VOICE.expressive ? 'true' : 'false');
+}
+
+// Mode badges: click to toggle (same as L / E keys), and reflect current state.
+(function initModeBadges() {
+  var live = document.getElementById('modeBadgeLive');
+  var expr = document.getElementById('modeBadgeExpressive');
+  if (live) live.addEventListener('click', toggleLiveMode);
+  if (expr) expr.addEventListener('click', toggleExpressive);
+  refreshModeBadges();
+})();
 
 // L toggles live mode (ignored while typing in a field).
 document.addEventListener('keydown', (e) => {
@@ -673,12 +717,7 @@ document.addEventListener('keydown', (e) => {
   }
   // E toggles expressive (Chatterbox) mode -- real feeling, a bit slower.
   if (e.code === 'KeyE' && !e.metaKey && !e.ctrlKey && !e.altKey) {
-    window.VOICE.expressive = !window.VOICE.expressive;
-    var on = window.VOICE.expressive;
-    VLOG.voice(on ? "EXPRESSIVE mode ON" : "EXPRESSIVE mode OFF", on ? "Chatterbox sidecar" : "Kokoro");
-    if (typeof addSystemMessage === 'function') {
-      addSystemMessage(on ? 'Expressive voice on (Chatterbox).' : 'Expressive voice off (Kokoro).');
-    }
+    toggleExpressive();
   }
 });
 
@@ -1061,7 +1100,27 @@ socket.on("voice_weight", function(data) {
   VLOG.recv("weight", (data && data.weight), data && data.expressive ? "(expressive)" : "");
 });
 
+socket.on("tts_chunk_ended", function(data) {
+  // A paragraph's audio ended. If the next one is not ready within a short window,
+  // we're in a real between-paragraph synth gap -> fill it with the same synthing
+  // ambience (Amex-style "still here"), and show the synthing state. The debounce
+  // means seamless back-to-back chunks never blip.
+  clearTimeout(interChunkTimer);
+  interChunkTimer = setTimeout(function () {
+    currentState = "synthing";
+    stateStartTime = Date.now();
+    if (stateDot) stateDot.setAttribute('data-state', 'synthing');
+    if (drawerStatusDot) drawerStatusDot.setAttribute('data-state', 'synthing');
+    if (typeof updateStatusTimer === "function") updateStatusTimer();
+    // Inline synth gaps use the lighter "working" (dot-dot-dot / processing) bed,
+    // not the full "thinking" loop -- that stays for the initial think.
+    if (sfx.working && sfx.working.paused) fadeInSound("working", 180);
+    applyWeightToAmbience(incomingWeight);   // keep the reply's weight depth in the fill
+  }, 160);
+});
+
 socket.on("tts_chunk_start", function(data) {
+  clearTimeout(interChunkTimer);   // next paragraph is ready: no gap to fill
   // The moment the voice is truly ready: crossfade the gap ambience into the voice
   // and reveal the stop-audio controls (audio is actually playing now).
   if (!voiceStarted) {
@@ -1073,6 +1132,14 @@ socket.on("tts_chunk_start", function(data) {
       currentState = "speaking";
       stateStartTime = Date.now();
     }
+    if (stateDot) stateDot.setAttribute('data-state', 'speaking');
+    if (drawerStatusDot) drawerStatusDot.setAttribute('data-state', 'speaking');
+    if (typeof updateStatusTimer === "function") updateStatusTimer();
+  } else if (currentState === "synthing") {
+    // Resuming after a between-paragraph gap: crossfade the working fill back in.
+    fadeOutSound("working", 200);
+    currentState = "speaking";
+    stateStartTime = Date.now();
     if (stateDot) stateDot.setAttribute('data-state', 'speaking');
     if (drawerStatusDot) drawerStatusDot.setAttribute('data-state', 'speaking');
     if (typeof updateStatusTimer === "function") updateStatusTimer();
@@ -1093,6 +1160,9 @@ socket.on("tts_chunk_start", function(data) {
 });
 
 socket.on("tts_chunk_done", function() {
+  clearTimeout(interChunkTimer);   // reply finished: no more between-paragraph gaps
+  fadeOutSound("thinking", 200);   // clear any initial-gap fill
+  fadeOutSound("working", 200);    // clear any inline-gap (working) fill
   var active = document.querySelector(".tts-speaking");
   if (active) active.classList.remove("tts-speaking");
   setStopControls(false);   // playback finished -> hide stop-audio controls

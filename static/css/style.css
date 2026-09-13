@@ -733,6 +733,36 @@ body {
   box-shadow: 0 0 8px color-mix(in srgb, var(--state-speaking, #00ff00) 60%, transparent);
 }
 
+/* Voice mode badges (base-page, clickable): expressive + live. */
+.mode-badges {
+  position: fixed;
+  top: 16px;
+  right: 16px;
+  display: flex;
+  gap: 8px;
+  z-index: 40;
+}
+.mode-badge {
+  font-size: 11px;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  padding: 4px 10px;
+  border-radius: 999px;
+  cursor: pointer;
+  border: 1px solid var(--line, #343434);
+  background: transparent;
+  color: var(--text-secondary, #888);
+  font-family: inherit;
+  transition: background 0.15s ease, color 0.15s ease, border-color 0.15s ease;
+}
+.mode-badge:hover { border-color: var(--accent, #17c3c3); }
+.mode-badge[data-on="true"] {
+  background: var(--accent, #17c3c3);
+  border-color: var(--accent, #17c3c3);
+  color: #111;
+  box-shadow: 0 0 8px color-mix(in srgb, var(--accent, #17c3c3) 50%, transparent);
+}
+
 /* synthing: the voice is being resolved/synthesized (re-synths at runtime). */
 .status-dot[data-state="synthing"] {
   background: var(--state-synthing, #17c3c3);

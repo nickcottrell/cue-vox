@@ -128,6 +128,14 @@
 
     <!-- Main Canvas -->
     <main class="canvas">
+        <!-- Voice mode badges: visible + clickable at the base page level -->
+        <div class="mode-badges" aria-label="Voice modes">
+            <button class="mode-badge" id="modeBadgeExpressive" data-on="false"
+                    title="Expressive voice (Chatterbox). Toggle with E.">expressive</button>
+            <button class="mode-badge" id="modeBadgeLive" data-on="false"
+                    title="Live hands-free mode. Toggle with L.">live</button>
+        </div>
+
         <!-- Session Label -->
         <h1 class="canvas__title" id="sessionTitle">
             cue-vox

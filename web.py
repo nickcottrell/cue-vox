@@ -748,7 +748,38 @@ except Exception as _cbx_err:
     print("[TTS] chatterbox_voice import failed: %s" % _cbx_err)
 
 _expressive_mode = False   # set per turn from window.VOICE.expressive
+_live_mode = False         # set per turn from data.live (hands-free VAD mode)
 _exaggeration = 0.6        # Chatterbox expressiveness dial for this turn
+
+# Conversational modes (expressive and/or live) are voice-first: the agent should
+# just talk. These structured tools are stripped from its replies (and never fire)
+# while gated, and it is told not to use them. CITATIONS stays (inline, harmless).
+_GATED_BLOCKED_TAGS = ("PIN_NINJA", "PIN_NOTE", "DOCUMENT", "INPUT", "APPROVAL", "GALLERY", "CUE", "YES_NO")
+
+
+def _gated_mode():
+    """True when a conversational voice mode (expressive or live) is active, so
+    tool tags are whitelisted down to conversation and pinning is suppressed."""
+    return _expressive_mode or _live_mode
+
+
+def get_mode_context():
+    """Tell the agent, in the prompt, exactly what voice mode it is in so it behaves
+    accordingly. Empty when not gated (normal task mode with full tools)."""
+    if not _gated_mode():
+        return ""
+    modes = []
+    if _expressive_mode:
+        modes.append("EXPRESSIVE")
+    if _live_mode:
+        modes.append("LIVE")
+    return (
+        "[VOICE MODE: %s]\n"
+        "You are in a spoken, conversational mode. Be brief and natural, like talking.\n"
+        "Do NOT pin directions for Ninja, and do NOT offer to. Do NOT use structured\n"
+        "tools: no PIN_NINJA, PIN_NOTE, DOCUMENT, INPUT, APPROVAL, GALLERY, CUE, or\n"
+        "YES_NO blocks. Just talk. Inline citations are fine.\n\n" % " + ".join(modes)
+    )
 
 # --- Auto-tone: emotion BUILDS from a breathy default -----------------------
 # Each turn emits energy tokens into a decaying pool. When the pool climbs, the
@@ -906,6 +937,10 @@ def _play_worker():
                     subprocess.run(["afplay", payload], check=False)
                 else:  # "say" fallback -- synth and play together
                     _say_with_fallback(payload)
+                # Chunk audio ended. If the next paragraph is not ready yet, the client
+                # fills that between-paragraph gap with the synthing ambience (Amex-style).
+                if emit_events and not tts_interrupted:
+                    socketio.emit("tts_chunk_ended", {"index": chunk_index})
         except Exception as e:
             print("[TTS PLAY ERROR] %s" % e)
         finally:
@@ -2513,6 +2548,10 @@ def log_conversation(user_text, assistant_text, speech_metadata=None, input_leng
     text_after_snr, snr_value = extract_snr(assistant_text)
     text_after_citations, citations_data = extract_citations(text_after_snr)
     clean_text = strip_system_reminders(text_after_citations)
+    # Tool whitelist: in a conversational mode, strip blocked structured tags so they
+    # never render a widget or fire (enforcement to back the prompt-level rule).
+    if _gated_mode():
+        clean_text = _strip_bracket_balanced_tags(clean_text, _GATED_BLOCKED_TAGS)
 
     entry = {
         'timestamp': timestamp.strftime('%Y-%m-%dT%H:%M'),  # No seconds
@@ -7232,13 +7271,14 @@ def handle_audio(data):
         # Live voice prosody (window.VOICE from the client): tempo / brightness /
         # gain, plus expressive mode (route synthesis to Chatterbox). Set once per
         # turn; the synth worker reads these globals.
-        global _expressive_mode, _exaggeration, _TONE, _prev_live
+        global _expressive_mode, _exaggeration, _TONE, _prev_live, _live_mode
         _v = data.get('voice') or {}
         live = bool(data.get('live'))
         # Live mode opens a private channel -> reset to the breathy "hey" floor.
         if live and not _prev_live:
             _TONE = 0.0
         _prev_live = live
+        _live_mode = live
 
         if _kokoro_available:
             kokoro_voice.set_prosody(speed=_v.get('speed'), bright=_v.get('bright'), gain=_v.get('gain'))
@@ -7281,6 +7321,7 @@ def handle_audio(data):
 
         # Inject instance identity, speech consumption, variables, input history, engagement, and rolling summary context
         context_sections = [
+            ("mode", get_mode_context()),
             ("identity", get_instance_identity()),
             ("recent_conversation", get_recent_conversation_context()),
             ("flux", get_flux_capacitor_context()),
@@ -7406,6 +7447,9 @@ def _try_pin_for_ninja_direction(final_value, recent_logs):
     shape+value (the PIN_NINJA block); final_value is the user's ratification --
     it is the content the user dialed to, not the direction itself.
     """
+    # Conversational modes do not pin for Ninja (and the agent is told not to offer).
+    if _gated_mode():
+        return None
     if not recent_logs:
         return None
     # Explicit rejection of a yes/no direction deposits nothing.
