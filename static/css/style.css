@@ -995,6 +995,30 @@ body[data-live] .state-dot__inner {
   transform: translateX(-50%) !important;
 }
 
+/* Unhold button: the holding floor made actionable. Same color as the holding state and
+   stroke, same action as SPACE (release). Sits where the stop button sits. */
+.canvas__unhold-btn {
+  position: absolute;
+  top: calc(50% + 70px);
+  left: 50%;
+  transform: translateX(-50%) !important;
+  z-index: 10;
+  pointer-events: auto;
+  margin: var(--space-md, 0.75rem) 0;
+  background: var(--state-holding, #d0a85a);
+  color: var(--bg, #161616);
+  border: 1px solid var(--state-holding, #d0a85a);
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  font-weight: 600;
+  box-shadow: 0 0 18px color-mix(in srgb, var(--state-holding, #d0a85a) 45%, transparent);
+}
+
+.canvas__unhold-btn:hover {
+  transform: translateX(-50%) !important;
+  background: color-mix(in srgb, var(--state-holding, #d0a85a) 85%, #fff);
+}
+
 /* ============================================
    CANVAS STATUS
    ============================================ */

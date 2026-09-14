@@ -42,6 +42,7 @@ const canvasStatus = document.getElementById('canvasStatus');
 const drawerTextInput = document.getElementById('drawerTextInput');
 const drawerSendButton = document.getElementById('drawerSendButton');
 const canvasStopBtn = document.getElementById('canvasStopBtn');
+const canvasUnholdBtn = document.getElementById('canvasUnholdBtn');
 const drawerStopLink = document.getElementById('drawerStopLink');
 
 // State
@@ -509,18 +510,21 @@ document.addEventListener('keydown', (e) => {
     // Objection protocol on the space bar:
     //   held     -> SPACE resumes (cancel the objection)
     //   speaking -> SPACE holds (an explicit objection, alongside voice "WAIT")
-    // Synthing is a locked state: the re-synth is in flight, space does nothing.
+    // Synthing is a locked transition state: space does nothing mid-transition.
     if (currentState === 'synthing') return;
 
+    // RELEASE from the holding floor (same action as the UNHOLD button).
     if (currentState === 'holding') {
-      heldSession = false;
-      setState('synthing');    // lock immediately: no more space until audio lands
-      socket.emit('resume');   // space resumes (with an aside), from the interrupted paragraph
+      releaseHold();
       return;
     }
+    // No double interruption: once a subchannel turn is underway (recording/transcribing/
+    // thinking/speaking inside a hold), space is inert. You release only from the floor.
+    if (heldSession) return;
+    // HOLD the main reply: rebase onto the holding floor.
     if (currentState === 'speaking') {
       heldSession = true;
-      socket.emit('object');   // interrupt -> flip to holding and just hold
+      socket.emit('object');
       setState('holding');
       return;
     }
@@ -535,6 +539,17 @@ document.addEventListener('keydown', (e) => {
 
 var recordingForHold = false;   // this capture is a hold-listen (check cancel/nevermind)
 
+// RELEASE (unhold): leave the holding floor -> thinking (regenerate with the subchannel
+// folded in) -> "with that in mind..." -> continuation. Treated like a fresh reply so the
+// first chunk promotes thinking -> speaking. Shared by SPACE and the UNHOLD button.
+function releaseHold() {
+  if (currentState !== 'holding') return;
+  heldSession = false;
+  voicePending = true; voiceStarted = false;
+  setState('thinking');
+  socket.emit('resume');
+}
+
 function startRecording() {
   if (isRecording) return;
   if (!mediaRecorder) {
@@ -543,10 +558,11 @@ function startRecording() {
   }
   console.log('🎙️ Starting recording...');
   isRecording = true;
-  // While held, listen quietly: capture but STAY in holding (no recording-state flip),
-  // so the screen never leaves holding while we check for cancel/nevermind.
+  // A capture that starts from the holding floor is a subchannel turn (tagged holding:true
+  // for the server). Either way, swap to the visible 'recording' state -- idle&listening and
+  // holding&listening both flip to recording on detected speech.
   recordingForHold = (currentState === 'holding');
-  if (!recordingForHold) setState('recording');
+  setState('recording');
   mediaRecorder.start(1000);
 
   // 30-second recording limit
@@ -606,6 +622,8 @@ var liveMode = false;
 var _audioCtx = null, _vadAnalyser = null, _vadBuf = null, _vadTimer = null;
 var _vadState = 'idle';           // 'idle' | 'capturing'
 var _voiceOnset = 0, _lastVoice = 0;
+var _bargeOnset = 0;              // start of cumulative barge-voiced speech while assistant speaks
+var _bargeLoud = 0;              // last frame above the barge threshold (gap tolerance)
 var _lvlSum = 0, _lvlCount = 0;   // accumulate mic RMS over a turn (loudness sensing)
 
 // The tunable knobs -- the "realtime language" made local.
@@ -615,6 +633,13 @@ window.VAD = {
   silenceMs: 1200,    // trailing silence that ends a turn. Higher = more patient
                       // with mid-ramble pauses (fewer chopped turns); lower = snappier.
   pollMs: 50,
+  // VOICE BARGE: talk over the assistant to HOLD it. Needs voice ABOVE bargeThreshold,
+  // SUSTAINED for bargeSustainMs, so the assistant's own echo (server playback leaking
+  // into the mic) and short backchannels ("mm-hm") do not false-trigger. Cleanest on
+  // headphones (no echo at all); on speakers, raise bargeThreshold above the echo level.
+  bargeThreshold: 0.028,   // louder than the echo/ambient floor, reachable by real speech
+  bargeSustainMs: 320,     // cumulative loud speech before it holds (inter-word dips tolerated)
+  bargeGapMs: 220,         // a quiet gap this long (a real pause) resets the barge timer
 };
 
 // Voice prosody knobs, sent with every turn. Tune live from the console.
@@ -658,20 +683,34 @@ function _vadTick() {
   var level = _vadRms();
   var voiced = level > window.VAD.threshold;
 
-  // OBJECTION (barge): voice over the assistant raises an objection -> HOLD + gate,
-  // not a hard cut. The server holds the reply and sends a gate_challenge; the ruling
-  // decides sustained (yield) vs overruled (resume).
-  if (voiced && currentState === 'speaking') {
-    heldSession = true;
-    socket.emit('object');   // interrupt -> flip to holding
-    setState('holding');
+  // VOICE BARGE: talk over the assistant while it is SPEAKING to hold it. Needs voice above
+  // the barge threshold for bargeSustainMs of CUMULATIVE loud speech -- brief inter-word dips
+  // do NOT reset it (only a real gap of bargeGapMs quiet does), otherwise natural speech
+  // never accumulates and the barge never fires. Echo/backchannels stay below threshold or
+  // too short. On barge: park onto the holding floor; your continuing speech becomes the
+  // first subchannel turn ("you hold, we talk").
+  if (currentState === 'speaking' && !heldSession) {
+    if (level > window.VAD.bargeThreshold) {
+      if (!_bargeOnset) _bargeOnset = now;
+      _bargeLoud = now;
+      if (now - _bargeOnset >= window.VAD.bargeSustainMs) {
+        _bargeOnset = 0;
+        heldSession = true;
+        socket.emit('object');           // interrupt -> HOLD (server captures said + remainder)
+        setState('holding');
+        VLOG.vad("BARGE -> hold", { level: +level.toFixed(4), barge: window.VAD.bargeThreshold });
+      }
+    } else if (_bargeOnset && now - _bargeLoud > window.VAD.bargeGapMs) {
+      _bargeOnset = 0;                    // a real pause (not an inter-word dip) resets the barge
+    }
+    return;
   }
-  // Held: just hold. Do NOT respond to the interruption -- no capture, no nested turn.
-  // Exit is the space bar (resume). Voice while held is ignored for now.
-  if (currentState === 'holding') return;
-  // While held, we KEEP listening (a quiet hold-listen) for "cancel"/"nevermind" -- the
-  // VAD capture path below runs, but startRecording stays in holding and the server only
-  // checks those words, so we never leave holding unless it resumes.
+
+  // Listen only from a FLOOR: idle (normal) or holding (subchannel). While the assistant has
+  // the floor (speaking / synthing) or a turn is mid-process (transcribing / thinking), do
+  // not capture -- self-echo is not an interrupt, and this also enforces no double-interruption
+  // of a subchannel turn. If a capture is already running, let it finish to its endpoint.
+  if (_vadState !== 'capturing' && currentState !== 'idle' && currentState !== 'holding') return;
 
   if (voiced) _lastVoice = now;
 
@@ -735,7 +774,11 @@ function toggleExpressive() {
 // The LIVE screen stroke color tracks the current state, via a CSS var pointed at the
 // matching Spectra --state-* token (so it re-themes). Only visible when data-live.
 function setLiveStroke(state) {
-  document.body.style.setProperty('--live-stroke', 'var(--state-' + state + ', #888)');
+  // While a hold is active, the OUTER stroke stays the holding color for the whole session
+  // -- that persistent outer signal is what makes the hold feel solid. The dot still tracks
+  // the real sub-state (recording/transcribing/thinking/speaking) underneath.
+  var stroke = heldSession ? 'holding' : state;
+  document.body.style.setProperty('--live-stroke', 'var(--state-' + stroke + ', #888)');
 }
 
 // Reflect the current voice modes in the base-page badges (visible + clickable).
@@ -829,6 +872,8 @@ canvasStopBtn.addEventListener('click', () => {
   stopAllSounds();
   socket.emit('interrupt');
 });
+
+if (canvasUnholdBtn) canvasUnholdBtn.addEventListener('click', releaseHold);
 
 drawerStopLink.addEventListener('click', (e) => {
   e.preventDefault();
@@ -1207,9 +1252,9 @@ socket.on("tts_chunk_start", function(data) {
     if (drawerStatusDot) drawerStatusDot.setAttribute('data-state', 'speaking');
     setLiveStroke('speaking');
     if (typeof updateStatusTimer === "function") updateStatusTimer();
-  } else if (currentState === "synthing" || currentState === "holding") {
-    // Resuming after a between-paragraph gap OR an OVERRULED objection: crossfade the
-    // fill back into the voice.
+  } else if (currentState === "synthing" || currentState === "holding" || currentState === "thinking") {
+    // Resuming after a between-paragraph gap, a release regeneration (thinking), or an
+    // OVERRULED objection: crossfade the fill back into the voice.
     fadeOutSound("working", 200);
     fadeOutSound("thinking", 200);
     currentState = "speaking";
@@ -1411,6 +1456,10 @@ function setState(state) {
     stateDot.setAttribute('data-state', state);
   }
   setLiveStroke(state);   // the LIVE screen stroke tracks the state color
+
+  // The UNHOLD button is the holding floor made actionable -- visible only while holding,
+  // same color/stroke, same action as SPACE.
+  if (canvasUnholdBtn) canvasUnholdBtn.style.display = (state === 'holding') ? 'block' : 'none';
 
   // Update drawer status
   if (drawerStatusDot) {

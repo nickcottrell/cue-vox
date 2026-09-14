@@ -14,8 +14,9 @@ you do not need to wrap a reply in `<speak>` (the parser tolerates it either way
 
 | Tag | Does | Maps to |
 |-----|------|---------|
-| `<break time="400ms"/>` | a pause | silence splice |
+| `<break time="400ms"/>` | a silent pause | silence splice |
 | `<break strength="x-weak\|weak\|medium\|strong\|x-strong"/>` | a sized pause | 100 / 200 / 400 / 800 / 1400 ms |
+| `<beat/>` `<beat time="600ms"/>` `<rest/>` | a textured rest -- the processing bed held for a beat (rhythm / pacing / a held blank) | loop of `models/sfx/beat.wav` (the same bed the client fills a latency gap with, so a beat and a real wait are one texture) |
 | `<emphasis level="strong\|moderate\|reduced">` | land / soften a phrase | force (gain) |
 | `<prosody rate="slow\|fast\|1.2\|80%">` | pace | speed |
 | `<prosody volume="soft\|loud\|+6dB">` | loudness | gain |
@@ -29,6 +30,11 @@ you do not need to wrap a reply in `<speak>` (the parser tolerates it either way
 Nested tags accumulate: `<prosody volume="loud"><emphasis level="strong">…</emphasis></prosody>`
 stacks force. A trailing `?` also raises the final syllable on its own; the **Question
 rise** dial sets how far.
+
+A short `<beat/>` is placed **automatically between paragraphs** (Kokoro path), so a
+multi-paragraph reply breathes on its own and the beat blends into any synth latency
+before the next paragraph. Author your own `<beat/>` on top of that whenever a line wants
+a deliberate rest.
 
 ---
 

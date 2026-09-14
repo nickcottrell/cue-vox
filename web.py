@@ -717,6 +717,11 @@ TTS_VOICE = ""
 # only the first chunk carries synth latency. FIFO, no overlaps. ---
 _speech_queue = queue.Queue()   # text chunks awaiting synthesis
 _play_queue = queue.Queue()     # synthesized items awaiting playback
+# Generation counter: every speak_chunked call (and every flush) bumps this. Each queued
+# item carries the gen it was minted under; the synth and play workers drop any item whose
+# gen is stale. This kills the synth-ahead race where a chunk caught mid-synth at flush
+# time lands on the play queue after the drain and would otherwise replay on the next reply.
+_speech_gen = 0
 # Hold gate for the barge/objection protocol: cleared = HOLD (the play worker blocks at
 # the next chunk boundary, keeping remaining chunks); set = play. Distinct from
 # flush (which discards). Lets a reply be paused and resumed, or flushed on a sustained.
@@ -729,6 +734,9 @@ _reply_chunks = []       # snapshot of the current reply's items [(kind, payload
 _reply_para = []         # paragraph index per chunk (parallel to _reply_chunks)
 _reply_idx = 0           # index of the chunk currently playing
 _held_remainder = None   # text left to say when held (None = nothing held)
+_held_said = None        # text already spoken before the hold (context for the resume)
+_held_turns = 0          # child-subchannel turns taken during this hold (0 = nothing added)
+_subchannel_log = []     # (user, assistant) pairs from the sidebar -> the sidebar token
 
 # Resume vocabulary: any of these (spoken while held) exits the hold and resumes.
 _RESUME_WORDS = ("resume", "continue", "keep going", "go on", "carry on", "pick up",
@@ -738,6 +746,30 @@ _RESUME_WORDS = ("resume", "continue", "keep going", "go on", "carry on", "pick 
 def _is_resume(text):
     low = (text or "").lower()
     return any(w in low for w in _RESUME_WORDS)
+
+
+# AUTHORIZE: a spoken cue that lifts the hold, same as the space bar. Two tiers so natural
+# speech works without false releases:
+#   STRONG -- unambiguous release words that (almost) never appear in normal discussion.
+#             These authorize at ANY length ("go ahead and unhold it now" -> release).
+#   SOFT   -- everyday phrases that DO appear mid-sentence, so they authorize only in a
+#             brief, mostly-just-the-cue utterance (<=4 words).
+_AUTHORIZE_STRONG = ("unhold", "un-hold", "un hold", "release the hold", "lift the hold",
+                     "drop the hold", "release", "resume", "cancel", "nevermind", "never mind")
+_AUTHORIZE_SOFT = ("go ahead", "you're clear", "youre clear", "you are clear", "we're good",
+                   "were good", "all set", "all good", "sounds good", "proceed", "go on",
+                   "carry on", "keep going", "continue", "wrap up", "wrap it up", "clear")
+
+
+def _is_authorize(text):
+    low = re.sub(r"[^a-z0-9' -]", "", (text or "").strip().lower()).strip()
+    if not low:
+        return False
+    if any(p in low for p in _AUTHORIZE_STRONG):                 # strong cue -> any length
+        return True
+    if len(low.split()) <= 4 and any(p in low for p in _AUTHORIZE_SOFT):  # soft -> short only
+        return True
+    return False
 
 # Try to import pyttsx3 as fallback TTS engine
 try:
@@ -915,6 +947,10 @@ def _render_ssml_to_wav(text):
             fd, sp = tempfile.mkstemp(suffix=".wav", prefix="cvx-pause-"); os.close(fd)
             _silence_wav(int(it["pause_ms"]), sp)
             parts.append(sp)
+        elif "beat_ms" in it:
+            fd, bp = tempfile.mkstemp(suffix=".wav", prefix="cvx-beat-"); os.close(fd)
+            _texture_wav(int(it["beat_ms"]), bp)
+            parts.append(bp)
         elif "cue" in it:
             cue = os.path.join(_SFX_DIR, "%s-%d.wav" % (it["cue"], max(0, min(4, base))))
             if not os.path.exists(cue):
@@ -922,6 +958,58 @@ def _render_ssml_to_wav(text):
             if os.path.exists(cue):
                 parts.append(cue)
     kokoro_voice.set_register(base)           # restore for the next chunk
+    if not parts:
+        return None
+    if len(parts) == 1 and not parts[0].startswith(_SFX_DIR):
+        return parts[0]
+    fd, out = tempfile.mkstemp(suffix=".wav", prefix="cvx-ssml-"); os.close(fd)
+    _concat_wavs(parts, out)
+    for p in parts:
+        if not p.startswith(_SFX_DIR):
+            try:
+                os.remove(p)
+            except OSError:
+                pass
+    return out
+
+
+def _render_expressive_to_wav(text, exaggeration):
+    """Expressive (Chatterbox) render that still honors beats/pauses/cues. Chatterbox
+    cannot parse SSML, so we resolve the chunk to ops, synth each contiguous run of speech
+    as one Chatterbox call (so the voice stays smooth), and splice beat textures / silence /
+    cue clips between the runs. Beat-free chunks take the cheap flat path (one synth call),
+    identical to before. All engines emit 24kHz/16k mono, so the splices concat directly."""
+    import tempfile
+    ops = resolve_instructions(text, 0, {"pressure": _PRESSURE, "break_mult": _BREAK_MULT})
+    if not any(("beat_ms" in o or "pause_ms" in o or "cue" in o) for o in ops):
+        return chatterbox_voice.synth_to_file(strip_markdown_for_tts(text), exaggeration=exaggeration)
+    parts, buf = [], []
+
+    def _flush_say():
+        span = " ".join(s.strip() for s in buf if s.strip())
+        buf.clear()
+        if span:
+            p = chatterbox_voice.synth_to_file(span, exaggeration=exaggeration)
+            if p:
+                parts.append(p)
+
+    for o in ops:
+        if "say" in o:
+            buf.append(o["say"])
+        elif "beat_ms" in o:
+            _flush_say()
+            fd, bp = tempfile.mkstemp(suffix=".wav", prefix="cvx-beat-"); os.close(fd)
+            _texture_wav(int(o["beat_ms"]), bp); parts.append(bp)
+        elif "pause_ms" in o:
+            _flush_say()
+            fd, sp = tempfile.mkstemp(suffix=".wav", prefix="cvx-pause-"); os.close(fd)
+            _silence_wav(int(o["pause_ms"]), sp); parts.append(sp)
+        elif "cue" in o:
+            _flush_say()
+            cue = os.path.join(_SFX_DIR, "%s.wav" % o["cue"])
+            if os.path.exists(cue):
+                parts.append(cue)
+    _flush_say()
     if not parts:
         return None
     if len(parts) == 1 and not parts[0].startswith(_SFX_DIR):
@@ -952,12 +1040,15 @@ def _synth_worker():
             _speech_queue.task_done()
             break
         try:
-            seg_kind, payload, chunk_index, emit_events = item
-            if tts_interrupted:
-                _play_queue.put(("skip", None, chunk_index, emit_events))
+            seg_kind, payload, chunk_index, emit_events, gen = item
+            if gen != _speech_gen:
+                # Stale item from a flushed/superseded speech session -> drop, do not synth.
+                pass
+            elif tts_interrupted:
+                _play_queue.put(("skip", None, chunk_index, emit_events, gen))
             elif seg_kind == "clip":
                 # A [laugh]/[chuckle] marker -> play a prebaked in-voice clip, no synth.
-                _play_queue.put(("clip", payload, chunk_index, emit_events))
+                _play_queue.put(("clip", payload, chunk_index, emit_events, gen))
             else:
                 wav = None
                 _preview = (payload or "")[:40].replace("\n", " ")
@@ -965,7 +1056,7 @@ def _synth_worker():
                 if _expressive_mode and _chatterbox_imported:
                     _vlog("synth", "chunk %d engine=chatterbox exag=%.2f  \"%s\"" % (chunk_index, _exaggeration, _preview))
                     try:
-                        wav = chatterbox_voice.synth_to_file(payload, exaggeration=_exaggeration)
+                        wav = _render_expressive_to_wav(payload, _exaggeration)
                     except Exception as e:
                         print("[TTS] chatterbox synth error: %s -- falling back" % e)
                 # Default (or fallback) -> fast local Kokoro, rendering the chunk's SSML
@@ -977,10 +1068,18 @@ def _synth_worker():
                         wav = _render_ssml_to_wav(payload)
                     except Exception as e:
                         print("[TTS] kokoro synth error: %s -- deferring to say" % e)
-                if wav:
-                    _play_queue.put(("wav", wav, chunk_index, emit_events))
+                # Re-check gen: synth can take a beat, and a flush may have landed meanwhile.
+                # This is the exact race that used to replay a chunk on the next reply.
+                if gen != _speech_gen:
+                    if wav:
+                        try:
+                            os.remove(wav)
+                        except OSError:
+                            pass
+                elif wav:
+                    _play_queue.put(("wav", wav, chunk_index, emit_events, gen))
                 else:
-                    _play_queue.put(("say", payload, chunk_index, emit_events))
+                    _play_queue.put(("say", payload, chunk_index, emit_events, gen))
         except Exception as e:
             print("[TTS SYNTH ERROR] %s -- item dropped" % e)
         finally:
@@ -997,9 +1096,16 @@ def _play_worker():
         if item is None:
             _play_queue.task_done()
             break
-        kind, payload, chunk_index, emit_events = item
+        kind, payload, chunk_index, emit_events, gen = item
         try:
-            if not tts_interrupted and kind != "skip":
+            if gen != _speech_gen and kind == "wav" and payload:
+                # Stale audio from a flushed/superseded session -> discard the wav, do not
+                # play it. (This is what used to replay on resume.)
+                try:
+                    os.remove(payload)
+                except OSError:
+                    pass
+            elif not tts_interrupted and gen == _speech_gen and kind != "skip":
                 if emit_events:
                     global _reply_idx
                     _reply_idx = chunk_index      # for remainder capture on objection
@@ -1048,8 +1154,9 @@ _play_thread.start()
 
 def flush_speech_queue():
     """Kill current speech and drain the queue. Call this instead of killall say."""
-    global tts_interrupted
+    global tts_interrupted, _speech_gen
     tts_interrupted = True
+    _speech_gen += 1              # anything in flight is now stale; workers will drop it
     # Kill any running say process and any Kokoro playback (afplay)
     subprocess.run(["killall", "say"], stderr=subprocess.DEVNULL)
     subprocess.run(["killall", "afplay"], stderr=subprocess.DEVNULL)
@@ -1540,22 +1647,32 @@ def speak_chunked(text):
     """Queue a reply for speech: text chunks synthesize, [laugh]/[chuckle] markers
     splice in prebaked clips. Two-stage pipeline, FIFO, no overlap; interrupt via
     flush_speech_queue()."""
-    global tts_interrupted, _exaggeration
+    global tts_interrupted, _exaggeration, _speech_gen
     tts_interrupted = False
+    _speech_gen += 1               # new speech session; items below carry this gen
+    gen = _speech_gen
     items = []
     para_of = []   # paragraph index per item, so resume can start at a paragraph boundary
     paragraphs = re.split(r'\n\s*\n', text) if text else [text or ""]
     for pidx, para in enumerate(paragraphs):
+        last_text_i = None
         for seg_kind, seg in _split_laugh_segments(para):
             if seg_kind == "clip":
                 items.append(("clip", seg)); para_of.append(pidx)
             else:
                 for chunk in tts_chunk_split(seg):
-                    # Kokoro path keeps SSML (rendered per-span by _render_ssml_to_wav);
-                    # expressive (Chatterbox) can't render it, so strip to plain there.
-                    clean = strip_markdown_for_tts(chunk) if _expressive_mode else strip_markdown_only(chunk)
+                    # Keep SSML in the stored payload; the engine renderer strips per span
+                    # (Kokoro: _render_ssml_to_wav; expressive: _render_expressive_to_wav).
+                    # Both honor <beat/>, so the rest lands in either mode.
+                    clean = strip_markdown_only(chunk)
                     if clean:
                         items.append(("text", clean)); para_of.append(pidx)
+                        last_text_i = len(items) - 1
+        # A beat between paragraphs: ride it onto the paragraph's last spoken chunk so it
+        # blends into whatever synth latency follows (same texture as the client gap fill).
+        if pidx < len(paragraphs) - 1 and last_text_i is not None:
+            k, payload = items[last_text_i]
+            items[last_text_i] = (k, payload + ' <beat time="%dms"/>' % _PARA_BEAT_MS)
     if not items:
         return
     _n_clips = sum(1 for k, _ in items if k == "clip")
@@ -1580,7 +1697,7 @@ def speak_chunked(text):
     _vlog("weight", "reply weight=%.2f -> reg=%s exag=%.2f (expressive=%s)"
           % (w, kokoro_voice._register if _kokoro_available else "-", _exaggeration, _expressive_mode))
     for i, (seg_kind, payload) in enumerate(items):
-        _speech_queue.put((seg_kind, payload, i, True))
+        _speech_queue.put((seg_kind, payload, i, True, gen))
     # Wait for all chunks to synthesize, then for all audio to finish playing.
     _speech_queue.join()
     _play_queue.join()
@@ -2189,27 +2306,39 @@ _pending_challenges = {}  # sid -> challenge dict
 #                                     floor to the user (they take a turn).
 # The gate/form primitive (gate.py) stays available for walkable forms; the barge no
 # longer routes through the math gate.
-def _remainder_text():
-    """The text left to say, from the START of the paragraph that was playing when held
-    (so resume picks up at the top of the interrupted paragraph, not mid-sentence)."""
+def _hold_split():
+    """Split the current reply at the hold point: (said, remainder). `said` is what was
+    already spoken; `remainder` is from the START of the paragraph that was playing (so
+    resume picks up at the top of the interrupted paragraph, not mid-sentence)."""
     if not _reply_chunks:
-        return ""
+        return "", ""
     idx = min(_reply_idx, len(_reply_chunks) - 1)
     para = _reply_para[idx] if idx < len(_reply_para) else 0
     start = next((i for i, pp in enumerate(_reply_para) if pp == para), idx)
-    return " ".join(p for k, p in _reply_chunks[start:] if k == "text").strip()
+    said = " ".join(p for k, p in _reply_chunks[:start] if k == "text").strip()
+    remainder = " ".join(p for k, p in _reply_chunks[start:] if k == "text").strip()
+    return said, remainder
+
+
+def _remainder_text():
+    return _hold_split()[1]
 
 
 @socketio.on("object")
 def handle_object(data=None):
-    """WAIT: hold the reply. Capture the remainder (what is left to say) and stop the
-    audio now, so a discussion can happen; resume re-speaks the remainder."""
+    """WAIT: hold the reply. Capture what was already said + the remainder, and stop the
+    audio now, so the child subchannel can run; release regenerates from the remainder."""
     from flask_socketio import emit
-    global _held_remainder
+    global _held_remainder, _held_said, _held_turns, _subchannel_log
     if _held_remainder is None:                # first objection captures the original
-        _held_remainder = _remainder_text() or None
+        said, remainder = _hold_split()
+        _held_remainder = remainder or None
+        _held_said = said or None
+        _held_turns = 0                        # fresh hold: no subchannel turns yet
+        _subchannel_log = []                   # fresh sidebar
     flush_speech_queue()                       # stop the reply now
-    _vlog("barge", "OBJECT -> HOLD (remainder %d chars)" % len(_held_remainder or ""))
+    _vlog("barge", "OBJECT -> HOLD (said %d, remainder %d chars)"
+          % (len(_held_said or ""), len(_held_remainder or "")))
     emit("held", {})
 
 @socketio.on("cancel")
@@ -2221,6 +2350,7 @@ def handle_cancel(data=None):
     _vlog("barge", "CANCEL -> resume remainder")
     if r:
         speak_chunked(r)
+    socketio.emit("state_change", {"state": "idle"})   # reply done -> back to listening
 
 # Bumpers: short spoken transitions between LIVE states, broadcast style. Named and
 # composable, kept separate from the content they wrap. The cadence (the pauses) is the
@@ -2228,7 +2358,10 @@ def handle_cancel(data=None):
 # so the breaks are real. The hold ENTRY bumper is a sound (the hold ambience); this
 # registry holds the SPOKEN bumpers.
 BUMPERS = {
+    # Bare hold/release, nothing discussed: just pick the thread back up.
     "resume": 'OK, let\'s pick back up.<break time="350ms"/> And<break time="300ms"/> resume.<break time="450ms"/>',
+    # Release after a subchannel discussion: acknowledge the added context, then continue.
+    "resume_context": 'With that in mind...<break time="400ms"/>',
 }
 
 
@@ -2236,16 +2369,242 @@ def bumper(name):
     return BUMPERS.get(name, "")
 
 
+def _regenerate_resume(said, remainder):
+    """Release-with-context: re-run the agent to CONTINUE the interrupted reply, folding in
+    whatever was discussed in the child subchannel (already in the conversation log). Returns
+    a fresh spoken continuation, or None to fall back to the verbatim remainder."""
+    said = (said or "").strip()
+    remainder = (remainder or "").strip()
+    if not (said or remainder):
+        return None
+    instruction = (
+        "[RESUME AFTER HOLD] You were mid-reply in a live voice conversation and the user "
+        "put you on hold to talk. What you had already said: \"%s\". What you were about to "
+        "continue with: \"%s\". While held, you and the user had the exchange shown in the "
+        "recent conversation above. Now pick the thread back up out loud: deliver the rest "
+        "of that point, but weave in what was just discussed so it lands as one continuous "
+        "thought. Do not greet, do not recap mechanically, do not restate what you already "
+        "said. Just continue, naturally, spoken." % (said[-600:], remainder[:600])
+    )
+    try:
+        context_sections = [
+            ("mode", get_mode_context()),
+            ("identity", get_instance_identity()),
+            ("recent_conversation", get_recent_conversation_context()),
+            ("summary", get_conversation_summary_context()),
+            ("prompt_template", load_prompt_template()),
+        ]
+        enhanced = assemble_prompt_with_budget(context_sections, instruction)
+        response, _ = _call_claude_or_fallback(enhanced, raw_user_text="[resume]")
+        return response
+    except Exception as e:
+        print("[BARGE] resume regeneration failed: %s -- falling back to remainder" % e)
+        return None
+
+
+def _mint_sidebar_token(subchannel_log):
+    """Keep the SIDEBAR (the held side-thread) as a recallable, addressable token: ONE line
+    capturing the logic derived in that subthread, so a later turn can call back to it. The
+    handle (label) is the citation; the raw thread rides along in extra_fields. Degrades to
+    the raw thread text if synthesis or the factory is unavailable."""
+    if not subchannel_log or token_factory is None:
+        return None
+    thread = "\n".join("You: %s\nAssistant: %s" % (u, a)
+                       for u, a in subchannel_log if (u or a)).strip()
+    if not thread:
+        return None
+    line = None
+    try:
+        instr = ("[SIDEBAR SUMMARY] Below is a short side conversation, held off the main "
+                 "thread. In ONE sentence, state the operative point or decision derived in "
+                 "it -- the thing a later turn would call back to. No preamble, just the "
+                 "sentence.\n\n" + thread[:2000])
+        line, _ = _call_claude_or_fallback(instr, raw_user_text="[sidebar summary]")
+    except Exception as e:
+        print("[SIDEBAR] summary synthesis failed: %s" % e)
+    value = (line or "").strip() or thread[:280]
+    handle = " ".join(value.split()[:6])          # short citation handle for callbacks
+    # Root the sidebar in the human: it was derived from user actions (the held discussion),
+    # so it carries the session's REAL human provenance. That makes it a valid trust anchor,
+    # so a later callback's modifier can chain to the human THROUGH it. No faking.
+    extra = {"sidebar_thread": thread[:4000], "turns": len(subchannel_log), "scale": "turn"}
+    try:
+        from flask import request as _freq
+        extra.update(get_challenge_fields(getattr(_freq, "sid", None)))
+    except Exception:
+        pass
+    try:
+        tid = token_factory.create(
+            token_type="conversation_summary",
+            label="sidebar: %s" % handle,
+            value=value,
+            tags=["sidebar", "derived", "hold"],
+            thermal={"base_temp": 70, "cooling_rate": 6.0},
+            extra_fields=extra,
+        )
+        _vlog("sidebar", "minted token %s: \"%s\"" % (tid, value[:60]))
+        return tid
+    except Exception as e:
+        print("[SIDEBAR] token mint failed: %s" % e)
+        return None
+
+
+# Callback (light): a later turn can call back to a sidebar. Deliberate -- triggered by an
+# explicit reference, not fuzzy prose -- so it never fires by accident.
+_CALLBACK_TRIGGERS = ("callback", "call back", "call-back", "go back to", "back to what",
+                      "earlier you", "earlier we", "that sidebar", "the sidebar",
+                      "remember when", "as we discussed", "like we said", "pull that back",
+                      "pull it back", "revisit", "circle back")
+
+_STOP = set(("the a an and or of to in on for with that this it is are was you we i he she "
+             "they them our your my me be do so about what when how why").split())
+
+
+def _human_action_anchor(evidence):
+    """ARCHITECT'S LINE (user directive): a user action -- a spoken turn, a space press -- IS
+    the human anchor. The provenance guard exists for a real reason (a chain must terminate
+    at a human), so we do NOT bypass it and we do NOT borrow the challenge's stronger proof.
+    Instead we mint an honestly-labeled human anchor whose verification_method names exactly
+    what the proof is: a live user action. That is where the architect drew the line; move it
+    by changing this one function. Returns the anchor token id or None."""
+    if token_factory is None:
+        return None
+    try:
+        return token_factory.create(
+            token_type="user_action",
+            label="user action",
+            value=(evidence or "user action")[:200],
+            tags=["user_action", "human"],
+            thermal={"base_temp": 85, "cooling_rate": 10.0},
+            extra_fields={"human_verified": True,
+                          "verification_method": "user_action:live_turn"},
+        )
+    except Exception as e:
+        print("[ANCHOR] human-action anchor failed: %s" % e)
+        return None
+
+
+def _reheat_sidebar(token_id, evidence="", sid=None):
+    """USE MODIFIER TOKENS: a live modifier referencing the sidebar adds heat to it, so the
+    callback resurfaces it (this turn and the next few) instead of it decaying away. The
+    modifier chains to the human THROUGH the user action that triggered the callback (the
+    anchor), so provenance terminates at a real user action -- honestly, no faking. If a
+    stronger challenge proof exists this session, it rides along too."""
+    if token_factory is None:
+        return
+    anchor = _human_action_anchor(evidence)
+    refs = [r for r in (token_id, anchor) if r]
+    fields = {"references": refs}
+    try:
+        from flask import request as _freq
+        fields.update(get_challenge_fields(sid or getattr(_freq, "sid", None)))
+    except Exception:
+        pass
+    try:
+        token_factory.create(
+            token_type="modifier",
+            label="callback reheat",
+            value="callback -> %s" % token_id,
+            tags=["modifier", "callback", "sidebar"],
+            thermal={"base_temp": 92, "cooling_rate": 8.0},
+            extra_fields=fields,
+        )
+        _vlog("callback", "reheat modifier -> %s (anchor %s)" % (token_id, anchor))
+    except Exception as e:
+        print("[CALLBACK] reheat modifier failed: %s" % e)
+
+
+def _maybe_callback(text, sid=None):
+    """If this turn explicitly calls back to a sidebar, pick the best match, reheat it (via a
+    modifier), and return it for re-injection into this turn's prompt. Light version:
+    re-inject + reheat, no re-enter / re-run. Returns the token dict or None."""
+    low = (text or "").lower()
+    if not low or not any(t in low for t in _CALLBACK_TRIGGERS):
+        return None
+    if not CUE_MEM_AVAILABLE:
+        return None
+    try:
+        sidebars = [t for t in cue_mem_list_tokens() if "sidebar" in (t.get("tags") or [])]
+    except Exception:
+        sidebars = []
+    if not sidebars:
+        return None
+    words = set(w for w in re.findall(r"[a-z0-9']+", low) if w not in _STOP and len(w) > 2)
+
+    def _score(tok):
+        hay = ((tok.get("label") or "") + " " + str(tok.get("value") or "")).lower()
+        hw = set(re.findall(r"[a-z0-9']+", hay))
+        return len(words & hw)
+
+    best = max(sidebars, key=_score)
+    if _score(best) == 0:
+        best = sidebars[0]                 # no keyword match -> the hottest/most recent sidebar
+    _reheat_sidebar(best.get("token_id"), evidence=text, sid=sid)
+    _vlog("callback", "-> \"%s\"" % (best.get("value") or "")[:60])
+    return best
+
+
+_resuming = False
+
+
+def _release_hold(data=None):
+    """RELEASE the hold (space, the UNHOLD button, or a spoken authorize cue): regenerate the
+    continuation with the subchannel folded in, play the transition bumper, speak it, then
+    keep the sidebar as a token. Falls back to the verbatim remainder when nothing was
+    discussed. Re-entrancy guarded so two triggers cannot stack two playbacks."""
+    global _held_remainder, _held_said, _held_turns, _subchannel_log, _resuming, _exaggeration
+    if _resuming:
+        return
+    _resuming = True
+    flush_speech_queue()   # clean slate: no lingering subchannel/hold audio to overlap the stitch
+    turns, log = 0, []
+    try:
+        r = _held_remainder
+        said = _held_said
+        turns = _held_turns
+        log = list(_subchannel_log)
+        _held_remainder = None
+        _held_said = None
+        _held_turns = 0
+        _subchannel_log = []
+        # "With that in mind..." when there was a discussion; the plain pick-up otherwise.
+        b = (data or {}).get("bumper") or (bumper("resume_context") if turns > 0 else bumper("resume"))
+        # Only regenerate if something was actually discussed; a bare hold/release resumes
+        # the remainder verbatim (instant, no model call). During regeneration the client
+        # shows 'thinking', so the model latency reads as deliberation, not a stall.
+        cont = _regenerate_resume(said, r) if turns > 0 else None
+        body = cont if (cont and cont.strip()) else (r or "")
+        # Reset the voice to the live baseline before the stitch-back. The weight lever
+        # ACCUMULATES register/exaggeration across every subchannel turn, and this path skips
+        # the per-turn autotone -- without this reset the continuation synthesizes at a maxed,
+        # distorted register (the "cracked out robot" on resume).
+        if _kokoro_available:
+            kokoro_voice.set_register(_LIVE_REGISTER_FLOOR if _LIVE_REGISTER_FLOOR is not None else 1)
+        _exaggeration = 1.0
+        _vlog("barge", "RELEASE -> %s + continuation (%d chars, %d subchannel turns)"
+              % ("regen" if cont else "verbatim", len(body or ""), turns))
+        speak_chunked((b + " " + (body or "")).strip())
+    finally:
+        _resuming = False
+        socketio.emit("state_change", {"state": "idle"})   # idle NOW, before persistence
+    # Persist the sidebar OFF the critical path (its own model call) so it never delays the
+    # return to idle -- that delay was the ~10s stuck-in-speaking bug.
+    if turns > 0 and log:
+        def _persist():
+            try:
+                _mint_sidebar_token(log)
+            except Exception as e:
+                print("[SIDEBAR] background mint failed: %s" % e)
+        try:
+            socketio.start_background_task(_persist)
+        except Exception:
+            _persist()
+
+
 @socketio.on("resume")
 def handle_resume(data=None):
-    """RESUME (space): play the resume bumper, then re-speak the remainder from the start
-    of the interrupted paragraph."""
-    global _held_remainder
-    r = _held_remainder
-    _held_remainder = None
-    b = (data or {}).get("bumper") or bumper("resume")
-    _vlog("barge", "RESUME -> bumper + remainder")
-    speak_chunked((b + " " + (r or "")).strip())
+    """RELEASE via space / UNHOLD button (client already showed 'thinking')."""
+    _release_hold(data)
 
 try:
     import challenge as _challenge_mod
@@ -4534,6 +4893,91 @@ def _silence_wav(ms, out, rate=24000):
         w.setnchannels(1); w.setsampwidth(2); w.setframerate(rate); w.writeframes(np.zeros(n, dtype="<i2").tobytes())
 
 
+# The beat: the processing/"working" bed used as a rhythmic rest. Same texture the client
+# fills a between-paragraph latency gap with (static/sounds/working.wav), baked to the synth
+# rate so a deliberate beat and an elastic latency fill are indistinguishable. A beat is a
+# BLANK with texture -- a pause the agent can drop anywhere for rhythm and pacing.
+_BEAT_SRC = os.path.join(_SFX_DIR, "beat.wav")
+_BEAT_WORKING_SRC = os.path.join(os.path.dirname(os.path.abspath(__file__)), "static", "sounds", "working.wav")
+_BEAT_DEFAULT_MS = 550
+_PARA_BEAT_MS = 450        # auto-beat placed between paragraphs (blends with synth latency)
+
+
+def _ensure_beat_asset():
+    """Provision beat.wav (the synth-rate processing bed) from the client's working.wav if it
+    is not already present. Audio assets are gitignored, so this keeps the beat self-contained
+    on a fresh clone: derive it once at boot, dumb-by-design. No-op if beat.wav exists or the
+    source is missing (the beat then degrades to silence)."""
+    if os.path.exists(_BEAT_SRC) or not os.path.exists(_BEAT_WORKING_SRC):
+        return
+    try:
+        import wave
+        import struct
+        import numpy as np
+        with open(_BEAT_WORKING_SRC, "rb") as f:
+            raw = f.read()
+        i = raw.find(b"fmt ")
+        fmt_tag = struct.unpack_from("<H", raw, i + 8)[0] if i >= 0 else 1
+        with wave.open(_BEAT_WORKING_SRC) as w:
+            rate, ch, width = w.getframerate(), w.getnchannels(), w.getsampwidth()
+            frames = w.readframes(w.getnframes())
+        if fmt_tag == 3 and width == 4:
+            a = np.frombuffer(frames, dtype="<f4").astype(np.float64)
+        elif width == 4:
+            a = np.frombuffer(frames, dtype="<i4").astype(np.float64) / 2147483648.0
+        elif width == 2:
+            a = np.frombuffer(frames, dtype="<i2").astype(np.float64) / 32768.0
+        else:
+            return
+        if ch > 1:
+            a = a.reshape(-1, ch).mean(axis=1)
+        if rate == 48000:                          # decimate 48k -> 24k (pairwise mean lowpass)
+            if len(a) % 2:
+                a = a[:-1]
+            a = (a[0::2] + a[1::2]) * 0.5
+            out_rate = 24000
+        else:
+            out_rate = rate
+        peak = np.max(np.abs(a)) or 1.0
+        a = a / peak * 0.5                          # calm bed level: sits under speech
+        os.makedirs(_SFX_DIR, exist_ok=True)
+        with wave.open(_BEAT_SRC, "w") as w:
+            w.setnchannels(1); w.setsampwidth(2); w.setframerate(out_rate)
+            w.writeframes(np.clip(a * 32767.0, -32768, 32767).astype("<i2").tobytes())
+        print("[BEAT] provisioned beat.wav from working.wav (%dHz mono)" % out_rate)
+    except Exception as e:
+        print("[BEAT] could not provision beat.wav: %s (beat -> silence)" % e)
+
+
+_ensure_beat_asset()
+
+
+def _texture_wav(ms, out, rate=24000):
+    """Render `ms` of the beat texture: loop the baked bed to length, trim, fade the
+    edges so it starts/ends clean (no click) and butts seamlessly against speech. Falls
+    back to silence if the asset is missing, so the element degrades safely."""
+    import wave
+    import numpy as np
+    if not os.path.exists(_BEAT_SRC):
+        return _silence_wav(ms, out, rate)
+    with wave.open(_BEAT_SRC) as w:
+        rate = w.getframerate()
+        bed = np.frombuffer(w.readframes(w.getnframes()), dtype="<i2")
+    if bed.size == 0:
+        return _silence_wav(ms, out, rate)
+    n = max(1, int(rate * ms / 1000.0))
+    reps = int(np.ceil(n / bed.size))
+    a = np.tile(bed, reps)[:n].astype(np.float64)
+    fade = min(int(rate * 0.045), n // 2)          # ~45ms edges
+    if fade > 0:
+        ramp = np.linspace(0.0, 1.0, fade)
+        a[:fade] *= ramp
+        a[-fade:] *= ramp[::-1]
+    i16 = np.clip(a, -32768, 32767).astype("<i2")
+    with wave.open(out, "w") as w:
+        w.setnchannels(1); w.setsampwidth(2); w.setframerate(rate); w.writeframes(i16.tobytes())
+
+
 def deterministic_markup(text):
     """Rule-based translation of raw typographic signals into voice markup. No model,
     fully deterministic. Not perfect on purpose -- a draft to hand-tweak.
@@ -4556,7 +5000,8 @@ def deterministic_markup(text):
 
 # --- SSML is the standard markup, both surfaces (tuner + agent input) ------------
 # The renderer maps a W3C SSML subset onto the voice engine:
-#   <break time="400ms"/> or <break strength="weak|medium|strong|x-strong"/>  pause
+#   <break time="400ms"/> or <break strength="weak|medium|strong|x-strong"/>  silent pause
+#   <beat/> or <beat time="600ms"/>  (alias <rest/>)                          textured rest (processing bed)
 #   <emphasis level="strong|moderate|reduced">                                force
 #   <prosody rate= volume= pitch=>                                            speed/gain/pitch
 #   <p> / <s>                                                                 paragraph / sentence pause
@@ -4692,8 +5137,8 @@ def directive_to_vrgb(dv, base=0):
     return "#%02x%02x%02x" % (int(r * 255), int(gg * 255), int(b * 255))
 
 
-_KNOWN_TAGS = {"speak", "break", "pause", "emphasis", "prosody", "p", "s", "say-as",
-               "sub", "voice", "em", "i", "strong", "b", "laugh", "chuckle"}
+_KNOWN_TAGS = {"speak", "break", "pause", "beat", "rest", "emphasis", "prosody", "p", "s",
+               "say-as", "sub", "voice", "em", "i", "strong", "b", "laugh", "chuckle"}
 
 
 def resolve_instructions(text, base, tone):
@@ -4712,6 +5157,8 @@ def resolve_instructions(text, base, tone):
                         "vrgb": directive_to_vrgb(dv, base)})
         elif op[0] == "pause":
             out.append({"pause_ms": int(op[1] * tone.get("break_mult", 1.0))})
+        elif op[0] == "beat":
+            out.append({"beat_ms": int(op[1] * tone.get("break_mult", 1.0))})
         elif op[0] == "clip":
             out.append({"cue": op[1]})
     return out
@@ -4818,6 +5265,11 @@ def parse_vox(text):
             tag = _tag(ch)
             if tag in ("break", "pause"):
                 ops.append(("pause", int(_ssml_break_ms(ch))))
+            elif tag in ("beat", "rest"):
+                # A textured rest: the processing bed as rhythm/pacing. Duration via
+                # time=/strength= like a break; bare <beat/> uses the default.
+                ms = _ssml_break_ms(ch) if (ch.get("time") or ch.get("dur") or ch.get("strength")) else _BEAT_DEFAULT_MS
+                ops.append(("beat", int(ms)))
             elif tag in ("laugh", "chuckle"):
                 ops.append(("clip", tag))
             elif tag == "sub":
@@ -7371,26 +7823,27 @@ def handle_audio(data):
         result = model.transcribe(temp_file.name)
         text = result["text"].strip()
 
-        # HELD: "resume" (or a derivative) resumes from the interrupted paragraph.
-        # Anything else is a NESTED TURN -- a normal reply that returns to holding
-        # (holding replaces idle). Only resume exits the hold.
+        # HELD: every turn here is a CHILD SUBCHANNEL turn -- a full nested reply that runs
+        # while the main reply stays parked underneath. It flows through the normal path
+        # below and is logged, so it becomes context the resume folds in. The client remaps
+        # the post-reply idle back to holding. Release is space-only (the 'resume' socket
+        # event), never a spoken word, so nothing here exits the hold.
         if data.get('holding'):
-            if _is_resume(text):
+            global _held_turns, _subchannel_log
+            # A short authorize cue lifts the hold, exactly like the space bar. The simple
+            # VAD carried it here; the server rules whether it is a release or a real turn.
+            if _is_authorize(text):
                 try:
                     os.remove(temp_file.name)
                 except OSError:
                     pass
-                global _held_remainder
-                r = _held_remainder
-                _held_remainder = None
-                _vlog('barge', 'RESUME "%s" -> from interrupted paragraph' % text[:40])
-                emit('resumed', {})
-                if r:
-                    speak_chunked(r)
+                _vlog('barge', 'AUTHORIZE "%s" -> release hold' % text[:40])
+                emit('resumed', {})                              # client exits the held session
+                emit('state_change', {'state': 'thinking'})      # regenerate under the thinking bed
+                _release_hold()
                 return
-            # else: fall through to the normal reply flow (a nested turn). The client
-            # keeps heldSession and remaps the post-reply idle back to holding.
-            _vlog('barge', 'nested turn while held: "%s"' % text[:40])
+            _held_turns += 1
+            _vlog('barge', 'subchannel turn %d while held: "%s"' % (_held_turns, text[:40]))
 
         # Detect and create VRGB tokens from hex codes in user input
         detect_and_create_vrgb_tokens(text)
@@ -7504,8 +7957,16 @@ def handle_audio(data):
         # Inject temporal context if query is time-related
         enhanced_text = inject_temporal_context(text)
 
+        # Light callback: if this turn explicitly calls back to a sidebar, reheat it (via a
+        # modifier) and re-inject its derived line up top so the agent applies it now.
+        _cb = _maybe_callback(text)
+        _cb_section = ("[CALLBACK] The user is calling back to an earlier sidebar (\"%s\"). "
+                       "Its derived point: \"%s\". Apply that to this turn."
+                       % (_cb.get("label", ""), _cb.get("value", ""))) if _cb else ""
+
         # Inject instance identity, speech consumption, variables, input history, engagement, and rolling summary context
         context_sections = [
+            ("callback", _cb_section),
             ("mode", get_mode_context()),
             ("identity", get_instance_identity()),
             ("recent_conversation", get_recent_conversation_context()),
@@ -7538,6 +7999,10 @@ def handle_audio(data):
 
         # Log conversation with input length
         _, clean_response, snr_hex = log_conversation(text, response, input_length=input_word_count)
+
+        # A subchannel (held) turn also accretes onto the sidebar, which becomes the token.
+        if data.get('holding'):
+            _subchannel_log.append((text, clean_response))
 
         tts_text = sanitize_for_tts(clean_response)
         tts_chunks = tts_chunk_split(tts_text)
@@ -8668,7 +9133,7 @@ def handle_narrate_caption(data):
     flush_speech_queue()
     global tts_interrupted
     tts_interrupted = False
-    _speech_queue.put(("text", text, 0, False))
+    _speech_queue.put(("text", text, 0, False, _speech_gen))
 
     def _wait_done():
         _speech_queue.join()
@@ -8886,7 +9351,7 @@ def api_cuesheet_launch():
         announce_text = doc.get("announce", "")
         if announce_text:
             socketio.emit("response", {"role": "assistant", "text": announce_text, "tts_chunks": [announce_text]})
-            _speech_queue.put(("text", announce_text, 0, False))
+            _speech_queue.put(("text", announce_text, 0, False, _speech_gen))
 
         sheet_name = doc.get("name", p.stem)
         socketio.emit("cuesheet_launched", {"name": sheet_name, "path": str(p)})
@@ -9098,7 +9563,7 @@ def handle_cuesheet_launch(data):
         announce_text = doc.get("announce", "")
         if announce_text:
             socketio.emit("response", {"role": "assistant", "text": announce_text, "tts_chunks": [announce_text]})
-            _speech_queue.put(("text", announce_text, 0, False))
+            _speech_queue.put(("text", announce_text, 0, False, _speech_gen))
 
         print("[CUESHEET] Launched: %s (%d tokens created)" % (sheet_name, len(created_tokens)))
 
@@ -9123,7 +9588,7 @@ def api_speak():
     socketio.emit("response", {"role": "assistant", "text": text, "tts_chunks": [text]})
     global tts_interrupted
     tts_interrupted = False
-    _speech_queue.put(("text", text, 0, False))
+    _speech_queue.put(("text", text, 0, False, _speech_gen))
     _speech_queue.join()
     return {"ok": True}
 
@@ -9184,7 +9649,7 @@ def api_converse():
             start_speech_tracking(result["clean_response"])
             speak_text = strip_markdown_for_tts(result["tts_text"])
             if speak_text:
-                _speech_queue.put(("text", speak_text, 0, False))
+                _speech_queue.put(("text", speak_text, 0, False, _speech_gen))
                 _speech_queue.join()
             finish_speech()
             socketio.emit('state_change', {'state': 'idle'})
