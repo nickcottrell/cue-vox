@@ -57,10 +57,6 @@ let voicePending = false;   // a reply with voice is coming, audio not started y
 let voiceStarted = false;   // first tts chunk has begun playing this turn
 let interChunkTimer = null; // debounce for the between-paragraph synth gap
 let pendingResponse = null; // assistant reply held until the voice actually plays
-// Held session: once you object, the conversation is PAUSED and you loop in the holding
-// state (listen -> record a turn -> discuss -> back to listening) until you explicitly
-// get out (space = resume, Enter = resume with recap). A timer can auto-exit later.
-let heldSession = false;
 // 'synthing' is a real state: the voice is being synthesized (register resolved,
 // prosody rendered) and, on replay, RE-synthesized at runtime -- active memory, not
 // a stored recording. Shown before "speaking", which means audio is actually playing.
@@ -475,12 +471,6 @@ document.addEventListener('keydown', (e) => {
     return;
   }
 
-  // RESUME: while held, Enter resumes with a recap (after a discussion / "ready to move on").
-  if (e.code === 'Enter' && currentState === 'holding' && !e.metaKey && !e.ctrlKey && !e.altKey) {
-    heldSession = false;     // exit the loop
-    socket.emit('resume');
-    return;
-  }
 
   if (e.code === 'Space') {
     e.preventDefault();
@@ -514,13 +504,10 @@ document.addEventListener('keydown', (e) => {
     //   held     -> SPACE resumes (cancel the objection)
     //   speaking -> SPACE holds (an explicit objection, alongside voice "WAIT")
     if (currentState === 'holding') {
-      heldSession = false;     // exit the loop
-      socket.emit('cancel');   // space resumes the held reply
-      return;
+      return;                  // step 1: holding is a dead-stop; exits come later
     }
     if (currentState === 'speaking') {
-      heldSession = true;      // enter the held loop
-      socket.emit('object');
+      socket.emit('object');   // interrupt -> flip everything to holding
       setState('holding');
       return;
     }
@@ -653,10 +640,12 @@ function _vadTick() {
   // not a hard cut. The server holds the reply and sends a gate_challenge; the ruling
   // decides sustained (yield) vs overruled (resume).
   if (voiced && currentState === 'speaking') {
-    heldSession = true;      // enter the held loop
-    socket.emit('object');   // "WAIT": barge holds the reply (space or "cancel" resumes)
+    socket.emit('object');   // interrupt -> flip everything to holding
     setState('holding');
   }
+
+  // Step 1: holding is a dead-stop. No capture, no loop -- just held.
+  if (currentState === 'holding') return;
 
   if (voiced) _lastVoice = now;
 
@@ -698,7 +687,6 @@ function toggleLiveMode() {
     if (_vadTimer) { clearInterval(_vadTimer); _vadTimer = null; }
     if (isRecording) stopRecording();
     _vadState = 'idle';
-    heldSession = false;   // leaving live exits any held loop
     document.body.removeAttribute('data-live');
     if (instructions) instructions.textContent = 'Hold SPACE to talk • Release to process';
     VLOG.voice("LIVE mode OFF", "back to push-to-talk");
@@ -832,9 +820,6 @@ socket.on('state_change', (data) => {
   // audio actually starts (tts_chunk_start promotes it to 'speaking').
   var s = data.state;
   if (s === 'speaking' && voicePending && !voiceStarted) s = 'synthing';
-  // Held loop: after a discussion turn, don't fall to idle -- return to the armed
-  // holding state and stay there until the user explicitly exits (space/Enter).
-  if (s === 'idle' && heldSession) s = 'holding';
   setState(s);
 });
 
