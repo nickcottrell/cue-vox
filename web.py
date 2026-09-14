@@ -2222,16 +2222,30 @@ def handle_cancel(data=None):
     if r:
         speak_chunked(r)
 
+# Bumpers: short spoken transitions between LIVE states, broadcast style. Named and
+# composable, kept separate from the content they wrap. The cadence (the pauses) is the
+# point: a bumper reads as a deliberate segment break, not a sentence. Authored in SSML
+# so the breaks are real. The hold ENTRY bumper is a sound (the hold ambience); this
+# registry holds the SPOKEN bumpers.
+BUMPERS = {
+    "resume": 'OK, let\'s pick back up.<break time="350ms"/> And<break time="300ms"/> resume.<break time="450ms"/>',
+}
+
+
+def bumper(name):
+    return BUMPERS.get(name, "")
+
+
 @socketio.on("resume")
 def handle_resume(data=None):
-    """RESUME after a discussion: recap the new direction, then re-speak the remainder
-    from where it paused. (Recap is a stub line for now; LLM recap is the next step.)"""
+    """RESUME (space): play the resume bumper, then re-speak the remainder from the start
+    of the interrupted paragraph."""
     global _held_remainder
     r = _held_remainder
     _held_remainder = None
-    recap = (data or {}).get("recap") or "Okay. Picking up where we left off."
-    _vlog("barge", "RESUME -> recap + remainder")
-    speak_chunked((recap + " " + (r or "")).strip())
+    b = (data or {}).get("bumper") or bumper("resume")
+    _vlog("barge", "RESUME -> bumper + remainder")
+    speak_chunked((b + " " + (r or "")).strip())
 
 try:
     import challenge as _challenge_mod

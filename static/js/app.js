@@ -509,15 +509,25 @@ document.addEventListener('keydown', (e) => {
     // Objection protocol on the space bar:
     //   held     -> SPACE resumes (cancel the objection)
     //   speaking -> SPACE holds (an explicit objection, alongside voice "WAIT")
+    // Synthing is a locked state: the re-synth is in flight, space does nothing.
+    if (currentState === 'synthing') return;
+
     if (currentState === 'holding') {
-      return;                  // held: exit is by voice ("resume"), not space
+      heldSession = false;
+      setState('synthing');    // lock immediately: no more space until audio lands
+      socket.emit('resume');   // space resumes (with an aside), from the interrupted paragraph
+      return;
     }
     if (currentState === 'speaking') {
-      heldSession = true;      // holding replaces idle until "resume"
-      socket.emit('object');   // interrupt -> flip everything to holding
+      heldSession = true;
+      socket.emit('object');   // interrupt -> flip to holding and just hold
       setState('holding');
       return;
     }
+
+    // In LIVE mode the space bar is the hold control, full stop. Recording is hands-free
+    // via VAD, so space does nothing else here. Push-to-talk stays for non-live mode.
+    if (liveMode) return;
 
     startRecording();
   }
@@ -652,10 +662,13 @@ function _vadTick() {
   // not a hard cut. The server holds the reply and sends a gate_challenge; the ruling
   // decides sustained (yield) vs overruled (resume).
   if (voiced && currentState === 'speaking') {
-    heldSession = true;      // holding replaces idle until "resume"
-    socket.emit('object');   // interrupt -> flip everything to holding
+    heldSession = true;
+    socket.emit('object');   // interrupt -> flip to holding
     setState('holding');
   }
+  // Held: just hold. Do NOT respond to the interruption -- no capture, no nested turn.
+  // Exit is the space bar (resume). Voice while held is ignored for now.
+  if (currentState === 'holding') return;
   // While held, we KEEP listening (a quiet hold-listen) for "cancel"/"nevermind" -- the
   // VAD capture path below runs, but startRecording stays in holding and the server only
   // checks those words, so we never leave holding unless it resumes.
