@@ -471,6 +471,13 @@ document.addEventListener('keydown', (e) => {
     return;
   }
 
+  // CHAT: while held, C (or saying "chat") takes the floor -- hold the conversation.
+  if (e.code === 'KeyC' && currentState === 'holding' && !e.metaKey && !e.ctrlKey && !e.altKey) {
+    socket.emit('chat');
+    hideGateCard();
+    return;
+  }
+
   if (e.code === 'Space') {
     e.preventDefault();
 
@@ -499,9 +506,17 @@ document.addEventListener('keydown', (e) => {
       return;
     }
 
+    // Objection protocol on the space bar:
+    //   held     -> SPACE resumes (cancel the objection)
+    //   speaking -> SPACE holds (an explicit objection, alongside voice "WAIT")
+    if (currentState === 'holding') {
+      socket.emit('cancel');   // space resumes the held reply
+      hideGateCard();
+      return;
+    }
     if (currentState === 'speaking') {
-      stopAllSounds();
-      socket.emit('interrupt');
+      socket.emit('object');
+      setState('holding');
       return;
     }
 
@@ -633,7 +648,7 @@ function _vadTick() {
   // not a hard cut. The server holds the reply and sends a gate_challenge; the ruling
   // decides sustained (yield) vs overruled (resume).
   if (voiced && currentState === 'speaking') {
-    socket.emit('object', { kind: 'arithmetic' });
+    socket.emit('object');   // "WAIT": barge holds the reply (space or "cancel" resumes)
     setState('holding');
   }
 
@@ -1151,6 +1166,7 @@ socket.on("tts_chunk_ended", function(data) {
 
 socket.on("tts_chunk_start", function(data) {
   clearTimeout(interChunkTimer);   // next paragraph is ready: no gap to fill
+  hideGateCard();                  // resumed reply clears any WAIT/held cue
   flushPendingResponse();          // voice is playing now: reveal the held text
   // The moment the voice is truly ready: crossfade the gap ambience into the voice
   // and reveal the stop-audio controls (audio is actually playing now).
@@ -1212,12 +1228,33 @@ function hideGateCard() {
   if (card) card.hidden = true;
   _gateId = null;
 }
+
+// WAIT: the barge held the reply. Show the held cue (no form). space / "cancel" resume;
+// C / "chat" takes the floor.
+socket.on("held", function() {
+  var card = document.getElementById("gateCard");
+  if (!card) return;
+  var form = document.getElementById("gateCardForm");
+  var p = document.getElementById("gateCardPrompt");
+  var label = card.querySelector(".gate-card__label");
+  var hint = card.querySelector(".gate-card__hint");
+  if (label) label.textContent = "held";
+  if (p) p.textContent = "WAIT";
+  if (form) form.hidden = true;
+  if (hint) hint.textContent = "space resumes · press C or say “chat” to take over";
+  card.hidden = false;
+  if (currentState !== "holding") setState("holding");
+  VLOG.recv("barge", "HELD");
+});
+
 socket.on("gate_challenge", function(data) {
-  // The reply is held; present the challenge (typed-var gate) as the cue card.
+  // Form-gate path (walks): present the challenge as the cue card with its input.
   _gateId = data.gate_id;
   var p = document.getElementById("gateCardPrompt");
   if (p) p.textContent = (data.prompt || "") + " = ?";
   var card = document.getElementById("gateCard");
+  var form = document.getElementById("gateCardForm");
+  if (form) form.hidden = false;
   if (card) card.hidden = false;
   var inp = document.getElementById("gateCardInput");
   if (inp) { inp.value = ""; inp.focus(); }
