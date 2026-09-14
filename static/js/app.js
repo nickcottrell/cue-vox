@@ -1229,20 +1229,9 @@ function hideGateCard() {
   _gateId = null;
 }
 
-// WAIT: the barge held the reply. Show the held cue (no form). space / "cancel" resume;
-// C / "chat" takes the floor.
+// WAIT: the barge held the reply. INVISIBLE -- no dialog. The hold reads ambiently
+// (amber LIVE stroke + status line); space resumes, Enter resumes with recap.
 socket.on("held", function() {
-  var card = document.getElementById("gateCard");
-  if (!card) return;
-  var form = document.getElementById("gateCardForm");
-  var p = document.getElementById("gateCardPrompt");
-  var label = card.querySelector(".gate-card__label");
-  var hint = card.querySelector(".gate-card__hint");
-  if (label) label.textContent = "held";
-  if (p) p.textContent = "WAIT";
-  if (form) form.hidden = true;
-  if (hint) hint.textContent = "space resumes now · talk to discuss · Enter resumes with recap";
-  card.hidden = false;
   if (currentState !== "holding") setState("holding");
   VLOG.recv("barge", "HELD");
 });
