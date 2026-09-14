@@ -57,6 +57,9 @@ let voicePending = false;   // a reply with voice is coming, audio not started y
 let voiceStarted = false;   // first tts chunk has begun playing this turn
 let interChunkTimer = null; // debounce for the between-paragraph synth gap
 let pendingResponse = null; // assistant reply held until the voice actually plays
+// Held: once you interrupt, holding REPLACES idle. Nested turns happen and return to
+// holding; only "resume" (or a derivative) exits and picks up the interrupted paragraph.
+let heldSession = false;
 // 'synthing' is a real state: the voice is being synthesized (register resolved,
 // prosody rendered) and, on replay, RE-synthesized at runtime -- active memory, not
 // a stored recording. Shown before "speaking", which means audio is actually playing.
@@ -507,9 +510,10 @@ document.addEventListener('keydown', (e) => {
     //   held     -> SPACE resumes (cancel the objection)
     //   speaking -> SPACE holds (an explicit objection, alongside voice "WAIT")
     if (currentState === 'holding') {
-      return;                  // step 1: holding is a dead-stop; exits come later
+      return;                  // held: exit is by voice ("resume"), not space
     }
     if (currentState === 'speaking') {
+      heldSession = true;      // holding replaces idle until "resume"
       socket.emit('object');   // interrupt -> flip everything to holding
       setState('holding');
       return;
@@ -648,6 +652,7 @@ function _vadTick() {
   // not a hard cut. The server holds the reply and sends a gate_challenge; the ruling
   // decides sustained (yield) vs overruled (resume).
   if (voiced && currentState === 'speaking') {
+    heldSession = true;      // holding replaces idle until "resume"
     socket.emit('object');   // interrupt -> flip everything to holding
     setState('holding');
   }
@@ -695,6 +700,7 @@ function toggleLiveMode() {
     if (_vadTimer) { clearInterval(_vadTimer); _vadTimer = null; }
     if (isRecording) stopRecording();
     _vadState = 'idle';
+    heldSession = false;   // leaving live exits any hold
     document.body.removeAttribute('data-live');
     if (instructions) instructions.textContent = 'Hold SPACE to talk • Release to process';
     VLOG.voice("LIVE mode OFF", "back to push-to-talk");
@@ -828,6 +834,8 @@ socket.on('state_change', (data) => {
   // audio actually starts (tts_chunk_start promotes it to 'speaking').
   var s = data.state;
   if (s === 'speaking' && voicePending && !voiceStarted) s = 'synthing';
+  // Held: a nested turn's post-reply idle returns to holding (holding replaces idle).
+  if (s === 'idle' && heldSession) s = 'holding';
   setState(s);
 });
 
@@ -1239,10 +1247,11 @@ socket.on("held", function() {
   VLOG.recv("barge", "HELD");
 });
 
-// A hold-listen that wasn't cancel/nevermind: stay held, keep listening.
-socket.on("still_holding", function(data) {
-  if (currentState !== "holding") setState("holding");
-  VLOG.recv("barge", "still holding", data && data.heard ? '("' + data.heard + '")' : "");
+// RESUME: the held reply is being resumed from the interrupted paragraph -> exit the
+// held session; the resumed audio (tts_chunk_start) flips holding -> speaking.
+socket.on("resumed", function() {
+  heldSession = false;
+  VLOG.recv("barge", "RESUMED (from interrupted paragraph)");
 });
 
 socket.on("gate_challenge", function(data) {

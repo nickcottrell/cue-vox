@@ -726,8 +726,18 @@ _play_gate.set()
 # objection can capture the REMAINDER (what is left to say) and re-speak it on resume,
 # from where it paused. Survives a discussion, unlike the raw audio queue.
 _reply_chunks = []       # snapshot of the current reply's items [(kind, payload), ...]
+_reply_para = []         # paragraph index per chunk (parallel to _reply_chunks)
 _reply_idx = 0           # index of the chunk currently playing
 _held_remainder = None   # text left to say when held (None = nothing held)
+
+# Resume vocabulary: any of these (spoken while held) exits the hold and resumes.
+_RESUME_WORDS = ("resume", "continue", "keep going", "go on", "carry on", "pick up",
+                 "pick it up", "unpause", "go ahead", "cancel", "nevermind", "never mind")
+
+
+def _is_resume(text):
+    low = (text or "").lower()
+    return any(w in low for w in _RESUME_WORDS)
 
 # Try to import pyttsx3 as fallback TTS engine
 try:
@@ -1533,23 +1543,28 @@ def speak_chunked(text):
     global tts_interrupted, _exaggeration
     tts_interrupted = False
     items = []
-    for seg_kind, seg in _split_laugh_segments(text):
-        if seg_kind == "clip":
-            items.append(("clip", seg))
-        else:
-            for chunk in tts_chunk_split(seg):
-                # Kokoro path keeps SSML (rendered per-span by _render_ssml_to_wav);
-                # expressive (Chatterbox) can't render it, so strip to plain there.
-                clean = strip_markdown_for_tts(chunk) if _expressive_mode else strip_markdown_only(chunk)
-                if clean:
-                    items.append(("text", clean))
+    para_of = []   # paragraph index per item, so resume can start at a paragraph boundary
+    paragraphs = re.split(r'\n\s*\n', text) if text else [text or ""]
+    for pidx, para in enumerate(paragraphs):
+        for seg_kind, seg in _split_laugh_segments(para):
+            if seg_kind == "clip":
+                items.append(("clip", seg)); para_of.append(pidx)
+            else:
+                for chunk in tts_chunk_split(seg):
+                    # Kokoro path keeps SSML (rendered per-span by _render_ssml_to_wav);
+                    # expressive (Chatterbox) can't render it, so strip to plain there.
+                    clean = strip_markdown_for_tts(chunk) if _expressive_mode else strip_markdown_only(chunk)
+                    if clean:
+                        items.append(("text", clean)); para_of.append(pidx)
     if not items:
         return
     _n_clips = sum(1 for k, _ in items if k == "clip")
-    _vlog("reply", "%d chars -> %d chunks (%d spoken, %d cues)"
-          % (len(text or ""), len(items), len(items) - _n_clips, _n_clips))
-    global _reply_chunks, _reply_idx
+    _vlog("reply", "%d chars -> %d chunks over %d paragraphs (%d spoken, %d cues)"
+          % (len(text or ""), len(items), (para_of[-1] + 1 if para_of else 0),
+             len(items) - _n_clips, _n_clips))
+    global _reply_chunks, _reply_para, _reply_idx
     _reply_chunks = list(items)   # snapshot so an objection can capture the remainder
+    _reply_para = para_of
     _reply_idx = 0
     # Authentic weight lever: heavier lines speak deeper (fuller register + more
     # Chatterbox exaggeration) and take longer to synth. Broadcast the weight BEFORE
@@ -2175,8 +2190,14 @@ _pending_challenges = {}  # sid -> challenge dict
 # The gate/form primitive (gate.py) stays available for walkable forms; the barge no
 # longer routes through the math gate.
 def _remainder_text():
-    """The text left to say from the chunk that was playing when held onward."""
-    return " ".join(p for k, p in _reply_chunks[_reply_idx:] if k == "text").strip()
+    """The text left to say, from the START of the paragraph that was playing when held
+    (so resume picks up at the top of the interrupted paragraph, not mid-sentence)."""
+    if not _reply_chunks:
+        return ""
+    idx = min(_reply_idx, len(_reply_chunks) - 1)
+    para = _reply_para[idx] if idx < len(_reply_para) else 0
+    start = next((i for i, pp in enumerate(_reply_para) if pp == para), idx)
+    return " ".join(p for k, p in _reply_chunks[start:] if k == "text").strip()
 
 
 @socketio.on("object")
@@ -7336,25 +7357,26 @@ def handle_audio(data):
         result = model.transcribe(temp_file.name)
         text = result["text"].strip()
 
-        # HOLD-LISTEN: while held, only "cancel"/"nevermind" acts (resume where it left
-        # off). Anything else keeps us in holding. No Claude, no reply.
+        # HELD: "resume" (or a derivative) resumes from the interrupted paragraph.
+        # Anything else is a NESTED TURN -- a normal reply that returns to holding
+        # (holding replaces idle). Only resume exits the hold.
         if data.get('holding'):
-            low = text.lower()
-            try:
-                os.remove(temp_file.name)
-            except OSError:
-                pass
-            if 'cancel' in low or 'nevermind' in low or 'never mind' in low:
+            if _is_resume(text):
+                try:
+                    os.remove(temp_file.name)
+                except OSError:
+                    pass
                 global _held_remainder
                 r = _held_remainder
                 _held_remainder = None
-                _vlog('barge', 'hold-listen "%s" -> CANCEL/resume' % text[:40])
+                _vlog('barge', 'RESUME "%s" -> from interrupted paragraph' % text[:40])
+                emit('resumed', {})
                 if r:
                     speak_chunked(r)
-            else:
-                _vlog('barge', 'hold-listen "%s" -> stay holding' % text[:40])
-                emit('still_holding', {'heard': text[:60]})
-            return
+                return
+            # else: fall through to the normal reply flow (a nested turn). The client
+            # keeps heldSession and remaps the post-reply idle back to holding.
+            _vlog('barge', 'nested turn while held: "%s"' % text[:40])
 
         # Detect and create VRGB tokens from hex codes in user input
         detect_and_create_vrgb_tokens(text)
