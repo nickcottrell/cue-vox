@@ -441,6 +441,9 @@ async function initAudio() {
           live: !!liveMode,
           voice: window.VOICE,
           input_level: window.__inputLevel || 0,
+          // hold-listen: captured while held -> server only checks for cancel/nevermind,
+          // resumes on match, otherwise stays holding (no transcribe/reply flow).
+          holding: recordingForHold,
         });
         VLOG.send("audio ->", { live: !!liveMode, expressive: !!window.VOICE.expressive,
           autotone: !!window.VOICE.autotone, exaggeration: window.VOICE.exaggeration,
@@ -516,6 +519,8 @@ document.addEventListener('keydown', (e) => {
   }
 });
 
+var recordingForHold = false;   // this capture is a hold-listen (check cancel/nevermind)
+
 function startRecording() {
   if (isRecording) return;
   if (!mediaRecorder) {
@@ -524,7 +529,10 @@ function startRecording() {
   }
   console.log('🎙️ Starting recording...');
   isRecording = true;
-  setState('recording');
+  // While held, listen quietly: capture but STAY in holding (no recording-state flip),
+  // so the screen never leaves holding while we check for cancel/nevermind.
+  recordingForHold = (currentState === 'holding');
+  if (!recordingForHold) setState('recording');
   mediaRecorder.start(1000);
 
   // 30-second recording limit
@@ -643,9 +651,9 @@ function _vadTick() {
     socket.emit('object');   // interrupt -> flip everything to holding
     setState('holding');
   }
-
-  // Step 1: holding is a dead-stop. No capture, no loop -- just held.
-  if (currentState === 'holding') return;
+  // While held, we KEEP listening (a quiet hold-listen) for "cancel"/"nevermind" -- the
+  // VAD capture path below runs, but startRecording stays in holding and the server only
+  // checks those words, so we never leave holding unless it resumes.
 
   if (voiced) _lastVoice = now;
 
@@ -1229,6 +1237,12 @@ function hideGateCard() {
 socket.on("held", function() {
   if (currentState !== "holding") setState("holding");
   VLOG.recv("barge", "HELD");
+});
+
+// A hold-listen that wasn't cancel/nevermind: stay held, keep listening.
+socket.on("still_holding", function(data) {
+  if (currentState !== "holding") setState("holding");
+  VLOG.recv("barge", "still holding", data && data.heard ? '("' + data.heard + '")' : "");
 });
 
 socket.on("gate_challenge", function(data) {

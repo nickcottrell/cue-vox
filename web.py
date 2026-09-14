@@ -7327,13 +7327,34 @@ def handle_audio(data):
         temp_file.write(audio_bytes)
         temp_file.close()
 
-        # Update UI state
-        emit('state_change', {'state': 'transcribing'})
+        # Update UI state (not during a hold-listen -- that stays in 'holding').
+        if not data.get('holding'):
+            emit('state_change', {'state': 'transcribing'})
 
         # Transcribe with Whisper
         model = get_whisper_model()
         result = model.transcribe(temp_file.name)
         text = result["text"].strip()
+
+        # HOLD-LISTEN: while held, only "cancel"/"nevermind" acts (resume where it left
+        # off). Anything else keeps us in holding. No Claude, no reply.
+        if data.get('holding'):
+            low = text.lower()
+            try:
+                os.remove(temp_file.name)
+            except OSError:
+                pass
+            if 'cancel' in low or 'nevermind' in low or 'never mind' in low:
+                global _held_remainder
+                r = _held_remainder
+                _held_remainder = None
+                _vlog('barge', 'hold-listen "%s" -> CANCEL/resume' % text[:40])
+                if r:
+                    speak_chunked(r)
+            else:
+                _vlog('barge', 'hold-listen "%s" -> stay holding' % text[:40])
+                emit('still_holding', {'heard': text[:60]})
+            return
 
         # Detect and create VRGB tokens from hex codes in user input
         detect_and_create_vrgb_tokens(text)
