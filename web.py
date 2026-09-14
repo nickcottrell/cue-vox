@@ -722,6 +722,12 @@ _play_queue = queue.Queue()     # synthesized items awaiting playback
 # flush (which discards). Lets a reply be paused and resumed, or flushed on a sustained.
 _play_gate = threading.Event()
 _play_gate.set()
+# Objection resume: track the current reply's chunks + which one is playing, so an
+# objection can capture the REMAINDER (what is left to say) and re-speak it on resume,
+# from where it paused. Survives a discussion, unlike the raw audio queue.
+_reply_chunks = []       # snapshot of the current reply's items [(kind, payload), ...]
+_reply_idx = 0           # index of the chunk currently playing
+_held_remainder = None   # text left to say when held (None = nothing held)
 
 # Try to import pyttsx3 as fallback TTS engine
 try:
@@ -985,6 +991,8 @@ def _play_worker():
         try:
             if not tts_interrupted and kind != "skip":
                 if emit_events:
+                    global _reply_idx
+                    _reply_idx = chunk_index      # for remainder capture on objection
                     socketio.emit("tts_chunk_start", {"index": chunk_index})
                     socketio.sleep(0.05)
                 if kind in ("wav", "clip"):
@@ -1540,6 +1548,9 @@ def speak_chunked(text):
     _n_clips = sum(1 for k, _ in items if k == "clip")
     _vlog("reply", "%d chars -> %d chunks (%d spoken, %d cues)"
           % (len(text or ""), len(items), len(items) - _n_clips, _n_clips))
+    global _reply_chunks, _reply_idx
+    _reply_chunks = list(items)   # snapshot so an objection can capture the remainder
+    _reply_idx = 0
     # Authentic weight lever: heavier lines speak deeper (fuller register + more
     # Chatterbox exaggeration) and take longer to synth. Broadcast the weight BEFORE
     # synth so the client's gap ambience previews it and crossfades into the voice.
@@ -2163,27 +2174,43 @@ _pending_challenges = {}  # sid -> challenge dict
 #                                     floor to the user (they take a turn).
 # The gate/form primitive (gate.py) stays available for walkable forms; the barge no
 # longer routes through the math gate.
+def _remainder_text():
+    """The text left to say from the chunk that was playing when held onward."""
+    return " ".join(p for k, p in _reply_chunks[_reply_idx:] if k == "text").strip()
+
+
 @socketio.on("object")
 def handle_object(data=None):
-    """WAIT: hold the reply pending cancel/chat."""
+    """WAIT: hold the reply. Capture the remainder (what is left to say) and stop the
+    audio now, so a discussion can happen; resume re-speaks the remainder."""
     from flask_socketio import emit
-    hold_speech()
-    _vlog("barge", "OBJECT -> HOLD")
+    global _held_remainder
+    if _held_remainder is None:                # first objection captures the original
+        _held_remainder = _remainder_text() or None
+    flush_speech_queue()                       # stop the reply now
+    _vlog("barge", "OBJECT -> HOLD (remainder %d chars)" % len(_held_remainder or ""))
     emit("held", {})
 
 @socketio.on("cancel")
 def handle_cancel(data=None):
-    """CANCEL (space / 'cancel'): resume the held reply where it paused."""
-    resume_speech()
-    _vlog("barge", "CANCEL -> resume")
+    """CANCEL (space): resume immediately -- re-speak the held remainder, no recap."""
+    global _held_remainder
+    r = _held_remainder
+    _held_remainder = None
+    _vlog("barge", "CANCEL -> resume remainder")
+    if r:
+        speak_chunked(r)
 
-@socketio.on("chat")
-def handle_chat(data=None):
-    """CHAT: hold the conversation -- drop the held remainder and yield the floor."""
-    from flask_socketio import emit
-    flush_held()
-    _vlog("barge", "CHAT -> hold conversation (yield)")
-    emit("state_change", {"state": "idle"})
+@socketio.on("resume")
+def handle_resume(data=None):
+    """RESUME after a discussion: recap the new direction, then re-speak the remainder
+    from where it paused. (Recap is a stub line for now; LLM recap is the next step.)"""
+    global _held_remainder
+    r = _held_remainder
+    _held_remainder = None
+    recap = (data or {}).get("recap") or "Okay. Picking up where we left off."
+    _vlog("barge", "RESUME -> recap + remainder")
+    speak_chunked((recap + " " + (r or "")).strip())
 
 try:
     import challenge as _challenge_mod

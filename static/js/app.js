@@ -471,9 +471,9 @@ document.addEventListener('keydown', (e) => {
     return;
   }
 
-  // CHAT: while held, C (or saying "chat") takes the floor -- hold the conversation.
-  if (e.code === 'KeyC' && currentState === 'holding' && !e.metaKey && !e.ctrlKey && !e.altKey) {
-    socket.emit('chat');
+  // RESUME: while held, Enter resumes with a recap (after a discussion / "ready to move on").
+  if (e.code === 'Enter' && currentState === 'holding' && !e.metaKey && !e.ctrlKey && !e.altKey) {
+    socket.emit('resume');
     hideGateCard();
     return;
   }
@@ -1241,7 +1241,7 @@ socket.on("held", function() {
   if (label) label.textContent = "held";
   if (p) p.textContent = "WAIT";
   if (form) form.hidden = true;
-  if (hint) hint.textContent = "space resumes · press C or say “chat” to take over";
+  if (hint) hint.textContent = "space resumes now · talk to discuss · Enter resumes with recap";
   card.hidden = false;
   if (currentState !== "holding") setState("holding");
   VLOG.recv("barge", "HELD");
