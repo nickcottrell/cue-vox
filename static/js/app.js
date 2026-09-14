@@ -57,6 +57,10 @@ let voicePending = false;   // a reply with voice is coming, audio not started y
 let voiceStarted = false;   // first tts chunk has begun playing this turn
 let interChunkTimer = null; // debounce for the between-paragraph synth gap
 let pendingResponse = null; // assistant reply held until the voice actually plays
+// Held session: once you object, the conversation is PAUSED and you loop in the holding
+// state (listen -> record a turn -> discuss -> back to listening) until you explicitly
+// get out (space = resume, Enter = resume with recap). A timer can auto-exit later.
+let heldSession = false;
 // 'synthing' is a real state: the voice is being synthesized (register resolved,
 // prosody rendered) and, on replay, RE-synthesized at runtime -- active memory, not
 // a stored recording. Shown before "speaking", which means audio is actually playing.
@@ -473,8 +477,8 @@ document.addEventListener('keydown', (e) => {
 
   // RESUME: while held, Enter resumes with a recap (after a discussion / "ready to move on").
   if (e.code === 'Enter' && currentState === 'holding' && !e.metaKey && !e.ctrlKey && !e.altKey) {
+    heldSession = false;     // exit the loop
     socket.emit('resume');
-    hideGateCard();
     return;
   }
 
@@ -510,11 +514,12 @@ document.addEventListener('keydown', (e) => {
     //   held     -> SPACE resumes (cancel the objection)
     //   speaking -> SPACE holds (an explicit objection, alongside voice "WAIT")
     if (currentState === 'holding') {
+      heldSession = false;     // exit the loop
       socket.emit('cancel');   // space resumes the held reply
-      hideGateCard();
       return;
     }
     if (currentState === 'speaking') {
+      heldSession = true;      // enter the held loop
       socket.emit('object');
       setState('holding');
       return;
@@ -648,6 +653,7 @@ function _vadTick() {
   // not a hard cut. The server holds the reply and sends a gate_challenge; the ruling
   // decides sustained (yield) vs overruled (resume).
   if (voiced && currentState === 'speaking') {
+    heldSession = true;      // enter the held loop
     socket.emit('object');   // "WAIT": barge holds the reply (space or "cancel" resumes)
     setState('holding');
   }
@@ -692,6 +698,7 @@ function toggleLiveMode() {
     if (_vadTimer) { clearInterval(_vadTimer); _vadTimer = null; }
     if (isRecording) stopRecording();
     _vadState = 'idle';
+    heldSession = false;   // leaving live exits any held loop
     document.body.removeAttribute('data-live');
     if (instructions) instructions.textContent = 'Hold SPACE to talk • Release to process';
     VLOG.voice("LIVE mode OFF", "back to push-to-talk");
@@ -825,6 +832,9 @@ socket.on('state_change', (data) => {
   // audio actually starts (tts_chunk_start promotes it to 'speaking').
   var s = data.state;
   if (s === 'speaking' && voicePending && !voiceStarted) s = 'synthing';
+  // Held loop: after a discussion turn, don't fall to idle -- return to the armed
+  // holding state and stay there until the user explicitly exits (space/Enter).
+  if (s === 'idle' && heldSession) s = 'holding';
   setState(s);
 });
 
@@ -1339,8 +1349,9 @@ function setState(state) {
   // 'speaking' but the voice audio has not actually started yet (synth latency):
   // keep thinking/working looping so there is no dead air; tts_chunk_start crossfades
   // it into the voice. A fresh turn (recording/transcribing/thinking) resets the gap.
-  // 'synthing' and 'holding' sustain an ambience (no dead air) rather than cut it.
-  var sustainGap = (state === "synthing" || state === "holding");
+  // 'synthing' sustains an ambience (no dead air). 'holding' is a clean armed listen
+  // (silent, so the mic hears you clearly), so it does NOT sustain.
+  var sustainGap = (state === "synthing");
   if (!sustainGap) {
     stopSound("thinking");
     stopSound("working");
@@ -1355,8 +1366,9 @@ function setState(state) {
     // Keep the ambience going; on a REPLAY it may need to start fresh (from idle).
     if (sfx.thinking && sfx.thinking.paused) playSound("thinking");
   } else if (state === "holding") {
-    // Objection raised: hold ambience while the ruling gate is pending.
-    if (sfx.thinking && sfx.thinking.paused) playSound("thinking");
+    // Paused + clean armed listen: no ambience, VAD re-armed so your voice flips to
+    // recording. Loops here (talk -> record -> discuss -> back to holding) until exit.
+    _vadState = 'idle'; _voiceOnset = 0;
   } else if (state === "transcribing" || state === "idle") {
     voicePending = false; voiceStarted = false;   // turn boundary
   }
