@@ -207,6 +207,131 @@ _CLAUDE_CHECK_KEYWORDS = [
     "is claude ok", "is claude down",
 ]
 
+def _is_benchmark_command(text):
+    """Fuzzy: any phrase that mentions the bench with a run/start/walk-ish verb. Requires
+    'bench' so normal talk does not trigger it. Deliberately NOT 'the loop' -- that is the
+    policy-revision ritual, a separate thing."""
+    low = (text or "").lower()
+    if "bench" not in low:
+        return False
+    return any(v in low for v in
+               ("run", "start", "walk", "step", "go", "through", "do", "let", "kick", "fire", "begin"))
+
+
+def _run_capability_benchmark():
+    """Run the capability policy benchmark (the loop's guardrail) from the interface and
+    return a short spoken/shown summary. Deterministic op: no model. Runs the SAME script
+    the terminal loop runs, so there is one source of truth for the result."""
+    here = os.path.dirname(os.path.abspath(__file__))
+    script = os.path.join(here, "test", "benchmark_capability.py")
+    try:
+        proc = subprocess.run([sys.executable, script], capture_output=True, text=True,
+                              timeout=60, cwd=here)
+    except Exception as exc:
+        return "Couldn't run the benchmark: %s" % exc
+    out = (proc.stdout or "").strip()
+    summary = out.splitlines()[0] if out else "no output"
+    count = summary.split(":", 1)[-1].strip() if ":" in summary else summary
+    if proc.returncode == 0:
+        return "Capability benchmark: %s. All green." % count
+    fails = [ln.strip()[5:].strip() for ln in out.splitlines() if ln.strip().startswith("FAIL")]
+    detail = "; ".join(fails[:5]) or "see logs"
+    return "Capability benchmark FAILING. %s. Broken: %s" % (summary, detail)
+
+
+# The bench Q&A set: a NEUTRAL topic (entropy), on purpose -- using real user context makes
+# the test confusing to read. Generic questions keep the yardstick legible while still
+# exercising the real production pipeline. 3 turns, basic -> reasoning -> depth. Changes
+# rarely; this is the ruler, not the thing being tuned.
+_BENCH_QUESTIONS = [
+    "In a sentence, what is entropy?",                        # settle, chill
+    "Why does entropy always win in a closed system?",       # tension, builds
+    "What does entropy mean for the fate of the universe?",   # awe, peak
+]
+
+
+def _run_benchmark_walk():
+    """Run the bench as REAL Q&A turns, swept across settings, read aloud. For each setting
+    (brevity up, then down) it runs the same fixed questions through the real pipeline and
+    speaks each question and its real answer -- so you HEAR how the settings change the
+    response and can catch regressions. Forces Baseline for the run (that is where brevity
+    bites). Self-driving. Slow by nature: real turns, opt-in via the confirm gate."""
+    ctx = _pending_slow_op_ctx or {}
+    brevity = ctx.get("brevity")
+    global _live_mode, _expressive_mode, _register_lock
+    saved_mode = (_live_mode, _expressive_mode)
+    saved_lock = _register_lock
+    _live_mode = bool(ctx.get("live"))
+    _expressive_mode = bool(ctx.get("expressive"))
+
+    def blip():
+        emit("sfx", {"name": "ping"})
+        socketio.sleep(0.25)
+
+    def say(card, spoken):
+        emit("response", {"text": card, "tts_chunks": tts_chunk_split(sanitize_for_tts(spoken))})
+        speak_chunked(spoken)
+
+    emit("bench_lock", {"locked": True})   # block submit/voice while the bench runs
+    try:
+        emit('state_change', {'state': 'speaking'})
+        say("STARTING BENCHMARK TEST", "Starting benchmark test.")
+        n = len(_BENCH_QUESTIONS)
+        regs = (_VOICE_REGISTERS or {}).get("registers", {})
+        for i, q in enumerate(_BENCH_QUESTIONS, 1):
+            blip()
+            _register_lock = 1                     # narrator asks at the chill floor
+            say("Q%d/%d: %s" % (i, n, q), "Question %d. %s" % (i, q))
+            emit('state_change', {'state': 'thinking'})   # thinking bed fills the gen gap
+            try:
+                result = _assemble_and_respond(q, brevity=brevity)
+            except Exception as exc:
+                result = None
+                print("[BENCH] turn failed: %s" % exc, flush=True)
+            answer = (result or {}).get("clean_response") or "(no answer)"
+            spoken = (result or {}).get("tts_text") or answer
+            # Expressive ON: climb 1->2->3 with the building questions so registers 2 and 3
+            # (Mickey Mouse / Naruto) come out to tune. OFF: clamp to the chill floor (1).
+            target = min(i, 3) if _expressive_mode else 1
+            _register_lock = target
+            reg_label = (regs.get(str(target), {}) or {}).get("label", "")
+            emit('state_change', {'state': 'speaking'})
+            say("A%d/%d [register %d, %s]: %s" % (i, n, target, reg_label, answer), spoken)
+        say("THIS ENDS THE BENCHMARK TEST", "This ends the benchmark test.")
+        emit('state_change', {'state': 'idle'})
+    finally:
+        _live_mode, _expressive_mode = saved_mode
+        _register_lock = saved_lock              # release the pin; back to autotone
+        emit("bench_lock", {"locked": False})   # always unblock, even on error
+    return None
+
+
+# Standard policy: any operation that takes a moment is gated behind a yes/no so the user
+# can opt out before eating the wait. The confirm rides the yes/no primitive (renders, and
+# lightboxes when the drawer is closed). Add a slow op here and it inherits the gate.
+_pending_slow_op = None  # slug of a moment-taking op awaiting yes/no confirmation
+_pending_slow_op_ctx = {}  # live slider settings captured when the op was requested
+
+_SLOW_OPS = {
+    "benchmark": {
+        "confirm": "The benchmark runs the sample questions at two brevity settings and reads them aloud. It takes a few minutes. Start it?",
+        "run": _run_benchmark_walk,
+    },
+}
+
+
+def _confirm_slow_op(user_text, slug, ctx=None):
+    """Ask a yes/no before running a moment-taking op (standard policy). Stashes the pending
+    op AND the live settings captured at request time (ctx), so the run reflects the slider
+    as it was set. handle_button_response's fast-path runs it on Yes, drops it on No."""
+    global _pending_slow_op, _pending_slow_op_ctx
+    op = _SLOW_OPS.get(slug)
+    if not op:
+        return
+    _pending_slow_op = slug
+    _pending_slow_op_ctx = ctx or {}
+    _respond_and_speak(user_text, "[YES_NO: %s]" % op["confirm"])
+
 
 def _tier0_match(user_text):
     """Check user text against tier 0 patterns. Returns (data_dict, description) or (None, None)."""
@@ -804,35 +929,70 @@ _expressive_mode = False   # set per turn from window.VOICE.expressive
 _live_mode = False         # set per turn from data.live (hands-free VAD mode)
 _exaggeration = 0.6        # Chatterbox expressiveness dial for this turn
 
-# Conversational modes (expressive and/or live) are voice-first: the agent should
-# just talk. These structured tools are stripped from its replies (and never fire)
-# while gated, and it is told not to use them. CITATIONS stays (inline, harmless).
-_GATED_BLOCKED_TAGS = ("PIN_NINJA", "PIN_NOTE", "DOCUMENT", "INPUT", "APPROVAL", "GALLERY", "CUE", "YES_NO")
+# Capability matrix: single source of truth for what each mode can do
+# (capability_matrix.json + CAPABILITY_MATRIX.md). The logic lives in capability.py so the
+# runnable benchmark (test/benchmark_capability.py) exercises the SAME code, not a mirror.
+# web.py owns the mode globals (_live_mode / _expressive_mode) and passes them in.
+import capability
+
+_CAPABILITY_MATRIX = capability.load_matrix()
+if _CAPABILITY_MATRIX is None:
+    print("[MATRIX] load failed; falling back to legacy gated behavior", flush=True)
+
+# Kept for callers that reference it; capability.py owns the actual fallback.
+_GATED_BLOCKED_TAGS = capability.LEGACY_GATED_TAGS
+
+
+def _active_mode():
+    return capability.active_mode(_live_mode, _expressive_mode)
 
 
 def _gated_mode():
-    """True when a conversational voice mode (expressive or live) is active, so
-    tool tags are whitelisted down to conversation and pinning is suppressed."""
-    return _expressive_mode or _live_mode
+    return capability.gated_mode(_CAPABILITY_MATRIX, _active_mode())
+
+
+def _blocked_tags():
+    return capability.blocked_tags(_CAPABILITY_MATRIX, _active_mode())
 
 
 def get_mode_context():
-    """Tell the agent, in the prompt, exactly what voice mode it is in so it behaves
-    accordingly. Empty when not gated (normal task mode with full tools)."""
-    if not _gated_mode():
-        return ""
-    modes = []
-    if _expressive_mode:
-        modes.append("EXPRESSIVE")
-    if _live_mode:
-        modes.append("LIVE")
-    return (
-        "[VOICE MODE: %s]\n"
-        "You are in a spoken, conversational mode. Be brief and natural, like talking.\n"
-        "Do NOT pin directions for Ninja, and do NOT offer to. Do NOT use structured\n"
-        "tools: no PIN_NINJA, PIN_NOTE, DOCUMENT, INPUT, APPROVAL, GALLERY, CUE, or\n"
-        "YES_NO blocks. Just talk. Inline citations are fine.\n\n" % " + ".join(modes)
-    )
+    return capability.mode_context(_CAPABILITY_MATRIX, _expressive_mode, _live_mode)
+
+
+def get_brevity_stance(brevity):
+    return capability.brevity_stance(_CAPABILITY_MATRIX, _active_mode(), brevity)
+
+
+# Voice registers: the 3 tunable registers (voice_registers.json). A deliberate register
+# can be PINNED via _register_lock so speak_chunked applies it exactly and skips the
+# autotone/weight drift -- the "register as a set track" primitive, first used by the
+# bench as a tuning rig. Edit the JSON to tune each register and its prosody.
+def _load_voice_registers():
+    try:
+        with open(os.path.join(os.path.dirname(os.path.abspath(__file__)), "voice_registers.json")) as f:
+            return json.load(f)
+    except Exception as exc:
+        print("[REGISTERS] load failed (%s)" % exc, flush=True)
+        return None
+
+_VOICE_REGISTERS = _load_voice_registers()
+_register_lock = None  # 1/2/3 to pin that register (no autotone drift); None = autotone
+
+
+def _apply_register(n):
+    """Pin register n (1/2/3): timbre slot + prosody + exaggeration, from voice_registers.json.
+    Expressive-ceiling clamp lives at the call site (off -> always 1)."""
+    global _exaggeration
+    reg = ((_VOICE_REGISTERS or {}).get("registers", {}) or {}).get(str(n))
+    if not reg:
+        return
+    if _kokoro_available:
+        kokoro_voice.set_register(int(reg.get("kokoro_slot", 0)))
+        kokoro_voice.set_prosody(speed=reg.get("speed"), bright=reg.get("bright"), gain=reg.get("gain"))
+    try:
+        _exaggeration = float(reg.get("exaggeration", _exaggeration))
+    except (TypeError, ValueError):
+        pass
 
 # --- Auto-tone: emotion BUILDS from a breathy default -----------------------
 # Each turn emits energy tokens into a decaying pool. When the pool climbs, the
@@ -1438,31 +1598,9 @@ def strip_markdown_for_tts(text):
 
 
 def _strip_bracket_balanced_tags(text, tag_types):
-    """Remove [TAG: ...] blocks using bracket-balanced matching.
-
-    Handles JSON payloads that contain ] characters (e.g. arrays).
-    """
-    tag_pattern = "|".join(re.escape(t) for t in tag_types)
-    starter = re.compile(r"\[(" + tag_pattern + r"):\s*")
-    result = text
-    while True:
-        m = starter.search(result)
-        if not m:
-            break
-        depth = 1
-        pos = m.end()
-        while pos < len(result) and depth > 0:
-            if result[pos] == "[":
-                depth += 1
-            elif result[pos] == "]":
-                depth -= 1
-            if depth > 0:
-                pos += 1
-        if depth == 0:
-            result = result[:m.start()] + result[pos + 1:]
-        else:
-            break
-    return result.strip()
+    """Remove [TAG: ...] blocks. Delegates to capability.strip_blocked_tags so the pipeline
+    and the benchmark probes run the exact same strip (single source of truth)."""
+    return capability.strip_blocked_tags(text, tag_types)
 
 
 def sanitize_for_tts(text):
@@ -1687,9 +1825,14 @@ def speak_chunked(text):
     # Chatterbox exaggeration) and take longer to synth. Broadcast the weight BEFORE
     # synth so the client's gap ambience previews it and crossfades into the voice.
     w = _reply_weight(text)
-    if _kokoro_available:
-        kokoro_voice.set_register(max(0, min(4, kokoro_voice._register + int(round(w * 1.5)))))
-    _exaggeration = min(2.0, _exaggeration + w * 0.4)
+    if _register_lock is not None:
+        # A register is PINNED (bench tuning rig / register track): apply it exactly and
+        # skip the autotone/weight drift, so the deliberate register does not wobble.
+        _apply_register(_register_lock)
+    else:
+        if _kokoro_available:
+            kokoro_voice.set_register(max(0, min(4, kokoro_voice._register + int(round(w * 1.5)))))
+        _exaggeration = min(2.0, _exaggeration + w * 0.4)
     try:
         socketio.emit("voice_weight", {"weight": round(w, 3), "expressive": bool(_expressive_mode)})
     except Exception:
@@ -2297,6 +2440,68 @@ def handle_request_prompt_file(data=None):
 # Session-level challenge: solve once per session, all tokens get signed
 _challenge_sessions = {}  # sid -> {proof, confidence, challenge_id, verified_at}
 _pending_challenges = {}  # sid -> challenge dict
+
+# --- Cache-in gate: a dropped SVG bucket's field, ruled and (on SUSTAINED) minted ------
+# The SVG is a TEMPLATE, never the minter. A valid submit runs cache_in.py
+# (scrub -> validate -> discover coord -> mint into the SHARED pool) and the receipt rides
+# back on gate_ruling. Reuses the existing client cue-card (gate_challenge / gate_answer /
+# gate_ruling). Does NOT touch the barge/hold arc below.
+# Spec: docs/design/party-in-a-bucket-spec.md
+try:
+    import cache_in as _cache_in_mod
+    CACHE_IN_OK = True
+    print("✓ cache-in gate available (%s)" % _cache_in_mod.status())
+except Exception as _e:
+    _cache_in_mod = None
+    CACHE_IN_OK = False
+    print("⚠️  cache-in unavailable: %s" % _e)
+
+_pending_gates = {}   # gate_id -> {node, template}
+
+
+@socketio.on("gate_open")
+def handle_gate_open(data=None):
+    """Drop a bucket: present ONE node's field as the cue card. data = {template, node_id?}.
+    The template is the SVG metadata (untrusted). We only present the prompt here; the
+    ruling + mint happen on gate_answer."""
+    from flask_socketio import emit
+    data = data or {}
+    template = data.get("template") or {}
+    nodes = template.get("nodes") or []
+    nid = data.get("node_id") or template.get("entry")
+    node = next((n for n in nodes if n.get("id") == nid), None) if nid else None
+    if node is None and nodes:
+        node = nodes[0]
+    if node is None:
+        emit("gate_ruling", {"sustained": False, "reason": "no node in template"})
+        return
+    gid = "gate_%d" % int(time.time() * 1e6)
+    _pending_gates[gid] = {"node": node, "template": template}
+    prompt = node.get("prompt") or (node.get("field") or {}).get("placeholder") or node.get("title") or ""
+    emit("gate_challenge", {"gate_id": gid, "prompt": prompt, "node_id": node.get("id")})
+
+
+@socketio.on("gate_answer")
+def handle_gate_answer(data=None):
+    """A valid item caches in. data = {gate_id, response}. On SUSTAINED, mint via cache_in
+    and return the receipt; the client paints 'cached' and (in LIVE) releases the hold."""
+    from flask_socketio import emit
+    data = data or {}
+    ctx = _pending_gates.pop(data.get("gate_id"), None)
+    if not ctx:
+        emit("gate_ruling", {"sustained": False, "reason": "no such gate"})
+        return
+    if not CACHE_IN_OK:
+        emit("gate_ruling", {"sustained": False, "reason": "cache-in unavailable"})
+        return
+    receipt = _cache_in_mod.cache_in(ctx["node"], data.get("response", ""), ctx["template"])
+    if receipt.get("cached"):
+        emit("gate_ruling", {"sustained": True, "preponderance": receipt.get("preponderance"),
+                             "receipt": receipt, "next_id": ctx["node"].get("next")})
+    else:
+        emit("gate_ruling", {"sustained": False, "preponderance": receipt.get("preponderance", 0.0),
+                             "reason": receipt.get("reason")})
+
 
 # --- Barge / objection protocol (v-now: WAIT / cancel / chat) ---------------------
 # OBJECT ("WAIT": voice barge or SPACE during speaking) -> HOLD the reply at the next
@@ -3080,10 +3285,13 @@ def log_conversation(user_text, assistant_text, speech_metadata=None, input_leng
     text_after_snr, snr_value = extract_snr(assistant_text)
     text_after_citations, citations_data = extract_citations(text_after_snr)
     clean_text = strip_system_reminders(text_after_citations)
-    # Tool whitelist: in a conversational mode, strip blocked structured tags so they
-    # never render a widget or fire (enforcement to back the prompt-level rule).
-    if _gated_mode():
-        clean_text = _strip_bracket_balanced_tags(clean_text, _GATED_BLOCKED_TAGS)
+    # Capability ceiling (matrix-driven): strip any block whose disposition is not 'full'
+    # for the active mode, so it never renders a widget or fires. Baseline strips nothing;
+    # ceiling modes keep yes/no but strip the richer blocks (which also keeps summaries
+    # simple). This is the technical half of the ceiling; get_mode_context is the other.
+    blocked = _blocked_tags()
+    if blocked:
+        clean_text = _strip_bracket_balanced_tags(clean_text, blocked)
 
     entry = {
         'timestamp': timestamp.strftime('%Y-%m-%dT%H:%M'),  # No seconds
@@ -7845,6 +8053,21 @@ def handle_audio(data):
             _held_turns += 1
             _vlog('barge', 'subchannel turn %d while held: "%s"' % (_held_turns, text[:40]))
 
+        # Benchmark command -> confirm first (standard policy: gate a moment-taking op
+        # behind a yes/no so the user can opt out), then run on Yes. Not while held.
+        # Capture the LIVE slider settings now so the run reflects them (no dictated sweep).
+        if not data.get('holding') and _is_benchmark_command(text):
+            try:
+                os.remove(temp_file.name)
+            except OSError:
+                pass
+            _confirm_slow_op(text, "benchmark", {
+                "brevity": data.get('brevity'),
+                "expressive": bool((data.get('voice') or {}).get('expressive')),
+                "live": bool(data.get('live')),
+            })
+            return
+
         # Detect and create VRGB tokens from hex codes in user input
         detect_and_create_vrgb_tokens(text)
 
@@ -7968,6 +8191,7 @@ def handle_audio(data):
         context_sections = [
             ("callback", _cb_section),
             ("mode", get_mode_context()),
+            ("brevity_stance", get_brevity_stance(data.get('brevity'))),
             ("identity", get_instance_identity()),
             ("recent_conversation", get_recent_conversation_context()),
             ("flux", get_flux_capacitor_context()),
@@ -8190,6 +8414,18 @@ def handle_button_response(data):
             "value": answer,
             "question": question_context or ""
         })
+
+        # Fast-path 0: a pending slow-op confirmation (standard policy -- confirm before a
+        # moment-taking op so the user can opt out). Yes runs it, No drops it, no LLM.
+        global _pending_slow_op
+        if _pending_slow_op:
+            op = _SLOW_OPS.get(_pending_slow_op)
+            _pending_slow_op = None
+            if answer == "Yes" and op:
+                op["run"]()          # self-driving: emits + speaks its own walk
+            else:
+                _respond_and_speak(answer, "Okay, skipped.")
+            return
 
         emit('state_change', {'state': 'thinking'})
 
@@ -8683,6 +8919,7 @@ def _assemble_and_respond(text, brevity=None, aperture_hex=None):
 
     # Inject instance identity, speech consumption, variables, input history, engagement, and rolling summary context
     context_sections = [
+        ("brevity_stance", get_brevity_stance(brevity)),
         ("identity", get_instance_identity()),
         ("recent_conversation", get_recent_conversation_context()),
         ("flux", get_flux_capacitor_context()),
@@ -8740,6 +8977,17 @@ def handle_text_message(data):
         # Checked before anything else so a bench post never touches flux/Claude.
         if _c2d2_bench_lines(text):
             _run_c2d2_bench(text)
+            return
+
+        # Benchmark command -> confirm first (standard policy: gate a moment-taking op
+        # behind a yes/no so the user can opt out), then run on Yes. Bypasses the model.
+        # Capture the LIVE slider settings now so the run reflects them (no dictated sweep).
+        if _is_benchmark_command(text):
+            _confirm_slow_op(text, "benchmark", {
+                "brevity": data.get('brevity'),
+                "expressive": bool((data.get('voice') or {}).get('expressive')),
+                "live": bool(data.get('live')),
+            })
             return
 
         # Brevity dial (0 = brief/deliverable, 1 = reflective); None on older

@@ -1,0 +1,69 @@
+{
+  "version": 1,
+  "note": "Single source of truth for what each cue-vox mode can do. Both layers read this file: the TECHNICAL layer (what tools/blocks fire) and the BEHAVIORAL layer (the prompt that tells the agent its ceiling). Edit here; nothing else hardcodes these rules.",
+
+  "modes": {
+    "baseline": { "label": "Baseline",    "surface": "full" },
+    "expressive": { "label": "Expressive", "surface": "ceiling" },
+    "live": { "label": "Live Mode",   "surface": "ceiling" }
+  },
+
+  "dispositions": {
+    "full": "Render the widget / fire the tool normally, shown on screen.",
+    "deflect": "Do not render. Recognize the request, beat, offer a voice-doable alternative as a yes/no, then branch.",
+    "run_unshown": "The tool runs underneath (rails stay wired), but no widget is surfaced."
+  },
+
+  "narrowing_shades": "The input shades are how the system converges a conversation toward executable steps. Y/N is the binary shade (available in every mode). Scalar (a dial/degree) and generic text (open capture) are finer shades, available only on the full Baseline surface. In the ceiling modes (Expressive, Live) the only shade you can surface is Y/N. Scalar and text both ride the INPUT tag, so at the technical layer they move together.",
+
+  "tags": {
+    "yes_no": ["YES_NO"],
+    "scalar": ["INPUT"],
+    "text": ["INPUT"],
+    "approval": ["APPROVAL"],
+    "document": ["DOCUMENT"],
+    "gallery": ["GALLERY"],
+    "cue": ["CUE"],
+    "pin": ["PIN_NINJA", "PIN_NOTE"]
+  },
+
+  "matrix": {
+    "yes_no":    { "baseline": "full", "expressive": "full",        "live": "full" },
+    "scalar":    { "baseline": "full", "expressive": "deflect",     "live": "deflect" },
+    "text":      { "baseline": "full", "expressive": "deflect",     "live": "deflect" },
+    "approval":  { "baseline": "full", "expressive": "deflect",     "live": "deflect" },
+    "document":  { "baseline": "full", "expressive": "deflect",     "live": "deflect" },
+    "gallery":   { "baseline": "full", "expressive": "deflect",     "live": "deflect" },
+    "cue":       { "baseline": "full", "expressive": "deflect",     "live": "deflect" },
+    "pin":       { "baseline": "full", "expressive": "deflect",     "live": "deflect" },
+    "mcp_tools": { "baseline": "full", "expressive": "run_unshown", "live": "run_unshown" }
+  },
+
+  "deflection": {
+    "shape": ["recognize", "beat", "offer_yes_no", "branch"],
+    "recognize": "I can't do that here.",
+    "beat_ms": 600,
+    "offer_template": "From here, want to move forward with {alt}?",
+    "on_no": "loop_back",
+    "on_yes": "proceed",
+    "future": "When the yes/no loop is solid, the offer can grow a 'hold it?' tail that parks the request and resurfaces it when a mode can carry it. Rides the same loop; no rework."
+  },
+
+  "surface_policy": {
+    "yes_no": "Be eager to narrow the conversation toward an executable step, and the yes/no is how you do it here: when things reach a real fork or a step you could actually take, put it as a yes/no and drive forward. Every yes/no must move one step closer to doing something. The one thing to never do is render a yes/no that narrows nothing: never to acknowledge, to fill a turn, to check in, or because a yes/no was mentioned, and never a yes/no about whether to show a yes/no. Converge, do not stall, and do not spin."
+  },
+
+  "brevity_stance": {
+    "note": "Baseline only. The brevity dial (scalar 0..1, where 0 = max brevity / deliverable / tight and 1 = reflective / loose) sets how hard the agent narrows toward executable steps. Bands are ordered ascending by max_b; the first band whose max_b is >= the dial value applies.",
+    "bands": [
+      { "max_b": 0.0,  "brevity": "100%",   "stance": "Brevity is maxed. Treat the current model as correct and stable. Do not propose or make changes on your own. Before changing ANYTHING in our model, stop and ask first: 'are you sure you want to change anything in our model?' Add zero new surface." },
+      { "max_b": 0.20, "brevity": "80-99%", "stance": "Brevity is high. Narrow hard: drive every loose end toward an executable step. Prefer a tight yes/no or a scalar over open discussion. Close threads, do not open new ones." },
+      { "max_b": 0.60, "brevity": "40-79%", "stance": "Medium brevity. Converge when a real fork appears and put the decision plainly, but leave room to explore around it." },
+      { "max_b": 1.0,  "brevity": "0-39%",  "stance": "Low brevity. Explore: expand options, think out loud, do not force convergence." }
+    ]
+  },
+
+  "roadmap": {
+    "input": "form is the NEXT capability, built as a standalone modular TOOL (not baked into cue-vox). cue-vox is its first caller; the browser plugin becomes a second caller of the same contract. Until it ships, input deflects."
+  }
+}

@@ -325,16 +325,17 @@ function setStopControls(show) {
     return Math.max(0, Math.min(100, value));
   }
 
-  // brevity scalar: 0 = brief/deliverable (bottom), 1 = reflective (top).
+  // brevity scalar: 0 = brief/deliverable, 1 = reflective/verbose. Vertical dial:
+  // DOWN (bottom) = MAX BREVITY, closed, shortest (b=0); UP (top) = MAX VERBOSE, wide
+  // open, longest (b=1).
   function brevityFor(value) {
     return clamp(value) / 100;
   }
 
-  // VRGB scalar encoding, inverse of the comfort ramp: brief/deliverable
-  // reads warm/urgent (amber), reflective reads cool (blue).
+  // Color follows meaning: brief reads warm/amber (down), verbose reads cool blue (up).
   function apertureHex(value) {
     var t = clamp(value) / 100;
-    var hue = 30 + (t * 180); // 30 warm amber (brief) -> 210 cool blue (reflective)
+    var hue = 30 + (t * 180); // 30 warm amber (brief, down) -> 210 cool blue (verbose, up)
     return hslToHex(hue, 70, 55);
   }
 
@@ -885,6 +886,18 @@ drawerStopLink.addEventListener('click', (e) => {
 // Socket Events
 // ============================================
 
+// Server-triggered sound effect (e.g. the benchmark walk's blip between ask and answer).
+socket.on('sfx', (data) => {
+  playSound((data && data.name) || 'ping');
+});
+
+// Input lock: the server holds this while a run (e.g. the benchmark) is in flight, so the
+// user can't submit text or voice mid-run. setPendingInput disables the box + send button
+// and hasPendingInput gates the voice paths.
+socket.on('bench_lock', (data) => {
+  setPendingInput(!!(data && data.locked));
+});
+
 socket.on('state_change', (data) => {
   console.log('🔄 State change:', data.state);
   // The server flips to 'speaking' as soon as it queues the reply, but the voice is
@@ -1329,7 +1342,11 @@ socket.on("gate_challenge", function(data) {
 socket.on("gate_ruling", function(data) {
   hideGateCard();
   if (data.sustained) {
-    VLOG.recv("gate", "SUSTAINED", "preponderance " + data.preponderance);
+    // CACHED IN: a valid item minted a real warm token into the shared pool. The receipt
+    // carries the coordinate + token id. Release timing is unchanged (floor is yours).
+    var r = data.receipt || {};
+    VLOG.recv("gate", "SUSTAINED · cached", "hex " + (r.hex || "-") + " · " + (r.token_id || "not minted") + " · preponderance " + data.preponderance);
+    window._lastCacheIn = r;                         // inspectable receipt of the last cache-in
     stopSound("thinking"); stopSound("working");
     setState("idle");   // objection sustained: the floor is yours, live VAD takes the turn
   } else {
@@ -2231,6 +2248,12 @@ function createYesNoQuestion(questionText) {
     buttonGroup.appendChild(noBtn);
     container.appendChild(buttonGroup);
     setPendingInput(true);
+    // Hands-free: if the chat drawer is closed, mirror this as a large lightbox so it is
+    // visible + tappable without opening the drawer. The inline widget stays the source
+    // of truth; the lightbox drives the same answer path and both dismiss together.
+    if (typeof drawer !== "undefined" && drawer && !drawer.classList.contains("open")) {
+      openYesNoLightbox(questionText, buttonGroup);
+    }
   }
 
   container.appendChild(createModifierIcon());
@@ -2259,6 +2282,8 @@ function handleQuestionResponse(answer, buttonGroup, questionText) {
 
   // Unblock input
   setPendingInput(false);
+  // If the closed-drawer mirror is up, dismiss it (either surface answers the question).
+  closeYesNoLightbox();
 
   // Add user message immediately (backend doesn't echo button responses)
   addMessage("user", answer);
@@ -3591,6 +3616,33 @@ function closeLightbox() {
   var lightbox = document.getElementById("lightbox");
   lightbox.style.display = "none";
   currentLightboxTokenId = null;
+}
+
+// YES/NO Lightbox: when the chat drawer is closed, mirror a yes/no question as a large
+// centered dialog so it is visible and tappable hands-free. The buttons drive the SAME
+// answer path as the inline widget (handleQuestionResponse), so state cannot diverge;
+// answering either surface dismisses this dialog.
+function openYesNoLightbox(questionText, buttonGroup) {
+  var box = document.getElementById("yesnoLightbox");
+  if (!box) return;
+  document.getElementById("yesnoQuestion").textContent = questionText;
+  // Replace each button to clear any listener from a prior question, then wire fresh.
+  ["yesnoYes", "yesnoNo"].forEach(function(id) {
+    var b = document.getElementById(id);
+    b.parentNode.replaceChild(b.cloneNode(true), b);
+  });
+  document.getElementById("yesnoYes").addEventListener("click", function() {
+    handleQuestionResponse("Yes", buttonGroup, questionText);
+  });
+  document.getElementById("yesnoNo").addEventListener("click", function() {
+    handleQuestionResponse("No", buttonGroup, questionText);
+  });
+  box.style.display = "flex";
+}
+
+function closeYesNoLightbox() {
+  var box = document.getElementById("yesnoLightbox");
+  if (box) box.style.display = "none";
 }
 
 function renderLightboxBody(container, data, editable) {

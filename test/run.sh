@@ -20,5 +20,10 @@ for f in *.py; do
     n=$((n+1))
 done
 echo "ok  ${n} python file(s) compile"
+
 echo ""
-echo "1 passed"
+echo "-- capability policy benchmark --"
+"$PY" "$DIR/benchmark_capability.py"   # exits non-zero (halts run) if any invariant broke
+
+echo ""
+echo "2 passed"

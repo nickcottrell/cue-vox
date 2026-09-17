@@ -230,6 +230,19 @@
         </article>
     </div>
 
+    <!-- YES/NO Lightbox: large tap targets shown when the chat drawer is closed -->
+    <div class="yesno-lightbox" id="yesnoLightbox" role="dialog" aria-modal="true"
+         aria-labelledby="yesnoQuestion" style="display: none;">
+        <div class="yesno-lightbox__backdrop"></div>
+        <article class="yesno-lightbox__content">
+            <p class="yesno-lightbox__question" id="yesnoQuestion"></p>
+            <div class="yesno-lightbox__buttons">
+                <button class="btn btn--primary yesno-lightbox__btn" id="yesnoYes">Yes</button>
+                <button class="btn btn--secondary yesno-lightbox__btn" id="yesnoNo">No</button>
+            </div>
+        </article>
+    </div>
+
     <!-- Human Verification Lightbox -->
     <div class="challenge-lightbox" id="challengeLightbox" role="dialog"
          aria-modal="true" aria-labelledby="challengeTitle" style="display: none;">

@@ -1,0 +1,8 @@
+{
+  "note": "The 3 voice registers and the prosody for each -- your tuning surface. Register 1 is the chill floor (known good). Registers 2 and 3 are what the bench drives so you can HEAR the Mickey Mouse (too high/squeaky) and Naruto (too dramatic) voices, then tune them here. kokoro_slot = the timbre blend (0..4 in register-voices.bin). speed/bright/gain = Kokoro prosody knobs. exaggeration = the Chatterbox expressive dial. Expressive OFF clamps everything to register 1. Edit and re-run the bench to tune.",
+  "registers": {
+    "1": { "label": "chill", "kokoro_slot": 0, "speed": 1.0, "bright": 0.0, "gain": 1.0, "exaggeration": 0.6 },
+    "2": { "label": "mid",   "kokoro_slot": 2, "speed": 1.0, "bright": 0.3, "gain": 1.1, "exaggeration": 1.2 },
+    "3": { "label": "peak",  "kokoro_slot": 4, "speed": 1.0, "bright": 0.6, "gain": 1.2, "exaggeration": 1.7 }
+  }
+}
