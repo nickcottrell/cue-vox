@@ -2456,7 +2456,8 @@ except Exception as _e:
     CACHE_IN_OK = False
     print("⚠️  cache-in unavailable: %s" % _e)
 
-import form_walk   # the Live-mode form walker: a turn-based cursor over gate.py
+import form_walk       # the Live-mode form walker: a turn-based cursor over gate.py
+import form_discovery  # drop a URL -> a manifest of the page's forms
 
 _pending_gates = {}   # gate_id -> {node, template}
 
@@ -2528,6 +2529,27 @@ def handle_walk_form(data=None):
     emit("state_change", {"state": "speaking"})
     speak_chunked(say)
     emit("state_change", {"state": "idle"})
+
+
+@app.route("/api/forms", methods=["POST"])
+def api_forms():
+    """Drop a URL, get a manifest of the page's forms. Body: {url}. Server-side fetch (so
+    the target site's CORS does not block it) and static parse. Read-only. The manifest is
+    the concrete surface: how many forms, what they are, and each submittable one's fields.
+    Filling a live page's form is the browser plugin's job (form_walk + the walk_form bridge)."""
+    from flask import request
+    data = request.get_json(silent=True) or {}
+    url = (data.get("url") or "").strip()
+    if not url:
+        return {"ok": False, "error": "no url"}, 400
+    try:
+        manifest = form_discovery.discover(url)
+    except ValueError as e:
+        return {"ok": False, "error": str(e)}, 400
+    except Exception as e:
+        return {"ok": False, "error": "could not fetch or parse: %s" % e}, 502
+    manifest["ok"] = True
+    return manifest
 
 
 # --- Barge / objection protocol (v-now: WAIT / cancel / chat) ---------------------
