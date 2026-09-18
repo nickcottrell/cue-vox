@@ -20,41 +20,50 @@ def check(name, ok, detail=""):
         _fails.append((name, detail))
 
 
+# A real-form shape: text, enum (options + labels), scalar (range), y_n.
 FIELDS = [
-    {"name": "focus", "kind": "y_n", "prompt": "Focused block?"},
-    {"name": "blockers", "kind": "y_n", "prompt": "Blockers?"},
+    {"name": "role", "kind": "enum", "prompt": "Your role?",
+     "options": ["engineer", "designer", "product"],
+     "optionLabels": [{"value": "engineer", "label": "Engineer"},
+                      {"value": "designer", "label": "Designer"},
+                      {"value": "product", "label": "Product"}]},
     {"name": "minutes", "kind": "scalar", "prompt": "How many minutes?", "match": [5, 180]},
+    {"name": "focus", "kind": "y_n", "prompt": "Focused block?"},
 ]
 
 # start -> first field presented, walk is active
 i = form_walk.start(FIELDS, title="Check-in")
-check("start presents first field", i.get("field") == "focus" and not i.get("done"))
+check("start presents first field", i.get("field") == "role" and not i.get("done"), repr(i))
 check("title rides the first say", "Check-in" in i.get("say", ""))
+check("enum say lists the labels", "Designer" in i.get("say", ""), repr(i))
 check("walk is active after start", form_walk.active())
 
-# invalid y_n -> re-ask the SAME field, still active
-i = form_walk.step("maybe")
-check("invalid y_n re-asks", i.get("reask") and i.get("field") == "focus", repr(i))
-check("re-ask carries a hint", "Yes or no" in i.get("say", ""))
+# enum resolves a natural spoken answer to the canonical option VALUE
+i = form_walk.step("I'm a designer")
+check("enum resolves to option value", i.get("filled") == {"name": "role", "value": "designer"}, repr(i.get("filled")))
+check("advances to scalar field", i.get("field") == "minutes" and not i.get("done"), repr(i))
 
-# valid y_n -> advance
-i = form_walk.step("yes")
-check("advances to second field", i.get("field") == "blockers" and not i.get("done"), repr(i))
-
-i = form_walk.step("no")
-check("advances to scalar field", i.get("field") == "minutes", repr(i))
-
-# scalar out of range -> re-ask with range hint
+# scalar out of range -> re-ask with range hint, nothing filled
 i = form_walk.step("500")
 check("out-of-range scalar re-asks", i.get("reask") and i.get("field") == "minutes", repr(i))
-check("scalar hint shows the range", "between 5 and 180" in i.get("say", ""), repr(i))
+check("re-ask fills nothing", i.get("filled") is None)
+check("scalar hint shows the range", "At most 180" in i.get("say", ""), repr(i))
 
-# valid scalar -> requirements met -> submit SUSTAINED with collected values
 i = form_walk.step("45")
+check("scalar filled canonical", i.get("filled") == {"name": "minutes", "value": "45"}, repr(i.get("filled")))
+check("advances to y_n", i.get("field") == "focus", repr(i))
+
+# invalid y_n -> re-ask
+i = form_walk.step("maybe")
+check("invalid y_n re-asks", i.get("reask") and i.get("field") == "focus", repr(i))
+
+# valid y_n -> requirements met -> submit SUSTAINED with canonical values
+i = form_walk.step("yes")
 check("done after last valid field", i.get("done") is True, repr(i))
 check("sustained on all-valid", i.get("sustained") is True, repr(i))
-check("values collected by type",
-      i.get("values") == {"focus": "yes", "blockers": "no", "minutes": "45"}, repr(i.get("values")))
+check("last fill reported", i.get("filled") == {"name": "focus", "value": "yes"}, repr(i.get("filled")))
+check("values collected canonical",
+      i.get("values") == {"role": "designer", "minutes": "45", "focus": "yes"}, repr(i.get("values")))
 check("walk clears after submit", not form_walk.active())
 
 # abandon path: a fresh walk can be dropped mid-way

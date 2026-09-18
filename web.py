@@ -2505,6 +2505,31 @@ def handle_gate_answer(data=None):
                              "reason": receipt.get("reason")})
 
 
+@socketio.on("walk_form")
+def handle_walk_form(data=None):
+    """A paired browser points cue-vox at a page's parsed form (readForm.js). data =
+    {title, fields:[...]}. Live Mode walks it by voice via form_walk: each valid field
+    emits walk_fill so the browser fills the real DOM field, and done emits walk_ready so
+    the browser reveals the filled form. cue-vox NEVER submits: the human presses the
+    page's own submit button. 100% user-gated on the actual submit, by construction."""
+    from flask_socketio import emit
+    data = data or {}
+    fields = data.get("fields") or []
+    if not fields:
+        emit("walk_ready", {"valid": False, "reason": "no fields"})
+        return
+    intent = form_walk.start(fields, title=data.get("title"))
+    if not intent.get("ok", True):
+        emit("walk_ready", {"valid": False, "reason": intent.get("reason")})
+        return
+    say = intent.get("say", "")
+    emit("response", {"text": intent.get("card", say),
+                      "tts_chunks": tts_chunk_split(sanitize_for_tts(say))})
+    emit("state_change", {"state": "speaking"})
+    speak_chunked(say)
+    emit("state_change", {"state": "idle"})
+
+
 # --- Barge / objection protocol (v-now: WAIT / cancel / chat) ---------------------
 # OBJECT ("WAIT": voice barge or SPACE during speaking) -> HOLD the reply at the next
 # chunk boundary. Then:
@@ -8937,6 +8962,17 @@ def _walk_result(intent):
             "snr_hex": None, "used_fallback": False, "input_word_count": 0}
 
 
+def _emit_walk_side(intent):
+    """Push a paired browser the fill for the field just accepted, and walk_ready on done.
+    Broadcast emit is context-free, so it fires from any turn path (text, voice, HTTP)."""
+    f = intent.get("filled")
+    if f:
+        socketio.emit("walk_fill", {"name": f["name"], "value": f["value"]})
+    if intent.get("done"):
+        socketio.emit("walk_ready", {"valid": bool(intent.get("sustained")),
+                                     "values": intent.get("values") or {}})
+
+
 def _assemble_and_respond(text, brevity=None, aperture_hex=None):
     """Run one conversation turn's reasoning and return the computed response.
 
@@ -8956,8 +8992,11 @@ def _assemble_and_respond(text, brevity=None, aperture_hex=None):
     if form_walk.active():
         if _is_form_walk_abort(text):
             form_walk.abandon()
+            socketio.emit("walk_ready", {"valid": False, "aborted": True})
             return _walk_result({"say": "Okay, dropped the form.", "card": "Form cancelled."})
-        return _walk_result(form_walk.step(text))
+        intent = form_walk.step(text)
+        _emit_walk_side(intent)
+        return _walk_result(intent)
     if _is_form_walk_command(text):
         return _walk_result(form_walk.start(_DEMO_FORM["fields"], title=_DEMO_FORM["title"]))
 
