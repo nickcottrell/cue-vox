@@ -2456,6 +2456,8 @@ except Exception as _e:
     CACHE_IN_OK = False
     print("⚠️  cache-in unavailable: %s" % _e)
 
+import form_walk   # the Live-mode form walker: a turn-based cursor over gate.py
+
 _pending_gates = {}   # gate_id -> {node, template}
 
 
@@ -8893,6 +8895,48 @@ def handle_input_response(data):
         emit('state_change', {'state': 'idle'})
 
 
+# --- Live-mode form walker (deterministic; no model runs during a walk) --------------
+# gate.py is the form; form_walk walks it as conversation. A trigger opens a form; while a
+# walk is active, every turn is a field value (or an abort). Submit only fires when every
+# required field is valid (gate.submit). Runs in Live (yes/no only, per capability) and in
+# Baseline (all kinds). Spec: docs/design/party-in-a-bucket-spec.md; gate.py.
+_FORM_WALK_TRIGGERS = ("enter form", "start the form", "start form", "walk the form",
+                       "walk a form", "fill out the form", "start check in",
+                       "start the check-in", "start check-in", "check me in", "form walk")
+_FORM_WALK_ABORTS = ("cancel form", "cancel the form", "quit form", "stop the form",
+                     "abandon form", "exit form", "never mind the form")
+
+# v1 demo form: a quick check-in. All yes/no, so it runs under the Live ceiling.
+_DEMO_FORM = {
+    "title": "Quick check-in",
+    "fields": [
+        {"name": "focus", "kind": "y_n", "prompt": "Are you starting a focused work block?"},
+        {"name": "blockers", "kind": "y_n", "prompt": "Anything blocking you right now?"},
+        {"name": "ship_today", "kind": "y_n", "prompt": "Do you plan to ship something today?"},
+    ],
+}
+
+
+def _is_form_walk_command(text):
+    t = (text or "").strip().lower()
+    return any(trig in t for trig in _FORM_WALK_TRIGGERS)
+
+
+def _is_form_walk_abort(text):
+    t = (text or "").strip().lower()
+    return any(a in t for a in _FORM_WALK_ABORTS)
+
+
+def _walk_result(intent):
+    """Wrap a form_walk intent as a normal turn result so the walk rides the existing speak
+    path (text, voice, and HTTP all funnel through _assemble_and_respond)."""
+    say = intent.get("say", "") or ""
+    card = intent.get("card", say) or say
+    tts = sanitize_for_tts(say)
+    return {"clean_response": card, "tts_text": tts, "tts_chunks": tts_chunk_split(tts),
+            "snr_hex": None, "used_fallback": False, "input_word_count": 0}
+
+
 def _assemble_and_respond(text, brevity=None, aperture_hex=None):
     """Run one conversation turn's reasoning and return the computed response.
 
@@ -8906,6 +8950,17 @@ def _assemble_and_respond(text, brevity=None, aperture_hex=None):
     Returns a dict with clean_response / tts_text / tts_chunks / snr_hex /
     used_fallback / input_word_count, or None if the response was voided.
     """
+    # Live-mode form walker: deterministic, no model. If a walk is active this turn is a
+    # field value (or an abort); if the text opens a walk, start it. Either way we speak the
+    # walk, not Claude. Submit fires only when every field is valid (gate.py).
+    if form_walk.active():
+        if _is_form_walk_abort(text):
+            form_walk.abandon()
+            return _walk_result({"say": "Okay, dropped the form.", "card": "Form cancelled."})
+        return _walk_result(form_walk.step(text))
+    if _is_form_walk_command(text):
+        return _walk_result(form_walk.start(_DEMO_FORM["fields"], title=_DEMO_FORM["title"]))
+
     input_word_count = get_input_word_count(text)
     # The brevity dial is the user's explicit demand signal; when present it
     # supersedes the word-count heuristic (an inference). Absent (older client),
