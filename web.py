@@ -963,24 +963,89 @@ def get_brevity_stance(brevity):
     return capability.brevity_stance(_CAPABILITY_MATRIX, _active_mode(), brevity)
 
 
-# Voice registers: the 3 tunable registers (voice_registers.json). A deliberate register
-# can be PINNED via _register_lock so speak_chunked applies it exactly and skips the
-# autotone/weight drift -- the "register as a set track" primitive, first used by the
-# bench as a tuning rig. Edit the JSON to tune each register and its prosody.
-def _load_voice_registers():
+# Voices: the top level (voices.json). A voice is a timbre (SID + optional neural
+# blend) plus a set of registers, and each register carries its own prosody rules
+# (break_scale / emphasis_scale / rate_scale / lift) so the same markup renders
+# differently per register. A register can be PINNED via _register_lock so
+# speak_chunked applies it exactly and skips the autotone/weight drift -- the
+# "register as a set track" primitive, first used by the bench as a tuning rig.
+# Edit voices.json to tune each voice, its registers, and their prosody.
+def _load_voices():
+    d = os.path.dirname(os.path.abspath(__file__))
     try:
-        with open(os.path.join(os.path.dirname(os.path.abspath(__file__)), "voice_registers.json")) as f:
+        with open(os.path.join(d, "voices.json")) as f:
             return json.load(f)
+    except Exception:
+        pass
+    # Backward compat: the old flat voice_registers.json is one voice (Isabella).
+    try:
+        with open(os.path.join(d, "voice_registers.json")) as f:
+            flat = json.load(f)
+        return {"active": "isabella", "voices": {"isabella": {
+            "label": "Isabella", "kind": "female", "sid": 8,
+            "blend": "register-voices.bin", "blend_slots": True,
+            "registers": flat.get("registers", {})}}}
     except Exception as exc:
-        print("[REGISTERS] load failed (%s)" % exc, flush=True)
+        print("[VOICES] load failed (%s)" % exc, flush=True)
         return None
 
-_VOICE_REGISTERS = _load_voice_registers()
+_VOICES_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "voices.json")
+_VOICES = _load_voices()
+_ACTIVE_VOICE = (_VOICES or {}).get("active") or "isabella"
+
+
+def _save_voices():
+    """Persist the in-memory voices doc back to voices.json (the flat source of truth,
+    so an edit or a voice switch survives boot). Returns True on success."""
+    try:
+        with open(_VOICES_PATH, "w", encoding="utf-8") as fh:
+            json.dump(_VOICES or {}, fh, indent=2)
+            fh.write("\n")
+        return True
+    except OSError as exc:
+        print("[VOICES] save failed (%s)" % exc, flush=True)
+        return False
+# Backward-compat view: the active voice's registers, in the shape the rest of the
+# code (bench, _apply_register, _prosody_for_slot) already expects.
+def _active_voice():
+    return ((_VOICES or {}).get("voices", {}) or {}).get(_ACTIVE_VOICE, {})
+_VOICE_REGISTERS = {"registers": _active_voice().get("registers", {})}
 _register_lock = None  # 1/2/3 to pin that register (no autotone drift); None = autotone
 
 
+def _prosody_for_slot(slot):
+    """The active voice's prosody rules for a live register slot (0..4), chosen by the
+    register whose kokoro_slot is nearest. Empty dict (identity) if none defined."""
+    regs = (_VOICE_REGISTERS or {}).get("registers", {}) or {}
+    best, best_d = None, 99
+    for r in regs.values():
+        d = abs(int(r.get("kokoro_slot", 0)) - int(slot))
+        if d < best_d:
+            best, best_d = r, d
+    return (best or {}).get("prosody", {}) or {}
+
+
+def set_active_voice(voice_id):
+    """Switch the live voice: point kokoro at its SID/blend and swap the register view.
+    Returns True if the voice exists. Reload of the engine (if the .bin changes) happens
+    inside kokoro_voice.set_voice."""
+    global _ACTIVE_VOICE, _VOICE_REGISTERS
+    v = ((_VOICES or {}).get("voices", {}) or {}).get(voice_id)
+    if not v:
+        return False
+    _ACTIVE_VOICE = voice_id
+    _VOICE_REGISTERS = {"registers": v.get("registers", {})}
+    if _kokoro_available:
+        kokoro_voice.set_voice(sid=int(v.get("sid", 8)),
+                               blend=v.get("blend"),
+                               use_blend=bool(v.get("blend_slots")))
+    print("[VOICE] active=%s sid=%s blend=%s blend_slots=%s"
+          % (voice_id, v.get("sid"), v.get("blend"), bool(v.get("blend_slots"))), flush=True)
+    return True
+
+
 def _apply_register(n):
-    """Pin register n (1/2/3): timbre slot + prosody + exaggeration, from voice_registers.json.
+    """Pin register n (1/2/3): timbre slot + prosody + exaggeration, from the active voice.
     Expressive-ceiling clamp lives at the call site (off -> always 1)."""
     global _exaggeration
     reg = ((_VOICE_REGISTERS or {}).get("registers", {}) or {}).get(str(n))
@@ -989,6 +1054,9 @@ def _apply_register(n):
     if _kokoro_available:
         kokoro_voice.set_register(int(reg.get("kokoro_slot", 0)))
         kokoro_voice.set_prosody(speed=reg.get("speed"), bright=reg.get("bright"), gain=reg.get("gain"))
+        _pr = reg.get("prosody") or {}
+        if "lift" in _pr:
+            kokoro_voice.set_prosody(lift=_pr.get("lift"))
     try:
         _exaggeration = float(reg.get("exaggeration", _exaggeration))
     except (TypeError, ValueError):
@@ -1091,7 +1159,16 @@ def _render_ssml_to_wav(text):
     agent's SSML actually shape the LIVE delivery, not just the tuner."""
     import tempfile
     base = kokoro_voice._register            # the turn's base register (autotone + weight)
-    tone = {"pressure": _PRESSURE, "break_mult": _BREAK_MULT}
+    # The active register's prosody RULES: same markup, per-register interpretation.
+    # break_scale rides on the global _BREAK_MULT; emphasis_scale/rate_scale flow into
+    # resolve_instructions; lift is a voice knob set here for this register.
+    rules = _prosody_for_slot(base)
+    if "lift" in rules:
+        kokoro_voice.set_prosody(lift=rules.get("lift"))
+    tone = {"pressure": _PRESSURE,
+            "break_mult": _BREAK_MULT * float(rules.get("break_scale", 1.0)),
+            "emphasis_scale": float(rules.get("emphasis_scale", 1.0)),
+            "rate_scale": float(rules.get("rate_scale", 1.0))}
     instr = resolve_instructions(text, base, tone)
     if len(instr) == 1 and "say" in instr[0]:    # plain span -> flat synth
         return kokoro_voice.synth_to_file(instr[0]["say"], question=instr[0].get("lift"))
@@ -1518,11 +1595,14 @@ def extract_citations(text):
 
 
 def extract_snr(text):
-    """Extract [SNR: XX] tag from end of response.
+    """Extract the SNR self-assessment tag from the end of a response.
 
+    The prompt asks for [SNR: XX], but the model drifts to <SNR: XX>. Tolerate both
+    bracket styles so the tag is always pulled out of the presence channel: an
+    un-extracted tag leaks BOTH ways -- no dot in the UI and the tag spoken aloud.
     Returns (clean_text, snr_value) -- snr_value is int 0-100 or None.
     """
-    pattern = r"\[SNR:\s*(\d{1,3})\]\s*$"
+    pattern = r"[\[<]\s*SNR:\s*(\d{1,3})\s*[\]>]\s*$"
     match = re.search(pattern, text)
     if not match:
         return (text, None)
@@ -5407,9 +5487,13 @@ def resolve_instructions(text, base, tone):
             _, span, dv = op
             reg = dv["reg"] if "reg" in dv else base + dv.get("reg_off", 0)
             reg = max(0, min(4, int(reg)))
-            gain = float(dv["gain"]) if "gain" in dv else tone.get("pressure", 1.0) * (1.0 + 0.08 * reg) * dv.get("force", 1.0)
+            # Per-register prosody rules: emphasis_scale shapes how far <emphasis>/CAPS
+            # push force above 1.0; rate_scale multiplies the resolved speed.
+            force = 1.0 + (dv.get("force", 1.0) - 1.0) * tone.get("emphasis_scale", 1.0)
+            gain = float(dv["gain"]) if "gain" in dv else tone.get("pressure", 1.0) * (1.0 + 0.08 * reg) * force
+            speed = float(dv.get("speed", dv.get("rate", 1.0))) * tone.get("rate_scale", 1.0)
             out.append({"say": span.strip(), "register": reg, "gain": round(max(0.4, min(2.5, gain)), 3),
-                        "speed": round(float(dv.get("speed", dv.get("rate", 1.0))), 3),
+                        "speed": round(max(0.5, min(2.0, speed)), 3),
                         "lift": bool(dv.get("lift") or span.rstrip().endswith("?")),
                         "vrgb": directive_to_vrgb(dv, base)})
         elif op[0] == "pause":
@@ -5745,7 +5829,7 @@ def tune_package():
     # pressure/lift + text/steer) so import maps 1:1 back onto the sliders.
     state = {'register': base, 'gamma': tone['gamma'], 'cap': tone['cap'], 'decay': tone['decay'],
              'loud': tone['loud_floor'], 'brk': tone['break_mult'], 'pressure': tone['pressure'],
-             'lift': tone['lift'], 'text': text, 'steer': d.get('steer', '')}
+             'lift': tone['lift'], 'voice': _ACTIVE_VOICE, 'text': text, 'steer': d.get('steer', '')}
     svg = crystallize_package(text, base, tone, steer=d.get('steer', ''), state=state)
     print("\n" + "=" * 52 + "\n  cue-vox package EXPORT  |  schema v%d\n" % PACKAGE_SCHEMA_VERSION
           + "=" * 52, flush=True)
@@ -5794,6 +5878,10 @@ def _apply_live_voice(state):
     """Apply a package/tuner state dict to the LIVE voice globals. Shared by the
     deployed-voice boot loader and the deploy endpoint."""
     global _TONE_GAMMA, _TONE_CAP, _TONE_DECAY, _LOUD_FLOOR, _BREAK_MULT, _PRESSURE, _LIVE_REGISTER_FLOOR
+    # A package can pin which voice it deploys with; apply it before the tone knobs so
+    # the register floor lands on the right voice's registers.
+    if state.get('voice'):
+        set_active_voice(state['voice'])
     try:
         if state.get('gamma') is not None: _TONE_GAMMA = float(state['gamma'])
         if state.get('cap') is not None: _TONE_CAP = float(state['cap'])
@@ -5895,7 +5983,7 @@ def tune_deploy():
             'pressure': _f('pressure', _PRESSURE), 'lift': _f('lift', 0.8)}
     state = {'register': base, 'gamma': tone['gamma'], 'cap': tone['cap'], 'decay': tone['decay'],
              'loud': tone['loud_floor'], 'brk': tone['break_mult'], 'pressure': tone['pressure'],
-             'lift': tone['lift'], 'text': text, 'steer': d.get('steer', '')}
+             'lift': tone['lift'], 'voice': _ACTIVE_VOICE, 'text': text, 'steer': d.get('steer', '')}
     svg = crystallize_package(text, base, tone, steer=d.get('steer', ''), state=state)
     try:
         os.makedirs(os.path.dirname(path), exist_ok=True)
@@ -6007,6 +6095,75 @@ def tune_state():
     except Exception:
         st = {}
     return jsonify(ok=True, state=st, version=PACKAGE_SCHEMA_VERSION, markup_version=MARKUP_VERSION)
+
+
+@app.route('/api/tune/voices', methods=['GET'])
+def tune_voices():
+    """The voice roster for the tuner: every voice (label/kind/sid/blend + its
+    registers and per-register prosody rules) plus which one is active."""
+    return jsonify(ok=True, active=_ACTIVE_VOICE, voices=(_VOICES or {}).get('voices', {}))
+
+
+@app.route('/api/tune/voice', methods=['POST'])
+def tune_voice():
+    """Switch the live voice and remember it (persist active to voices.json so the
+    choice survives boot even without a deployed package)."""
+    global _ACTIVE_VOICE
+    d = request.get_json(force=True, silent=True) or {}
+    vid = (d.get('voice') or '').strip()
+    if not set_active_voice(vid):
+        return jsonify(ok=False, error='unknown voice: %s' % vid), 200
+    if _VOICES is not None:
+        _VOICES['active'] = vid
+        _save_voices()
+    return jsonify(ok=True, active=_ACTIVE_VOICE)
+
+
+@app.route('/api/tune/registers', methods=['POST'])
+def tune_registers():
+    """Save a voice's registers + per-register prosody rules back to voices.json (the
+    source of truth, so it survives boot) and refresh the live view if it is the active
+    voice. Body: {voice, registers:{"1":{label,speed,bright,gain,exaggeration,kokoro_slot,
+    prosody:{break_scale,emphasis_scale,rate_scale,lift}}, ...}}."""
+    global _VOICE_REGISTERS
+    d = request.get_json(force=True, silent=True) or {}
+    vid = (d.get('voice') or _ACTIVE_VOICE or '').strip()
+    incoming = d.get('registers') or {}
+    v = ((_VOICES or {}).get('voices', {}) or {}).get(vid)
+    if not v or not isinstance(incoming, dict):
+        return jsonify(ok=False, error='unknown voice or bad registers: %s' % vid), 200
+
+    def _cl(x, lo, hi, dflt):
+        try:
+            return max(lo, min(hi, float(x)))
+        except (TypeError, ValueError):
+            return dflt
+
+    regs = v.setdefault('registers', {})
+    for key, r in incoming.items():
+        if not isinstance(r, dict):
+            continue
+        cur = regs.setdefault(str(key), {})
+        if 'label' in r:
+            cur['label'] = str(r['label'])[:32]
+        if 'kokoro_slot' in r:
+            cur['kokoro_slot'] = int(_cl(r['kokoro_slot'], 0, 4, cur.get('kokoro_slot', 0)))
+        for k, lo, hi in (('speed', 0.5, 2.0), ('bright', -1.0, 3.0), ('gain', 0.1, 3.0), ('exaggeration', 0.3, 2.0)):
+            if k in r:
+                cur[k] = round(_cl(r[k], lo, hi, cur.get(k, 1.0)), 3)
+        pin = r.get('prosody') or {}
+        if pin:
+            pr = cur.setdefault('prosody', {})
+            for k, lo, hi in (('break_scale', 0.25, 4.0), ('emphasis_scale', 0.5, 3.0),
+                              ('rate_scale', 0.5, 2.0), ('lift', 0.0, 1.5)):
+                if k in pin:
+                    pr[k] = round(_cl(pin[k], lo, hi, pr.get(k, 1.0)), 3)
+    if not _save_voices():
+        return jsonify(ok=False, error='write failed'), 200
+    if vid == _ACTIVE_VOICE:                    # refresh the live register view
+        _VOICE_REGISTERS = {'registers': v.get('registers', {})}
+    _vlog('voice', 'registers saved for %s (%d)' % (vid, len(incoming)))
+    return jsonify(ok=True, voice=vid, registers=v.get('registers', {}))
 
 
 @app.route('/api/tune/export.svg')
@@ -10242,7 +10399,9 @@ if __name__ == '__main__':
     print(f"Open: http://localhost:{port}")
     print(f"Logs: {LOG_DIR} (24hr retention)")
     print()
-    # Seed the live voice from the maestro-owned deployed package (if configured).
+    # Select the active voice (voices.json, or CUE_VOX_VOICE override), then seed
+    # the live tone from the maestro-owned deployed package (if configured).
+    set_active_voice(os.environ.get("CUE_VOX_VOICE", _ACTIVE_VOICE))
     _load_deployed_voice()
     # Silence werkzeug per-request access logs -- ~13% of log volume, and every
     # line is a request path that can carry query PII. Warnings/errors still log.

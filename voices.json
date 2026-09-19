@@ -1,0 +1,51 @@
+{
+  "note": "Voices are the top level: each voice is a timbre (a Kokoro SID, optionally a neural blend .bin) plus a set of registers, and each register carries its own prosody rules. The SAME markup tag renders differently per register: break_scale stretches every <break>/<beat>, emphasis_scale shapes how hard <emphasis>/CAPS push gain, rate_scale multiplies resolved speed, lift sets the question-rise strength. Registers 1/2/3 map to kokoro_slot 0/2/4; a live slot picks its rules by nearest slot. blend_slots true means slots 0..4 are a neural blend (Isabella only, register-voices.bin); blend_slots false means every register speaks the fixed SID and differs only by prosody + DSP (speed/bright/gain). Isabella is the known-good female with the neural blend. Atlas (male) and Neutral are rough-ins on stock SIDs, no neural blend yet. Edit here and re-run the bench to tune; the tuner sliders write back here in P2.",
+  "active": "isabella",
+  "voices": {
+    "isabella": {
+      "label": "Isabella",
+      "kind": "female",
+      "sid": 8,
+      "blend": "register-voices.bin",
+      "blend_slots": true,
+      "registers": {
+        "1": { "label": "chill", "kokoro_slot": 0, "speed": 1.0, "bright": 0.0, "gain": 1.0, "exaggeration": 0.6,
+               "prosody": { "break_scale": 1.0, "emphasis_scale": 1.0, "rate_scale": 1.0, "lift": 0.8 } },
+        "2": { "label": "mid", "kokoro_slot": 2, "speed": 1.0, "bright": 0.3, "gain": 1.1, "exaggeration": 1.2,
+               "prosody": { "break_scale": 0.9, "emphasis_scale": 1.25, "rate_scale": 1.0, "lift": 1.0 } },
+        "3": { "label": "peak", "kokoro_slot": 4, "speed": 1.0, "bright": 0.6, "gain": 1.2, "exaggeration": 1.7,
+               "prosody": { "break_scale": 1.4, "emphasis_scale": 1.5, "rate_scale": 0.95, "lift": 1.2 } }
+      }
+    },
+    "atlas": {
+      "label": "Atlas",
+      "kind": "male",
+      "sid": 6,
+      "blend": "voices.bin",
+      "blend_slots": false,
+      "registers": {
+        "1": { "label": "chill", "kokoro_slot": 0, "speed": 0.98, "bright": -0.1, "gain": 1.0, "exaggeration": 0.6,
+               "prosody": { "break_scale": 1.1, "emphasis_scale": 1.0, "rate_scale": 1.0, "lift": 0.5 } },
+        "2": { "label": "mid", "kokoro_slot": 2, "speed": 1.0, "bright": 0.1, "gain": 1.1, "exaggeration": 1.2,
+               "prosody": { "break_scale": 1.0, "emphasis_scale": 1.3, "rate_scale": 1.0, "lift": 0.7 } },
+        "3": { "label": "peak", "kokoro_slot": 4, "speed": 1.0, "bright": 0.3, "gain": 1.25, "exaggeration": 1.7,
+               "prosody": { "break_scale": 1.3, "emphasis_scale": 1.6, "rate_scale": 0.95, "lift": 0.9 } }
+      }
+    },
+    "neutral": {
+      "label": "Neutral",
+      "kind": "neutral",
+      "sid": 0,
+      "blend": "voices.bin",
+      "blend_slots": false,
+      "registers": {
+        "1": { "label": "chill", "kokoro_slot": 0, "speed": 1.0, "bright": 0.0, "gain": 1.0, "exaggeration": 0.6,
+               "prosody": { "break_scale": 1.0, "emphasis_scale": 0.9, "rate_scale": 1.0, "lift": 0.6 } },
+        "2": { "label": "mid", "kokoro_slot": 2, "speed": 1.0, "bright": 0.1, "gain": 1.05, "exaggeration": 1.2,
+               "prosody": { "break_scale": 0.95, "emphasis_scale": 1.1, "rate_scale": 1.0, "lift": 0.7 } },
+        "3": { "label": "peak", "kokoro_slot": 4, "speed": 1.0, "bright": 0.2, "gain": 1.15, "exaggeration": 1.7,
+               "prosody": { "break_scale": 1.1, "emphasis_scale": 1.25, "rate_scale": 1.0, "lift": 0.8 } }
+      }
+    }
+  }
+}

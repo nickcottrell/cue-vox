@@ -48,6 +48,18 @@ _lift = float(os.environ.get("CUE_VOX_LIFT", "0.8"))   # question rise strength 
 # from register-voices.bin. Default breathy -- the "hey" whisper entry point.
 _register = int(os.environ.get("CUE_VOX_REGISTER", "0"))
 
+# Which voice speaks. A voice is a base SID plus how registers map to timbre:
+#   _use_blend True  -> slots 0..4 are the neural register blend (Isabella,
+#                       register-voices.bin); generate() speaks sid=_register.
+#   _use_blend False -> every register speaks the fixed _base_sid (a stock Kokoro
+#                       speaker); registers differ only by prosody + DSP.
+# _voices_file overrides which .bin the engine loads (None = auto: register blend
+# then stock). set_voice() switches all three and reloads the engine if the file
+# changes. The web layer drives this from voices.json.
+_base_sid = VOICE_SID
+_use_blend = True
+_voices_file = None
+
 
 def set_register(idx):
     """Select the voice register 0..4 (breathy -> dramatic) for the next turn."""
@@ -56,6 +68,26 @@ def set_register(idx):
         _register = max(0, min(4, int(idx)))
     except (TypeError, ValueError):
         pass
+
+
+def set_voice(sid=None, blend=None, use_blend=None):
+    """Switch the base voice. `sid` is the stock Kokoro speaker (used when the voice
+    has no neural blend). `blend` is a .bin filename in MODEL_DIR (or None to auto).
+    `use_blend` True means register slots 0..4 are the neural blend; False means every
+    register speaks `sid`. Reloads the engine only when the loaded .bin actually changes."""
+    global _base_sid, _use_blend, _voices_file
+    if sid is not None:
+        try:
+            _base_sid = int(sid)
+        except (TypeError, ValueError):
+            pass
+    if use_blend is not None:
+        _use_blend = bool(use_blend)
+    if blend is not None:
+        newf = blend or None
+        if newf != _voices_file:
+            _voices_file = newf
+            reload()
 
 
 def _clamp(v, lo, hi):
@@ -165,9 +197,12 @@ def _get_tts():
             import sherpa_onnx
 
             model = os.path.join(MODEL_DIR, "model.onnx")
-            # register-voices.bin bakes the 5 register blends into slots 0..4; fall
-            # back to stock voices.bin if it hasn't been built yet.
-            voices = os.path.join(MODEL_DIR, "register-voices.bin")
+            # A voice may pin which .bin to load (_voices_file). Default: register-voices.bin
+            # bakes the 5 Isabella register blends into slots 0..4; fall back to stock
+            # voices.bin (all speakers at their real SIDs) if it is pinned or the blend
+            # has not been built yet.
+            voices = os.path.join(MODEL_DIR, _voices_file) if _voices_file \
+                else os.path.join(MODEL_DIR, "register-voices.bin")
             if not os.path.exists(voices):
                 voices = os.path.join(MODEL_DIR, "voices.bin")
             tokens = os.path.join(MODEL_DIR, "tokens.txt")
@@ -244,7 +279,10 @@ def synth_to_file(text, question=None):
         return None
     is_q = question if question is not None else text.rstrip().endswith("?")
     try:
-        audio = tts.generate(text, sid=_register, speed=_speed)
+        # Blend voices read timbre from the register slot (0..4); stock voices speak
+        # their fixed SID and let prosody + DSP carry the register difference.
+        sid = _register if _use_blend else _base_sid
+        audio = tts.generate(text, sid=sid, speed=_speed)
         if not audio.samples:
             return None
         x = np.asarray(audio.samples, dtype=np.float32)
