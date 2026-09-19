@@ -1086,6 +1086,22 @@ function renderAssistantResponse(data) {
       }
     }
   }
+  // P3a: faint "table set" marker when a [CUE: warm|recall|heat] pre-warmed context
+  // for this turn. Control-channel signal made barely visible, never spoken.
+  if (data.cue && data.cue.warmed && data.cue.warmed.length) {
+    var aCards = conversation.querySelectorAll(".card.assistant");
+    var lastA = aCards[aCards.length - 1];
+    var abody = lastA && lastA.querySelector(".card__body");
+    if (abody && !abody.querySelector(".cue-marker")) {
+      var topics = data.cue.warmed.map(function (w) { return w.topic || w.token || w.verb; }).filter(Boolean);
+      var mark = document.createElement("div");
+      mark.className = "cue-marker";
+      mark.style.cssText = "font-size:10px;letter-spacing:.06em;color:var(--dim,#9a9a9a);opacity:.55;margin-top:6px;";
+      mark.textContent = "◦ table set" + (topics.length ? " · " + topics.slice(0, 3).join(", ") : "");
+      mark.title = "context pre-warmed (control channel)";
+      abody.appendChild(mark);
+    }
+  }
 }
 
 function flushPendingResponse() {

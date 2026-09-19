@@ -1683,6 +1683,99 @@ def _strip_bracket_balanced_tags(text, tag_types):
     return capability.strip_blocked_tags(text, tag_types)
 
 
+# === P3a: prosody as triggers ("set the table") =============================
+# The [CUE: ...] tag is a CONTROL-channel tag: never spoken (already stripped for
+# TTS), it fires a side effect so the surface is prepared for what is being
+# discussed. P3a ships the READ tier only -- warm/recall/heat -- which mutates no
+# durable state (get_token re-times decay, a read-tier effect) and so needs no
+# gate. Write/act verbs (mint/createtoken/stage/dispatch) are DEFERRED here: they
+# need the GATE + a user-action anchor (P3b/P3c). See docs/design/prosody-as-triggers.md.
+_CUE_READ_VERBS = ("warm", "recall", "heat")
+_CUE_WRITE_VERBS = ("mint", "createtoken", "stage", "dispatch")
+_last_cue = None   # last turn's fired-trigger result, for the faint UI "table set" marker
+
+
+def cue_export_midi(cues, contour):
+    """SEAM (deferred by design): export the cue + prosody-contour timeline as MIDI
+    (note = cue, CC = contour) for an external tool. The authoring surface is inline
+    [CUE: ...] text; nothing depends on MIDI yet. When MIDI matters it plugs in HERE
+    and nowhere else. See docs/design/prosody-as-triggers.md (Encoding)."""
+    raise NotImplementedError(
+        "MIDI cue export is a deferred seam; see docs/design/prosody-as-triggers.md")
+
+
+def _parse_cue_triggers(text):
+    """Pull [CUE: verb k=v ...] control-channel triggers out of a response. Returns a
+    list of {verb, args, raw}. Read verbs use simple k=v args; the tag is never spoken."""
+    out = []
+    for m in re.finditer(r"\[CUE:\s*([^\]]+)\]", text or ""):
+        parts = m.group(1).strip().split()
+        if not parts:
+            continue
+        args = {}
+        for p in parts[1:]:
+            if "=" in p:
+                k, v = p.split("=", 1)
+                args[k.strip()] = v.strip()
+        out.append({"verb": parts[0].lower(), "args": args, "raw": m.group(1).strip()})
+    return out
+
+
+def _heat_token(tid):
+    """Re-heat a token by reading it back (get_token re-times decay). Read tier."""
+    if not (tid and CUE_MEM_AVAILABLE):
+        return False
+    try:
+        return cue_mem_get_token(tid, apply_heat=True) is not None
+    except Exception:
+        return False
+
+
+def _warm_topic(topic):
+    """Pre-warm the next turn: read (and thereby heat) tokens matching the topic.
+    Read tier -- no durable mutation. Returns the matched token dicts."""
+    if not (topic and CUE_MEM_AVAILABLE):
+        return []
+    try:
+        toks = cue_mem_list_tokens() or []
+    except Exception:
+        return []
+    key = topic.replace("-", " ").replace("_", " ").lower().strip()
+    words = [w for w in key.split() if w]
+    hits = []
+    for t in toks:
+        blob = " ".join(str(t.get(k, "")) for k in
+                        ("value", "label", "type", "tags", "token_id")).lower()
+        if words and all(w in blob for w in words):
+            tid = t.get("token_id")
+            if tid:
+                _heat_token(tid)
+            hits.append(t)
+    return hits
+
+
+def _fire_cue_triggers(triggers):
+    """Fire the READ tier only. Warm/recall pre-warm context; heat re-heats a token.
+    Write/act verbs are recorded as deferred (never fired in P3a). Returns
+    {warmed:[...], deferred:[...]}."""
+    warmed, deferred = [], []
+    for t in triggers:
+        v, a = t["verb"], t["args"]
+        if v in ("warm", "recall"):
+            topic = a.get("topic") or a.get("t") or ""
+            hits = _warm_topic(topic)
+            warmed.append({"verb": v, "topic": topic, "n": len(hits),
+                           "tokens": [h.get("token_id") for h in hits if h.get("token_id")][:5]})
+        elif v == "heat":
+            tid = a.get("token") or a.get("id") or ""
+            warmed.append({"verb": "heat", "token": tid, "ok": _heat_token(tid)})
+        elif v in _CUE_WRITE_VERBS:
+            deferred.append({"verb": v, "why": "needs GATE + user-action anchor (P3b/P3c)"})
+        else:
+            deferred.append({"verb": v, "why": "unknown cue verb"})
+    return {"warmed": warmed, "deferred": deferred}
+
+
 def sanitize_for_tts(text):
     """
     Sanitize text for TTS by extracting question text from structured input tags.
@@ -3422,12 +3515,26 @@ def log_conversation(user_text, assistant_text, speech_metadata=None, input_leng
     if blocked:
         clean_text = _strip_bracket_balanced_tags(clean_text, blocked)
 
+    # P3a: fire read-only [CUE: warm|recall|heat] triggers ("set the table"). This
+    # pre-warms the next turn's context; write/act verbs are deferred (need the GATE).
+    # Parsed from clean_text, which still carries the (never-spoken) CUE tag.
+    global _last_cue
+    _last_cue = None
+    try:
+        _cue_triggers = _parse_cue_triggers(clean_text)
+        if _cue_triggers:
+            _last_cue = _fire_cue_triggers(_cue_triggers)
+    except Exception as _cue_err:
+        print("[CUE] trigger fire failed: %s" % _cue_err, flush=True)
+
     entry = {
         'timestamp': timestamp.strftime('%Y-%m-%dT%H:%M'),  # No seconds
         't_period': get_time_period(timestamp),
         'user': user_text,
         'assistant': clean_text
     }
+    if _last_cue:
+        entry['cue'] = _last_cue
 
     if speech_metadata:
         entry['speech'] = speech_metadata
@@ -8437,6 +8544,7 @@ def handle_audio(data):
         tts_text = sanitize_for_tts(clean_response)
         tts_chunks = tts_chunk_split(tts_text)
         response_data = {"text": clean_response, "tts_chunks": tts_chunks}
+        if _last_cue and _last_cue.get("warmed"): response_data["cue"] = _last_cue
         if snr_hex:
             response_data["snr_hex"] = snr_hex
         emit("response", response_data)
@@ -8704,6 +8812,7 @@ IMPORTANT: When speaking, say "Yes OR No" not "yes-no" or "yes slash no"."""
         tts_text = sanitize_for_tts(clean_response)
         tts_chunks = tts_chunk_split(tts_text)
         response_data = {"text": clean_response, "tts_chunks": tts_chunks}
+        if _last_cue and _last_cue.get("warmed"): response_data["cue"] = _last_cue
         if snr_hex:
             response_data["snr_hex"] = snr_hex
         emit("response", response_data)
@@ -8735,6 +8844,7 @@ def _respond_and_speak(user_log_text, response_text, confidence=None):
     tts_text = sanitize_for_tts(clean_response)
     tts_chunks = tts_chunk_split(tts_text)
     response_data = {"text": clean_response, "tts_chunks": tts_chunks}
+    if _last_cue and _last_cue.get("warmed"): response_data["cue"] = _last_cue
     if snr_hex:
         response_data["snr_hex"] = snr_hex
     emit("response", response_data)
@@ -9078,6 +9188,7 @@ def handle_input_response(data):
         tts_text = sanitize_for_tts(clean_response)
         tts_chunks = tts_chunk_split(tts_text)
         response_data = {"text": clean_response, "tts_chunks": tts_chunks}
+        if _last_cue and _last_cue.get("warmed"): response_data["cue"] = _last_cue
         if snr_hex:
             response_data["snr_hex"] = snr_hex
         emit("response", response_data)
