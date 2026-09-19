@@ -1696,12 +1696,13 @@ _last_cue = None   # last turn's fired-trigger result, for the faint UI "table s
 
 
 def cue_export_midi(cues, contour):
-    """SEAM (deferred by design): export the cue + prosody-contour timeline as MIDI
-    (note = cue, CC = contour) for an external tool. MIDI is the CONTINUOUS + INTEROP
-    tier: it turns coarse SSML steps into smooth pitch/volume/rate curves (CC + bend),
-    puts cue triggers on a precise timeline, and speaks to any DAW or knob controller
-    (the tuner's dials as real faders). Inline [CUE: ...] text stays the authoring
-    surface; nothing depends on MIDI yet. When MIDI matters it plugs in HERE and
+    """SEAM (deferred by design): the handoff from the upstream text layer to the
+    TERMINUS composition layer -- the endpoint/device/actuator where a performance is
+    rendered in realtime. MIDI is reserved for that edge and justified by SCALE: many
+    channels moving together with continuous variation and waves, like music (24-64
+    notes, or Disney animatronics driving dozens of servos). A single voice is the
+    degenerate case that inline [CUE: ...] + register dials already cover. Stays a
+    stub until a multi-channel endpoint sits on the other side; plugs in HERE and
     nowhere else. See docs/design/prosody-as-triggers.md (Encoding)."""
     raise NotImplementedError(
         "MIDI cue export is a deferred seam; see docs/design/prosody-as-triggers.md")
