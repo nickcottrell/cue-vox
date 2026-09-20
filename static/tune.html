@@ -80,6 +80,11 @@
       <select id="register" style="flex:1;"></select>
     </div>
     <div class="hint">Voice &gt; Register &gt; SSML. Picking a register sets the render state and loads that register's own sample into the text below.</div>
+    <div class="voice-row" style="margin-top:8px;">
+      <span style="font-size:12px;letter-spacing:.08em;text-transform:uppercase;color:var(--dim);">Situation</span>
+      <select id="situation" style="flex:1;"></select>
+    </div>
+    <div class="hint">Prosody situations tailored to this register. Pick one to load its example into the text.</div>
 
     <div class="section">Earn-curve</div>
     <div class="slider">
@@ -186,6 +191,7 @@
     <div class="hint">Each register is a timbre PLUS its own reading of the SAME markup. <b>break</b> stretches every &lt;break/&gt; and &lt;beat/&gt;, <b>emphasis</b> shapes how hard &lt;emphasis&gt;/CAPS push, <b>rate</b> multiplies speed, <b>lift</b> is the question rise. speed/bright/gain are the timbre knobs (the only difference between registers on a stock voice with no neural blend). Saving writes voices.json, so it survives boot.</div>
     <div id="reglist" style="margin-top:14px;"></div>
     <div class="row">
+      <button id="reg_add">+ Add register</button>
       <button id="reg_reload">Reload</button>
       <button class="primary" id="reg_save">Save registers</button>
     </div>
@@ -611,7 +617,12 @@
       const n = document.createElement("span"); n.className = "slot__n"; n.textContent = rk;
       const label = document.createElement("input"); label.className = "slot__label";
       label.value = r.label || ""; label.placeholder = "label"; label.dataset.key = "label";
-      head.appendChild(sw); head.appendChild(n); head.appendChild(label); card.appendChild(head);
+      const rm = document.createElement("button"); rm.className = "mini"; rm.textContent = "remove";
+      rm.addEventListener("click", () => {
+        delete _regs()[rk]; renderRegisters(); populateRegisterDropdown();
+        $("reg_status").textContent = "removed register " + rk + " (Save registers to persist)";
+      });
+      head.appendChild(sw); head.appendChild(n); head.appendChild(label); head.appendChild(rm); card.appendChild(head);
       const grid = document.createElement("div");
       grid.style.cssText = "display:flex;flex-wrap:wrap;gap:10px;margin-bottom:8px;";
       TIMBRE_FIELDS.forEach(f => grid.appendChild(timbreField(f, r[f.key])));
@@ -655,7 +666,9 @@
       updateVoiceKind();
       renderRegisters();
       populateRegisterDropdown();
-      const regs = _regs(); if (ACTIVE_REG && regs[ACTIVE_REG] && regs[ACTIVE_REG].sample != null) $("sample").value = regs[ACTIVE_REG].sample;
+      const regs = _regs(); const ar = regs[ACTIVE_REG] || {};
+      populateSituations(ar.samples || []);
+      if (ar.sample != null) $("sample").value = ar.sample;
     } catch(e){}
   }
   function updateVoiceKind(){
@@ -671,25 +684,53 @@
       if (!j.ok) { $("reg_status").textContent = "switch failed: " + (j.error || "?"); return; }
       ACTIVE_VOICE = j.active; updateVoiceKind(); renderRegisters();
       populateRegisterDropdown(j.register);
+      populateSituations(j.samples || []);
       if (j.sample != null) $("sample").value = j.sample;   // load the new voice's active-register sample
       $("status").textContent = "voice: " + ACTIVE_VOICE + " (live + boot default)";
       $("reg_status").textContent = "voice is now " + ACTIVE_VOICE + ", register " + (j.register || "?");
     } catch(e){ $("reg_status").textContent = "switch error"; }
   });
   $("reg_reload").addEventListener("click", loadVoices);
+  function _nextRegKey(regs){ let n = 1; while (regs[String(n)]) n++; return String(n); }
+  $("reg_add").addEventListener("click", () => {
+    const regs = _regs(); const k = _nextRegKey(regs);
+    regs[k] = { label: "new", kokoro_slot: 2, speed: 1.0, bright: 0.0, gain: 1.0, exaggeration: 1.0,
+                prosody: { break: [0.9, 1.3], emphasis: [1.0, 1.4], rate: [0.9, 1.1], lift: [0.6, 0.9] }, samples: [] };
+    renderRegisters(); populateRegisterDropdown();
+    $("reg_status").textContent = "added register " + k + " (Save registers to persist)";
+  });
   $("reg_save").addEventListener("click", async () => {
     $("reg_status").textContent = "saving registers...";
     try {
+      // replace=true: authoritative set (adds new cards, prunes removed ones); the
+      // backend keeps unsent fields (samples) on survivors.
       const j = await (await fetch("/api/tune/registers", { method:"POST", headers:{"Content-Type":"application/json"},
-        body: JSON.stringify({ voice: ACTIVE_VOICE, registers: collectRegisters() }) })).json();
+        body: JSON.stringify({ voice: ACTIVE_VOICE, registers: collectRegisters(), replace: true }) })).json();
       if (!j.ok) { $("reg_status").textContent = "save failed: " + (j.error || "?"); return; }
       if (VOICES_DATA[ACTIVE_VOICE]) VOICES_DATA[ACTIVE_VOICE].registers = j.registers;
-      $("reg_status").textContent = "saved " + ACTIVE_VOICE + " -> voices.json (live)";
+      renderRegisters(); populateRegisterDropdown();     // reflect adds/removes
+      $("reg_status").textContent = "saved " + ACTIVE_VOICE + " (" + Object.keys(j.registers || {}).length + " registers) -> voices.json";
     } catch(e){ $("reg_status").textContent = "save error"; }
   });
   // ===== Register dropdown (Voice > Register), first-class selector =====
-  let ACTIVE_REG = null;
+  let ACTIVE_REG = null, CURRENT_SAMPLES = [];
   function _regs(){ return (VOICES_DATA[ACTIVE_VOICE] || {}).registers || {}; }
+  function _loadText(s){ if (s == null) return; pushHist(); $("sample").value = s; stashCurrent(); persist(); }
+  function populateSituations(samples, pickIdx){
+    CURRENT_SAMPLES = Array.isArray(samples) ? samples : [];
+    const sel = $("situation"); sel.innerHTML = "";
+    CURRENT_SAMPLES.forEach((s, i) => {
+      const o = document.createElement("option");
+      o.value = i; o.textContent = s.situation || ("example " + (i + 1));
+      if (i === (pickIdx || 0)) o.selected = true;
+      sel.appendChild(o);
+    });
+  }
+  $("situation").addEventListener("change", () => {
+    const i = parseInt($("situation").value, 10);
+    const s = CURRENT_SAMPLES[i];
+    if (s && s.ssml != null) { _loadText(s.ssml); $("status").textContent = "situation: " + (s.situation || i); }
+  });
   function populateRegisterDropdown(preferred){
     const regs = _regs(), sel = $("register"); sel.innerHTML = "";
     const keys = Object.keys(regs).sort();
@@ -713,8 +754,9 @@
       const j = await (await fetch("/api/tune/register", { method:"POST", headers:{"Content-Type":"application/json"},
         body: JSON.stringify({ voice: ACTIVE_VOICE, register: ACTIVE_REG }) })).json();
       if (!j.ok) { $("status").textContent = "register failed: " + (j.error || "?"); return; }
-      if (j.sample != null) { pushHist(); $("sample").value = j.sample; stashCurrent(); persist(); }
-      $("status").textContent = "register " + ACTIVE_REG + " — render state set, sample loaded";
+      populateSituations(j.samples || []);
+      _loadText((CURRENT_SAMPLES[0] && CURRENT_SAMPLES[0].ssml) || j.sample);
+      $("status").textContent = "register " + ACTIVE_REG + " — render state set, " + CURRENT_SAMPLES.length + " situations";
     } catch(e){ $("status").textContent = "register error"; }
   });
   // Save the edited sample back to the active register (samples are per register).

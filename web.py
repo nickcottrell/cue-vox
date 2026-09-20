@@ -6361,7 +6361,8 @@ def tune_voice():
         _save_voices()
     v = ((_VOICES or {}).get('voices', {}) or {}).get(_ACTIVE_VOICE, {})
     reg = ((v.get('registers') or {}).get(_active_register) or {})
-    return jsonify(ok=True, active=_ACTIVE_VOICE, register=_active_register, sample=reg.get('sample', ''))
+    return jsonify(ok=True, active=_ACTIVE_VOICE, register=_active_register,
+                   sample=reg.get('sample', ''), samples=reg.get('samples', []))
 
 
 @app.route('/api/tune/register', methods=['POST'])
@@ -6383,7 +6384,8 @@ def tune_register():
         v['active_register'] = key       # remember per voice (survives boot)
         _save_voices()
     reg = regs.get(key, {})
-    return jsonify(ok=True, register=key, slot=int(reg.get('kokoro_slot', 0)), sample=reg.get('sample', ''))
+    return jsonify(ok=True, register=key, slot=int(reg.get('kokoro_slot', 0)),
+                   sample=reg.get('sample', ''), samples=reg.get('samples', []))
 
 
 @app.route('/api/tune/registers', methods=['POST'])
@@ -6408,14 +6410,24 @@ def tune_registers():
             return dflt
 
     regs = v.setdefault('registers', {})
+    if d.get('replace'):
+        # Authoritative set (the Registers tab): prune registers the tab no longer shows
+        # (that is how REMOVE works), while keeping unsent fields (e.g. samples) on the
+        # survivors via the merge below. Partial saves (no replace) never delete.
+        for k in list(regs.keys()):
+            if k not in incoming:
+                del regs[k]
     for key, r in incoming.items():
         if not isinstance(r, dict):
             continue
         cur = regs.setdefault(str(key), {})
         if 'label' in r:
             cur['label'] = str(r['label'])[:32]
-        if 'sample' in r:                       # per-register SSML sample
+        if 'sample' in r:                       # per-register default SSML sample
             cur['sample'] = str(r['sample'])
+        if 'samples' in r and isinstance(r['samples'], list):   # per-register situations
+            cur['samples'] = [{'situation': str(s.get('situation', ''))[:40], 'ssml': str(s.get('ssml', ''))}
+                              for s in r['samples'] if isinstance(s, dict)]
         if 'kokoro_slot' in r:
             cur['kokoro_slot'] = int(_cl(r['kokoro_slot'], 0, 4, cur.get('kokoro_slot', 0)))
         for k, lo, hi in (('speed', 0.5, 2.0), ('bright', -1.0, 3.0), ('gain', 0.1, 3.0), ('exaggeration', 0.3, 2.0)):
