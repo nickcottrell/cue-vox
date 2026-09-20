@@ -34,39 +34,47 @@
               0.8
             ]
           },
-          "sample": "Quick one. <break time=\"400ms\"/> Branch is pushed, all green. <break time=\"500ms\"/> <prosody volume=\"x-soft\">No rush, look whenever.</prosody>",
+          "sample": "Hey. <break time=\"400ms\"/> How is it going? <break time=\"300ms\"/> <prosody pitch=\"high\">All good?</prosody>",
           "samples": [
             {
-              "situation": "quiet-update",
-              "ssml": "Quick one. <break time=\"400ms\"/> Branch is pushed, all green. <break time=\"500ms\"/> <prosody volume=\"x-soft\">No rush, look whenever.</prosody>"
+              "situation": "greeting",
+              "ssml": "Hey. <break time=\"400ms\"/> How is it going? <break time=\"300ms\"/> <prosody pitch=\"high\">All good?</prosody>"
             },
             {
-              "situation": "deep-focus",
-              "ssml": "<prosody volume=\"x-soft\">Do not disturb is on.</prosody> <beat time=\"700ms\"/> <prosody volume=\"x-soft\" rate=\"slow\">Just the one thing in front of you.</prosody> <break time=\"600ms\"/> Everything else can wait."
+              "situation": "statement",
+              "ssml": "Here is the thing. <break time=\"400ms\"/> It <emphasis level=\"strong\">works.</emphasis> <break time=\"300ms\"/> Every time."
             },
             {
-              "situation": "gentle-reassure",
-              "ssml": "Hey. <break time=\"500ms\"/> You did the hard part already. <break time=\"400ms\"/> <prosody volume=\"soft\">The rest is just cleanup.</prosody> <break time=\"400ms\"/> <emphasis level=\"reduced\">You have got this.</emphasis>"
+              "situation": "question",
+              "ssml": "So. <break time=\"400ms\"/> <prosody pitch=\"high\">Are we doing this?</prosody> <break time=\"300ms\"/> <prosody pitch=\"high\">Yes or no?</prosody>"
             },
             {
-              "situation": "winding-down",
-              "ssml": "That is a good place to stop. <break time=\"500ms\"/> <prosody volume=\"soft\" rate=\"slow\">Everything is saved, nothing is on fire.</prosody> <break time=\"500ms\"/> Go rest."
+              "situation": "the-list",
+              "ssml": "Three things. <break time=\"300ms\"/> One, <break time=\"250ms\"/> the build. <break time=\"250ms\"/> Two, <break time=\"250ms\"/> the tests. <break time=\"250ms\"/> Three, <break time=\"250ms\"/> we ship."
             },
             {
-              "situation": "soft-ack",
-              "ssml": "<prosody volume=\"soft\">Got it.</prosody> <break time=\"300ms\"/> Noted and set aside. <break time=\"400ms\"/> <prosody volume=\"x-soft\">I will surface it when it matters.</prosody>"
+              "situation": "the-pause",
+              "ssml": "I need you to hear this. <break time=\"900ms\"/> It matters. <break time=\"700ms\"/> More than the rest."
             },
             {
-              "situation": "ambient-status",
-              "ssml": "<prosody volume=\"x-soft\">All quiet.</prosody> <break time=\"500ms\"/> Queue is clear, tests are green. <break time=\"500ms\"/> <prosody volume=\"soft\">Nothing needs you right now.</prosody>"
+              "situation": "emphasis",
+              "ssml": "This is <emphasis level=\"strong\">not</emphasis> a drill. <break time=\"400ms\"/> It is <emphasis level=\"strong\">real</emphasis>, and it is <emphasis level=\"strong\">now.</emphasis>"
             },
             {
-              "situation": "late-check-in",
-              "ssml": "<prosody volume=\"x-soft\" rate=\"slow\">Still here if you need me.</prosody> <break time=\"600ms\"/> It is late, though. <break time=\"400ms\"/> <prosody volume=\"x-soft\">Maybe call it?</prosody>"
+              "situation": "urgent",
+              "ssml": "Wait. <break time=\"250ms\"/> <prosody rate=\"fast\">Check the build, the port, the token.</prosody> <break time=\"300ms\"/> <prosody pitch=\"high\">Now?</prosody>"
             },
             {
-              "situation": "ease-a-worry",
-              "ssml": "Hey, breathe. <break time=\"500ms\"/> <prosody volume=\"soft\">It is smaller than it feels.</prosody> <break time=\"400ms\"/> One piece at a time. <break time=\"400ms\"/> <prosody pitch=\"high\">Start with the first one?</prosody>"
+              "situation": "reassure",
+              "ssml": "Hey. <break time=\"500ms\"/> <prosody volume=\"soft\">You did the hard part.</prosody> <break time=\"400ms\"/> The rest is easy."
+            },
+            {
+              "situation": "the-reveal",
+              "ssml": "So. <break time=\"700ms\"/> Here it is. <break time=\"500ms\"/> <emphasis level=\"strong\">We did it.</emphasis> <break time=\"400ms\"/> <laugh/>"
+            },
+            {
+              "situation": "the-aside",
+              "ssml": "It works now. <break time=\"300ms\"/> <chuckle/> <break time=\"400ms\"/> <prosody volume=\"soft\">after all that.</prosody>"
             }
           ]
         },
@@ -95,39 +103,47 @@
               1.0
             ]
           },
-          "sample": "Morning. <break time=\"400ms\"/> Here is where we stand. <break time=\"400ms\"/> Two items on the board, <break time=\"250ms\"/> one waiting on <emphasis level=\"moderate\">your review.</emphasis> <break time=\"400ms\"/> <prosody pitch=\"high\">Anything you want moved up?</prosody>",
+          "sample": "Hey. <break time=\"400ms\"/> How is it going? <break time=\"300ms\"/> <prosody pitch=\"high\">All good?</prosody>",
           "samples": [
             {
-              "situation": "morning-briefing",
-              "ssml": "Morning. <break time=\"400ms\"/> Here is where we stand. <break time=\"400ms\"/> Two items on the board, <break time=\"250ms\"/> one waiting on <emphasis level=\"moderate\">your review.</emphasis> <break time=\"400ms\"/> <prosody pitch=\"high\">Anything you want moved up?</prosody>"
+              "situation": "greeting",
+              "ssml": "Hey. <break time=\"400ms\"/> How is it going? <break time=\"300ms\"/> <prosody pitch=\"high\">All good?</prosody>"
             },
             {
-              "situation": "teaching",
-              "ssml": "From the top. <break time=\"500ms\"/> A token has a <emphasis level=\"moderate\">temperature</emphasis>. <break time=\"400ms\"/> Hotter means it matters more right now. <break time=\"400ms\"/> Over time it cools. <break time=\"400ms\"/> <prosody pitch=\"high\">Does that land?</prosody>"
+              "situation": "statement",
+              "ssml": "Here is the thing. <break time=\"400ms\"/> It <emphasis level=\"strong\">works.</emphasis> <break time=\"300ms\"/> Every time."
             },
             {
-              "situation": "debugging",
-              "ssml": "Let us walk it. <break time=\"400ms\"/> Request hits the router, <break time=\"250ms\"/> then <prosody pitch=\"high\">where does it go?</prosody> <beat time=\"500ms\"/> <emphasis level=\"moderate\">There.</emphasis> <break time=\"250ms\"/> It has been swallowing the error."
+              "situation": "question",
+              "ssml": "So. <break time=\"400ms\"/> <prosody pitch=\"high\">Are we doing this?</prosody> <break time=\"300ms\"/> <prosody pitch=\"high\">Yes or no?</prosody>"
             },
             {
-              "situation": "planning",
-              "ssml": "Okay, next steps. <break time=\"400ms\"/> First the broker, <break time=\"250ms\"/> then the tests, <break time=\"250ms\"/> then we ship. <break time=\"400ms\"/> <prosody pitch=\"high\">That order work for you?</prosody>"
+              "situation": "the-list",
+              "ssml": "Three things. <break time=\"300ms\"/> One, <break time=\"250ms\"/> the build. <break time=\"250ms\"/> Two, <break time=\"250ms\"/> the tests. <break time=\"250ms\"/> Three, <break time=\"250ms\"/> we ship."
             },
             {
-              "situation": "status-walkthrough",
-              "ssml": "Three things landed. <break time=\"350ms\"/> The index rebuilt, <break time=\"250ms\"/> the cache is warm, <break time=\"250ms\"/> the queue drained. <break time=\"400ms\"/> <emphasis level=\"moderate\">All green.</emphasis>"
+              "situation": "the-pause",
+              "ssml": "I need you to hear this. <break time=\"900ms\"/> It matters. <break time=\"700ms\"/> More than the rest."
             },
             {
-              "situation": "ask-a-decision",
-              "ssml": "Here is the fork. <break time=\"400ms\"/> Ship now and patch, <break time=\"300ms\"/> or hold a day and harden. <break time=\"500ms\"/> <prosody pitch=\"high\">Which way do you want it?</prosody>"
+              "situation": "emphasis",
+              "ssml": "This is <emphasis level=\"strong\">not</emphasis> a drill. <break time=\"400ms\"/> It is <emphasis level=\"strong\">real</emphasis>, and it is <emphasis level=\"strong\">now.</emphasis>"
             },
             {
-              "situation": "explain-tradeoff",
-              "ssml": "It is a trade. <break time=\"400ms\"/> Faster now, <prosody volume=\"soft\">but more to maintain later.</prosody> <break time=\"400ms\"/> Slower now buys us <emphasis level=\"moderate\">simpler</emphasis> down the line."
+              "situation": "urgent",
+              "ssml": "Wait. <break time=\"250ms\"/> <prosody rate=\"fast\">Check the build, the port, the token.</prosody> <break time=\"300ms\"/> <prosody pitch=\"high\">Now?</prosody>"
             },
             {
-              "situation": "check-in",
-              "ssml": "How is it going over there? <break time=\"500ms\"/> No pressure. <break time=\"350ms\"/> <prosody pitch=\"high\">Anything blocking you?</prosody>"
+              "situation": "reassure",
+              "ssml": "Hey. <break time=\"500ms\"/> <prosody volume=\"soft\">You did the hard part.</prosody> <break time=\"400ms\"/> The rest is easy."
+            },
+            {
+              "situation": "the-reveal",
+              "ssml": "So. <break time=\"700ms\"/> Here it is. <break time=\"500ms\"/> <emphasis level=\"strong\">We did it.</emphasis> <break time=\"400ms\"/> <laugh/>"
+            },
+            {
+              "situation": "the-aside",
+              "ssml": "It works now. <break time=\"300ms\"/> <chuckle/> <break time=\"400ms\"/> <prosody volume=\"soft\">after all that.</prosody>"
             }
           ]
         },
@@ -156,44 +172,52 @@
               1.2
             ]
           },
-          "sample": "It is live. <break time=\"400ms\"/> <emphasis level=\"strong\">We shipped it.</emphasis> <break time=\"400ms\"/> Every gate green, <prosody rate=\"fast\">out in the world.</prosody> <break time=\"500ms\"/> <laugh/>",
+          "sample": "Hey. <break time=\"400ms\"/> How is it going? <break time=\"300ms\"/> <prosody pitch=\"high\">All good?</prosody>",
           "samples": [
             {
-              "situation": "ship-it",
-              "ssml": "It is live. <break time=\"400ms\"/> <emphasis level=\"strong\">We shipped it.</emphasis> <break time=\"400ms\"/> Every gate green, <prosody rate=\"fast\">out in the world.</prosody> <break time=\"500ms\"/> <laugh/>"
+              "situation": "greeting",
+              "ssml": "Hey. <break time=\"400ms\"/> How is it going? <break time=\"300ms\"/> <prosody pitch=\"high\">All good?</prosody>"
             },
             {
-              "situation": "dramatic-build",
-              "ssml": "They said it could not be done. <break time=\"700ms\"/> Month after month, <break time=\"300ms\"/> no. <break time=\"900ms\"/> <emphasis level=\"strong\">And yet.</emphasis> <break time=\"500ms\"/> It all led here."
+              "situation": "statement",
+              "ssml": "Here is the thing. <break time=\"400ms\"/> It <emphasis level=\"strong\">works.</emphasis> <break time=\"300ms\"/> Every time."
+            },
+            {
+              "situation": "question",
+              "ssml": "So. <break time=\"400ms\"/> <prosody pitch=\"high\">Are we doing this?</prosody> <break time=\"300ms\"/> <prosody pitch=\"high\">Yes or no?</prosody>"
+            },
+            {
+              "situation": "the-list",
+              "ssml": "Three things. <break time=\"300ms\"/> One, <break time=\"250ms\"/> the build. <break time=\"250ms\"/> Two, <break time=\"250ms\"/> the tests. <break time=\"250ms\"/> Three, <break time=\"250ms\"/> we ship."
+            },
+            {
+              "situation": "the-pause",
+              "ssml": "I need you to hear this. <break time=\"900ms\"/> It matters. <break time=\"700ms\"/> More than the rest."
+            },
+            {
+              "situation": "emphasis",
+              "ssml": "This is <emphasis level=\"strong\">not</emphasis> a drill. <break time=\"400ms\"/> It is <emphasis level=\"strong\">real</emphasis>, and it is <emphasis level=\"strong\">now.</emphasis>"
             },
             {
               "situation": "urgent",
-              "ssml": "Wait. <break time=\"250ms\"/> <prosody pitch=\"high\">Did you push it?</prosody> <break time=\"300ms\"/> Okay, do not panic. <break time=\"350ms\"/> <prosody rate=\"fast\" volume=\"loud\">Check the build, the port, the token.</prosody> <break time=\"350ms\"/> <prosody pitch=\"high\">Run it again?</prosody>"
+              "ssml": "Wait. <break time=\"250ms\"/> <prosody rate=\"fast\">Check the build, the port, the token.</prosody> <break time=\"300ms\"/> <prosody pitch=\"high\">Now?</prosody>"
             },
             {
-              "situation": "celebration",
-              "ssml": "<emphasis level=\"strong\">Yes!</emphasis> <break time=\"400ms\"/> <laugh/> <break time=\"300ms\"/> That is exactly what we wanted. <break time=\"400ms\"/> <prosody volume=\"loud\">Every single test.</prosody>"
+              "situation": "reassure",
+              "ssml": "Hey. <break time=\"500ms\"/> <prosody volume=\"soft\">You did the hard part.</prosody> <break time=\"400ms\"/> The rest is easy."
             },
             {
-              "situation": "big-reveal",
-              "ssml": "So. <break time=\"600ms\"/> Here it is. <break time=\"700ms\"/> <prosody rate=\"slow\">No key. <break time=\"250ms\"/> No cloud.</prosody> <break time=\"400ms\"/> <emphasis level=\"strong\">Just us.</emphasis>"
+              "situation": "the-reveal",
+              "ssml": "So. <break time=\"700ms\"/> Here it is. <break time=\"500ms\"/> <emphasis level=\"strong\">We did it.</emphasis> <break time=\"400ms\"/> <laugh/>"
             },
             {
-              "situation": "firm-pushback",
-              "ssml": "I hear you. <break time=\"400ms\"/> And I am pushing back. <break time=\"500ms\"/> The trust boundary <emphasis level=\"strong\">does not move.</emphasis> <break time=\"400ms\"/> <emphasis level=\"strong\">The answer is no.</emphasis>"
-            },
-            {
-              "situation": "rally",
-              "ssml": "Alright, listen up. <break time=\"400ms\"/> We are close. <break time=\"350ms\"/> <prosody volume=\"loud\">One more push</prosody> and it is done. <break time=\"400ms\"/> <emphasis level=\"strong\">Let us go.</emphasis>"
-            },
-            {
-              "situation": "victory-lap",
-              "ssml": "Oh, so <emphasis level=\"strong\">now</emphasis> it works. <break time=\"250ms\"/> <chuckle/> <break time=\"400ms\"/> Three days, <emphasis level=\"moderate\">one semicolon.</emphasis> <break time=\"300ms\"/> <laugh/> <break time=\"300ms\"/> I will take the win."
+              "situation": "the-aside",
+              "ssml": "It works now. <break time=\"300ms\"/> <chuckle/> <break time=\"400ms\"/> <prosody volume=\"soft\">after all that.</prosody>"
             }
           ]
         }
       },
-      "active_register": "1"
+      "active_register": "3"
     },
     "atlas": {
       "label": "Atlas",
@@ -227,39 +251,47 @@
               0.6
             ]
           },
-          "sample": "Quick one. <break time=\"400ms\"/> Branch is pushed, all green. <break time=\"500ms\"/> <prosody volume=\"x-soft\">No rush, look whenever.</prosody>",
+          "sample": "Hey. <break time=\"400ms\"/> How is it going? <break time=\"300ms\"/> <prosody pitch=\"high\">All good?</prosody>",
           "samples": [
             {
-              "situation": "quiet-update",
-              "ssml": "Quick one. <break time=\"400ms\"/> Branch is pushed, all green. <break time=\"500ms\"/> <prosody volume=\"x-soft\">No rush, look whenever.</prosody>"
+              "situation": "greeting",
+              "ssml": "Hey. <break time=\"400ms\"/> How is it going? <break time=\"300ms\"/> <prosody pitch=\"high\">All good?</prosody>"
             },
             {
-              "situation": "deep-focus",
-              "ssml": "<prosody volume=\"x-soft\">Do not disturb is on.</prosody> <beat time=\"700ms\"/> <prosody volume=\"x-soft\" rate=\"slow\">Just the one thing in front of you.</prosody> <break time=\"600ms\"/> Everything else can wait."
+              "situation": "statement",
+              "ssml": "Here is the thing. <break time=\"400ms\"/> It <emphasis level=\"strong\">works.</emphasis> <break time=\"300ms\"/> Every time."
             },
             {
-              "situation": "gentle-reassure",
-              "ssml": "Hey. <break time=\"500ms\"/> You did the hard part already. <break time=\"400ms\"/> <prosody volume=\"soft\">The rest is just cleanup.</prosody> <break time=\"400ms\"/> <emphasis level=\"reduced\">You have got this.</emphasis>"
+              "situation": "question",
+              "ssml": "So. <break time=\"400ms\"/> <prosody pitch=\"high\">Are we doing this?</prosody> <break time=\"300ms\"/> <prosody pitch=\"high\">Yes or no?</prosody>"
             },
             {
-              "situation": "winding-down",
-              "ssml": "That is a good place to stop. <break time=\"500ms\"/> <prosody volume=\"soft\" rate=\"slow\">Everything is saved, nothing is on fire.</prosody> <break time=\"500ms\"/> Go rest."
+              "situation": "the-list",
+              "ssml": "Three things. <break time=\"300ms\"/> One, <break time=\"250ms\"/> the build. <break time=\"250ms\"/> Two, <break time=\"250ms\"/> the tests. <break time=\"250ms\"/> Three, <break time=\"250ms\"/> we ship."
             },
             {
-              "situation": "soft-ack",
-              "ssml": "<prosody volume=\"soft\">Got it.</prosody> <break time=\"300ms\"/> Noted and set aside. <break time=\"400ms\"/> <prosody volume=\"x-soft\">I will surface it when it matters.</prosody>"
+              "situation": "the-pause",
+              "ssml": "I need you to hear this. <break time=\"900ms\"/> It matters. <break time=\"700ms\"/> More than the rest."
             },
             {
-              "situation": "ambient-status",
-              "ssml": "<prosody volume=\"x-soft\">All quiet.</prosody> <break time=\"500ms\"/> Queue is clear, tests are green. <break time=\"500ms\"/> <prosody volume=\"soft\">Nothing needs you right now.</prosody>"
+              "situation": "emphasis",
+              "ssml": "This is <emphasis level=\"strong\">not</emphasis> a drill. <break time=\"400ms\"/> It is <emphasis level=\"strong\">real</emphasis>, and it is <emphasis level=\"strong\">now.</emphasis>"
             },
             {
-              "situation": "late-check-in",
-              "ssml": "<prosody volume=\"x-soft\" rate=\"slow\">Still here if you need me.</prosody> <break time=\"600ms\"/> It is late, though. <break time=\"400ms\"/> <prosody volume=\"x-soft\">Maybe call it?</prosody>"
+              "situation": "urgent",
+              "ssml": "Wait. <break time=\"250ms\"/> <prosody rate=\"fast\">Check the build, the port, the token.</prosody> <break time=\"300ms\"/> <prosody pitch=\"high\">Now?</prosody>"
             },
             {
-              "situation": "ease-a-worry",
-              "ssml": "Hey, breathe. <break time=\"500ms\"/> <prosody volume=\"soft\">It is smaller than it feels.</prosody> <break time=\"400ms\"/> One piece at a time. <break time=\"400ms\"/> <prosody pitch=\"high\">Start with the first one?</prosody>"
+              "situation": "reassure",
+              "ssml": "Hey. <break time=\"500ms\"/> <prosody volume=\"soft\">You did the hard part.</prosody> <break time=\"400ms\"/> The rest is easy."
+            },
+            {
+              "situation": "the-reveal",
+              "ssml": "So. <break time=\"700ms\"/> Here it is. <break time=\"500ms\"/> <emphasis level=\"strong\">We did it.</emphasis> <break time=\"400ms\"/> <laugh/>"
+            },
+            {
+              "situation": "the-aside",
+              "ssml": "It works now. <break time=\"300ms\"/> <chuckle/> <break time=\"400ms\"/> <prosody volume=\"soft\">after all that.</prosody>"
             }
           ]
         },
@@ -288,39 +320,47 @@
               0.8
             ]
           },
-          "sample": "Morning. <break time=\"400ms\"/> Here is where we stand. <break time=\"400ms\"/> Two items on the board, <break time=\"250ms\"/> one waiting on <emphasis level=\"moderate\">your review.</emphasis> <break time=\"400ms\"/> <prosody pitch=\"high\">Anything you want moved up?</prosody>",
+          "sample": "Hey. <break time=\"400ms\"/> How is it going? <break time=\"300ms\"/> <prosody pitch=\"high\">All good?</prosody>",
           "samples": [
             {
-              "situation": "morning-briefing",
-              "ssml": "Morning. <break time=\"400ms\"/> Here is where we stand. <break time=\"400ms\"/> Two items on the board, <break time=\"250ms\"/> one waiting on <emphasis level=\"moderate\">your review.</emphasis> <break time=\"400ms\"/> <prosody pitch=\"high\">Anything you want moved up?</prosody>"
+              "situation": "greeting",
+              "ssml": "Hey. <break time=\"400ms\"/> How is it going? <break time=\"300ms\"/> <prosody pitch=\"high\">All good?</prosody>"
             },
             {
-              "situation": "teaching",
-              "ssml": "From the top. <break time=\"500ms\"/> A token has a <emphasis level=\"moderate\">temperature</emphasis>. <break time=\"400ms\"/> Hotter means it matters more right now. <break time=\"400ms\"/> Over time it cools. <break time=\"400ms\"/> <prosody pitch=\"high\">Does that land?</prosody>"
+              "situation": "statement",
+              "ssml": "Here is the thing. <break time=\"400ms\"/> It <emphasis level=\"strong\">works.</emphasis> <break time=\"300ms\"/> Every time."
             },
             {
-              "situation": "debugging",
-              "ssml": "Let us walk it. <break time=\"400ms\"/> Request hits the router, <break time=\"250ms\"/> then <prosody pitch=\"high\">where does it go?</prosody> <beat time=\"500ms\"/> <emphasis level=\"moderate\">There.</emphasis> <break time=\"250ms\"/> It has been swallowing the error."
+              "situation": "question",
+              "ssml": "So. <break time=\"400ms\"/> <prosody pitch=\"high\">Are we doing this?</prosody> <break time=\"300ms\"/> <prosody pitch=\"high\">Yes or no?</prosody>"
             },
             {
-              "situation": "planning",
-              "ssml": "Okay, next steps. <break time=\"400ms\"/> First the broker, <break time=\"250ms\"/> then the tests, <break time=\"250ms\"/> then we ship. <break time=\"400ms\"/> <prosody pitch=\"high\">That order work for you?</prosody>"
+              "situation": "the-list",
+              "ssml": "Three things. <break time=\"300ms\"/> One, <break time=\"250ms\"/> the build. <break time=\"250ms\"/> Two, <break time=\"250ms\"/> the tests. <break time=\"250ms\"/> Three, <break time=\"250ms\"/> we ship."
             },
             {
-              "situation": "status-walkthrough",
-              "ssml": "Three things landed. <break time=\"350ms\"/> The index rebuilt, <break time=\"250ms\"/> the cache is warm, <break time=\"250ms\"/> the queue drained. <break time=\"400ms\"/> <emphasis level=\"moderate\">All green.</emphasis>"
+              "situation": "the-pause",
+              "ssml": "I need you to hear this. <break time=\"900ms\"/> It matters. <break time=\"700ms\"/> More than the rest."
             },
             {
-              "situation": "ask-a-decision",
-              "ssml": "Here is the fork. <break time=\"400ms\"/> Ship now and patch, <break time=\"300ms\"/> or hold a day and harden. <break time=\"500ms\"/> <prosody pitch=\"high\">Which way do you want it?</prosody>"
+              "situation": "emphasis",
+              "ssml": "This is <emphasis level=\"strong\">not</emphasis> a drill. <break time=\"400ms\"/> It is <emphasis level=\"strong\">real</emphasis>, and it is <emphasis level=\"strong\">now.</emphasis>"
             },
             {
-              "situation": "explain-tradeoff",
-              "ssml": "It is a trade. <break time=\"400ms\"/> Faster now, <prosody volume=\"soft\">but more to maintain later.</prosody> <break time=\"400ms\"/> Slower now buys us <emphasis level=\"moderate\">simpler</emphasis> down the line."
+              "situation": "urgent",
+              "ssml": "Wait. <break time=\"250ms\"/> <prosody rate=\"fast\">Check the build, the port, the token.</prosody> <break time=\"300ms\"/> <prosody pitch=\"high\">Now?</prosody>"
             },
             {
-              "situation": "check-in",
-              "ssml": "How is it going over there? <break time=\"500ms\"/> No pressure. <break time=\"350ms\"/> <prosody pitch=\"high\">Anything blocking you?</prosody>"
+              "situation": "reassure",
+              "ssml": "Hey. <break time=\"500ms\"/> <prosody volume=\"soft\">You did the hard part.</prosody> <break time=\"400ms\"/> The rest is easy."
+            },
+            {
+              "situation": "the-reveal",
+              "ssml": "So. <break time=\"700ms\"/> Here it is. <break time=\"500ms\"/> <emphasis level=\"strong\">We did it.</emphasis> <break time=\"400ms\"/> <laugh/>"
+            },
+            {
+              "situation": "the-aside",
+              "ssml": "It works now. <break time=\"300ms\"/> <chuckle/> <break time=\"400ms\"/> <prosody volume=\"soft\">after all that.</prosody>"
             }
           ]
         },
@@ -349,39 +389,47 @@
               0.95
             ]
           },
-          "sample": "It is live. <break time=\"400ms\"/> <emphasis level=\"strong\">We shipped it.</emphasis> <break time=\"400ms\"/> Every gate green, <prosody rate=\"fast\">out in the world.</prosody> <break time=\"500ms\"/> <laugh/>",
+          "sample": "Hey. <break time=\"400ms\"/> How is it going? <break time=\"300ms\"/> <prosody pitch=\"high\">All good?</prosody>",
           "samples": [
             {
-              "situation": "ship-it",
-              "ssml": "It is live. <break time=\"400ms\"/> <emphasis level=\"strong\">We shipped it.</emphasis> <break time=\"400ms\"/> Every gate green, <prosody rate=\"fast\">out in the world.</prosody> <break time=\"500ms\"/> <laugh/>"
+              "situation": "greeting",
+              "ssml": "Hey. <break time=\"400ms\"/> How is it going? <break time=\"300ms\"/> <prosody pitch=\"high\">All good?</prosody>"
             },
             {
-              "situation": "dramatic-build",
-              "ssml": "They said it could not be done. <break time=\"700ms\"/> Month after month, <break time=\"300ms\"/> no. <break time=\"900ms\"/> <emphasis level=\"strong\">And yet.</emphasis> <break time=\"500ms\"/> It all led here."
+              "situation": "statement",
+              "ssml": "Here is the thing. <break time=\"400ms\"/> It <emphasis level=\"strong\">works.</emphasis> <break time=\"300ms\"/> Every time."
+            },
+            {
+              "situation": "question",
+              "ssml": "So. <break time=\"400ms\"/> <prosody pitch=\"high\">Are we doing this?</prosody> <break time=\"300ms\"/> <prosody pitch=\"high\">Yes or no?</prosody>"
+            },
+            {
+              "situation": "the-list",
+              "ssml": "Three things. <break time=\"300ms\"/> One, <break time=\"250ms\"/> the build. <break time=\"250ms\"/> Two, <break time=\"250ms\"/> the tests. <break time=\"250ms\"/> Three, <break time=\"250ms\"/> we ship."
+            },
+            {
+              "situation": "the-pause",
+              "ssml": "I need you to hear this. <break time=\"900ms\"/> It matters. <break time=\"700ms\"/> More than the rest."
+            },
+            {
+              "situation": "emphasis",
+              "ssml": "This is <emphasis level=\"strong\">not</emphasis> a drill. <break time=\"400ms\"/> It is <emphasis level=\"strong\">real</emphasis>, and it is <emphasis level=\"strong\">now.</emphasis>"
             },
             {
               "situation": "urgent",
-              "ssml": "Wait. <break time=\"250ms\"/> <prosody pitch=\"high\">Did you push it?</prosody> <break time=\"300ms\"/> Okay, do not panic. <break time=\"350ms\"/> <prosody rate=\"fast\" volume=\"loud\">Check the build, the port, the token.</prosody> <break time=\"350ms\"/> <prosody pitch=\"high\">Run it again?</prosody>"
+              "ssml": "Wait. <break time=\"250ms\"/> <prosody rate=\"fast\">Check the build, the port, the token.</prosody> <break time=\"300ms\"/> <prosody pitch=\"high\">Now?</prosody>"
             },
             {
-              "situation": "celebration",
-              "ssml": "<emphasis level=\"strong\">Yes!</emphasis> <break time=\"400ms\"/> <laugh/> <break time=\"300ms\"/> That is exactly what we wanted. <break time=\"400ms\"/> <prosody volume=\"loud\">Every single test.</prosody>"
+              "situation": "reassure",
+              "ssml": "Hey. <break time=\"500ms\"/> <prosody volume=\"soft\">You did the hard part.</prosody> <break time=\"400ms\"/> The rest is easy."
             },
             {
-              "situation": "big-reveal",
-              "ssml": "So. <break time=\"600ms\"/> Here it is. <break time=\"700ms\"/> <prosody rate=\"slow\">No key. <break time=\"250ms\"/> No cloud.</prosody> <break time=\"400ms\"/> <emphasis level=\"strong\">Just us.</emphasis>"
+              "situation": "the-reveal",
+              "ssml": "So. <break time=\"700ms\"/> Here it is. <break time=\"500ms\"/> <emphasis level=\"strong\">We did it.</emphasis> <break time=\"400ms\"/> <laugh/>"
             },
             {
-              "situation": "firm-pushback",
-              "ssml": "I hear you. <break time=\"400ms\"/> And I am pushing back. <break time=\"500ms\"/> The trust boundary <emphasis level=\"strong\">does not move.</emphasis> <break time=\"400ms\"/> <emphasis level=\"strong\">The answer is no.</emphasis>"
-            },
-            {
-              "situation": "rally",
-              "ssml": "Alright, listen up. <break time=\"400ms\"/> We are close. <break time=\"350ms\"/> <prosody volume=\"loud\">One more push</prosody> and it is done. <break time=\"400ms\"/> <emphasis level=\"strong\">Let us go.</emphasis>"
-            },
-            {
-              "situation": "victory-lap",
-              "ssml": "Oh, so <emphasis level=\"strong\">now</emphasis> it works. <break time=\"250ms\"/> <chuckle/> <break time=\"400ms\"/> Three days, <emphasis level=\"moderate\">one semicolon.</emphasis> <break time=\"300ms\"/> <laugh/> <break time=\"300ms\"/> I will take the win."
+              "situation": "the-aside",
+              "ssml": "It works now. <break time=\"300ms\"/> <chuckle/> <break time=\"400ms\"/> <prosody volume=\"soft\">after all that.</prosody>"
             }
           ]
         }
@@ -419,39 +467,47 @@
               0.65
             ]
           },
-          "sample": "Quick one. <break time=\"400ms\"/> Branch is pushed, all green. <break time=\"500ms\"/> <prosody volume=\"x-soft\">No rush, look whenever.</prosody>",
+          "sample": "Hey. <break time=\"400ms\"/> How is it going? <break time=\"300ms\"/> <prosody pitch=\"high\">All good?</prosody>",
           "samples": [
             {
-              "situation": "quiet-update",
-              "ssml": "Quick one. <break time=\"400ms\"/> Branch is pushed, all green. <break time=\"500ms\"/> <prosody volume=\"x-soft\">No rush, look whenever.</prosody>"
+              "situation": "greeting",
+              "ssml": "Hey. <break time=\"400ms\"/> How is it going? <break time=\"300ms\"/> <prosody pitch=\"high\">All good?</prosody>"
             },
             {
-              "situation": "deep-focus",
-              "ssml": "<prosody volume=\"x-soft\">Do not disturb is on.</prosody> <beat time=\"700ms\"/> <prosody volume=\"x-soft\" rate=\"slow\">Just the one thing in front of you.</prosody> <break time=\"600ms\"/> Everything else can wait."
+              "situation": "statement",
+              "ssml": "Here is the thing. <break time=\"400ms\"/> It <emphasis level=\"strong\">works.</emphasis> <break time=\"300ms\"/> Every time."
             },
             {
-              "situation": "gentle-reassure",
-              "ssml": "Hey. <break time=\"500ms\"/> You did the hard part already. <break time=\"400ms\"/> <prosody volume=\"soft\">The rest is just cleanup.</prosody> <break time=\"400ms\"/> <emphasis level=\"reduced\">You have got this.</emphasis>"
+              "situation": "question",
+              "ssml": "So. <break time=\"400ms\"/> <prosody pitch=\"high\">Are we doing this?</prosody> <break time=\"300ms\"/> <prosody pitch=\"high\">Yes or no?</prosody>"
             },
             {
-              "situation": "winding-down",
-              "ssml": "That is a good place to stop. <break time=\"500ms\"/> <prosody volume=\"soft\" rate=\"slow\">Everything is saved, nothing is on fire.</prosody> <break time=\"500ms\"/> Go rest."
+              "situation": "the-list",
+              "ssml": "Three things. <break time=\"300ms\"/> One, <break time=\"250ms\"/> the build. <break time=\"250ms\"/> Two, <break time=\"250ms\"/> the tests. <break time=\"250ms\"/> Three, <break time=\"250ms\"/> we ship."
             },
             {
-              "situation": "soft-ack",
-              "ssml": "<prosody volume=\"soft\">Got it.</prosody> <break time=\"300ms\"/> Noted and set aside. <break time=\"400ms\"/> <prosody volume=\"x-soft\">I will surface it when it matters.</prosody>"
+              "situation": "the-pause",
+              "ssml": "I need you to hear this. <break time=\"900ms\"/> It matters. <break time=\"700ms\"/> More than the rest."
             },
             {
-              "situation": "ambient-status",
-              "ssml": "<prosody volume=\"x-soft\">All quiet.</prosody> <break time=\"500ms\"/> Queue is clear, tests are green. <break time=\"500ms\"/> <prosody volume=\"soft\">Nothing needs you right now.</prosody>"
+              "situation": "emphasis",
+              "ssml": "This is <emphasis level=\"strong\">not</emphasis> a drill. <break time=\"400ms\"/> It is <emphasis level=\"strong\">real</emphasis>, and it is <emphasis level=\"strong\">now.</emphasis>"
             },
             {
-              "situation": "late-check-in",
-              "ssml": "<prosody volume=\"x-soft\" rate=\"slow\">Still here if you need me.</prosody> <break time=\"600ms\"/> It is late, though. <break time=\"400ms\"/> <prosody volume=\"x-soft\">Maybe call it?</prosody>"
+              "situation": "urgent",
+              "ssml": "Wait. <break time=\"250ms\"/> <prosody rate=\"fast\">Check the build, the port, the token.</prosody> <break time=\"300ms\"/> <prosody pitch=\"high\">Now?</prosody>"
             },
             {
-              "situation": "ease-a-worry",
-              "ssml": "Hey, breathe. <break time=\"500ms\"/> <prosody volume=\"soft\">It is smaller than it feels.</prosody> <break time=\"400ms\"/> One piece at a time. <break time=\"400ms\"/> <prosody pitch=\"high\">Start with the first one?</prosody>"
+              "situation": "reassure",
+              "ssml": "Hey. <break time=\"500ms\"/> <prosody volume=\"soft\">You did the hard part.</prosody> <break time=\"400ms\"/> The rest is easy."
+            },
+            {
+              "situation": "the-reveal",
+              "ssml": "So. <break time=\"700ms\"/> Here it is. <break time=\"500ms\"/> <emphasis level=\"strong\">We did it.</emphasis> <break time=\"400ms\"/> <laugh/>"
+            },
+            {
+              "situation": "the-aside",
+              "ssml": "It works now. <break time=\"300ms\"/> <chuckle/> <break time=\"400ms\"/> <prosody volume=\"soft\">after all that.</prosody>"
             }
           ]
         },
@@ -480,39 +536,47 @@
               0.75
             ]
           },
-          "sample": "Morning. <break time=\"400ms\"/> Here is where we stand. <break time=\"400ms\"/> Two items on the board, <break time=\"250ms\"/> one waiting on <emphasis level=\"moderate\">your review.</emphasis> <break time=\"400ms\"/> <prosody pitch=\"high\">Anything you want moved up?</prosody>",
+          "sample": "Hey. <break time=\"400ms\"/> How is it going? <break time=\"300ms\"/> <prosody pitch=\"high\">All good?</prosody>",
           "samples": [
             {
-              "situation": "morning-briefing",
-              "ssml": "Morning. <break time=\"400ms\"/> Here is where we stand. <break time=\"400ms\"/> Two items on the board, <break time=\"250ms\"/> one waiting on <emphasis level=\"moderate\">your review.</emphasis> <break time=\"400ms\"/> <prosody pitch=\"high\">Anything you want moved up?</prosody>"
+              "situation": "greeting",
+              "ssml": "Hey. <break time=\"400ms\"/> How is it going? <break time=\"300ms\"/> <prosody pitch=\"high\">All good?</prosody>"
             },
             {
-              "situation": "teaching",
-              "ssml": "From the top. <break time=\"500ms\"/> A token has a <emphasis level=\"moderate\">temperature</emphasis>. <break time=\"400ms\"/> Hotter means it matters more right now. <break time=\"400ms\"/> Over time it cools. <break time=\"400ms\"/> <prosody pitch=\"high\">Does that land?</prosody>"
+              "situation": "statement",
+              "ssml": "Here is the thing. <break time=\"400ms\"/> It <emphasis level=\"strong\">works.</emphasis> <break time=\"300ms\"/> Every time."
             },
             {
-              "situation": "debugging",
-              "ssml": "Let us walk it. <break time=\"400ms\"/> Request hits the router, <break time=\"250ms\"/> then <prosody pitch=\"high\">where does it go?</prosody> <beat time=\"500ms\"/> <emphasis level=\"moderate\">There.</emphasis> <break time=\"250ms\"/> It has been swallowing the error."
+              "situation": "question",
+              "ssml": "So. <break time=\"400ms\"/> <prosody pitch=\"high\">Are we doing this?</prosody> <break time=\"300ms\"/> <prosody pitch=\"high\">Yes or no?</prosody>"
             },
             {
-              "situation": "planning",
-              "ssml": "Okay, next steps. <break time=\"400ms\"/> First the broker, <break time=\"250ms\"/> then the tests, <break time=\"250ms\"/> then we ship. <break time=\"400ms\"/> <prosody pitch=\"high\">That order work for you?</prosody>"
+              "situation": "the-list",
+              "ssml": "Three things. <break time=\"300ms\"/> One, <break time=\"250ms\"/> the build. <break time=\"250ms\"/> Two, <break time=\"250ms\"/> the tests. <break time=\"250ms\"/> Three, <break time=\"250ms\"/> we ship."
             },
             {
-              "situation": "status-walkthrough",
-              "ssml": "Three things landed. <break time=\"350ms\"/> The index rebuilt, <break time=\"250ms\"/> the cache is warm, <break time=\"250ms\"/> the queue drained. <break time=\"400ms\"/> <emphasis level=\"moderate\">All green.</emphasis>"
+              "situation": "the-pause",
+              "ssml": "I need you to hear this. <break time=\"900ms\"/> It matters. <break time=\"700ms\"/> More than the rest."
             },
             {
-              "situation": "ask-a-decision",
-              "ssml": "Here is the fork. <break time=\"400ms\"/> Ship now and patch, <break time=\"300ms\"/> or hold a day and harden. <break time=\"500ms\"/> <prosody pitch=\"high\">Which way do you want it?</prosody>"
+              "situation": "emphasis",
+              "ssml": "This is <emphasis level=\"strong\">not</emphasis> a drill. <break time=\"400ms\"/> It is <emphasis level=\"strong\">real</emphasis>, and it is <emphasis level=\"strong\">now.</emphasis>"
             },
             {
-              "situation": "explain-tradeoff",
-              "ssml": "It is a trade. <break time=\"400ms\"/> Faster now, <prosody volume=\"soft\">but more to maintain later.</prosody> <break time=\"400ms\"/> Slower now buys us <emphasis level=\"moderate\">simpler</emphasis> down the line."
+              "situation": "urgent",
+              "ssml": "Wait. <break time=\"250ms\"/> <prosody rate=\"fast\">Check the build, the port, the token.</prosody> <break time=\"300ms\"/> <prosody pitch=\"high\">Now?</prosody>"
             },
             {
-              "situation": "check-in",
-              "ssml": "How is it going over there? <break time=\"500ms\"/> No pressure. <break time=\"350ms\"/> <prosody pitch=\"high\">Anything blocking you?</prosody>"
+              "situation": "reassure",
+              "ssml": "Hey. <break time=\"500ms\"/> <prosody volume=\"soft\">You did the hard part.</prosody> <break time=\"400ms\"/> The rest is easy."
+            },
+            {
+              "situation": "the-reveal",
+              "ssml": "So. <break time=\"700ms\"/> Here it is. <break time=\"500ms\"/> <emphasis level=\"strong\">We did it.</emphasis> <break time=\"400ms\"/> <laugh/>"
+            },
+            {
+              "situation": "the-aside",
+              "ssml": "It works now. <break time=\"300ms\"/> <chuckle/> <break time=\"400ms\"/> <prosody volume=\"soft\">after all that.</prosody>"
             }
           ]
         },
@@ -541,39 +605,47 @@
               0.85
             ]
           },
-          "sample": "It is live. <break time=\"400ms\"/> <emphasis level=\"strong\">We shipped it.</emphasis> <break time=\"400ms\"/> Every gate green, <prosody rate=\"fast\">out in the world.</prosody> <break time=\"500ms\"/> <laugh/>",
+          "sample": "Hey. <break time=\"400ms\"/> How is it going? <break time=\"300ms\"/> <prosody pitch=\"high\">All good?</prosody>",
           "samples": [
             {
-              "situation": "ship-it",
-              "ssml": "It is live. <break time=\"400ms\"/> <emphasis level=\"strong\">We shipped it.</emphasis> <break time=\"400ms\"/> Every gate green, <prosody rate=\"fast\">out in the world.</prosody> <break time=\"500ms\"/> <laugh/>"
+              "situation": "greeting",
+              "ssml": "Hey. <break time=\"400ms\"/> How is it going? <break time=\"300ms\"/> <prosody pitch=\"high\">All good?</prosody>"
             },
             {
-              "situation": "dramatic-build",
-              "ssml": "They said it could not be done. <break time=\"700ms\"/> Month after month, <break time=\"300ms\"/> no. <break time=\"900ms\"/> <emphasis level=\"strong\">And yet.</emphasis> <break time=\"500ms\"/> It all led here."
+              "situation": "statement",
+              "ssml": "Here is the thing. <break time=\"400ms\"/> It <emphasis level=\"strong\">works.</emphasis> <break time=\"300ms\"/> Every time."
+            },
+            {
+              "situation": "question",
+              "ssml": "So. <break time=\"400ms\"/> <prosody pitch=\"high\">Are we doing this?</prosody> <break time=\"300ms\"/> <prosody pitch=\"high\">Yes or no?</prosody>"
+            },
+            {
+              "situation": "the-list",
+              "ssml": "Three things. <break time=\"300ms\"/> One, <break time=\"250ms\"/> the build. <break time=\"250ms\"/> Two, <break time=\"250ms\"/> the tests. <break time=\"250ms\"/> Three, <break time=\"250ms\"/> we ship."
+            },
+            {
+              "situation": "the-pause",
+              "ssml": "I need you to hear this. <break time=\"900ms\"/> It matters. <break time=\"700ms\"/> More than the rest."
+            },
+            {
+              "situation": "emphasis",
+              "ssml": "This is <emphasis level=\"strong\">not</emphasis> a drill. <break time=\"400ms\"/> It is <emphasis level=\"strong\">real</emphasis>, and it is <emphasis level=\"strong\">now.</emphasis>"
             },
             {
               "situation": "urgent",
-              "ssml": "Wait. <break time=\"250ms\"/> <prosody pitch=\"high\">Did you push it?</prosody> <break time=\"300ms\"/> Okay, do not panic. <break time=\"350ms\"/> <prosody rate=\"fast\" volume=\"loud\">Check the build, the port, the token.</prosody> <break time=\"350ms\"/> <prosody pitch=\"high\">Run it again?</prosody>"
+              "ssml": "Wait. <break time=\"250ms\"/> <prosody rate=\"fast\">Check the build, the port, the token.</prosody> <break time=\"300ms\"/> <prosody pitch=\"high\">Now?</prosody>"
             },
             {
-              "situation": "celebration",
-              "ssml": "<emphasis level=\"strong\">Yes!</emphasis> <break time=\"400ms\"/> <laugh/> <break time=\"300ms\"/> That is exactly what we wanted. <break time=\"400ms\"/> <prosody volume=\"loud\">Every single test.</prosody>"
+              "situation": "reassure",
+              "ssml": "Hey. <break time=\"500ms\"/> <prosody volume=\"soft\">You did the hard part.</prosody> <break time=\"400ms\"/> The rest is easy."
             },
             {
-              "situation": "big-reveal",
-              "ssml": "So. <break time=\"600ms\"/> Here it is. <break time=\"700ms\"/> <prosody rate=\"slow\">No key. <break time=\"250ms\"/> No cloud.</prosody> <break time=\"400ms\"/> <emphasis level=\"strong\">Just us.</emphasis>"
+              "situation": "the-reveal",
+              "ssml": "So. <break time=\"700ms\"/> Here it is. <break time=\"500ms\"/> <emphasis level=\"strong\">We did it.</emphasis> <break time=\"400ms\"/> <laugh/>"
             },
             {
-              "situation": "firm-pushback",
-              "ssml": "I hear you. <break time=\"400ms\"/> And I am pushing back. <break time=\"500ms\"/> The trust boundary <emphasis level=\"strong\">does not move.</emphasis> <break time=\"400ms\"/> <emphasis level=\"strong\">The answer is no.</emphasis>"
-            },
-            {
-              "situation": "rally",
-              "ssml": "Alright, listen up. <break time=\"400ms\"/> We are close. <break time=\"350ms\"/> <prosody volume=\"loud\">One more push</prosody> and it is done. <break time=\"400ms\"/> <emphasis level=\"strong\">Let us go.</emphasis>"
-            },
-            {
-              "situation": "victory-lap",
-              "ssml": "Oh, so <emphasis level=\"strong\">now</emphasis> it works. <break time=\"250ms\"/> <chuckle/> <break time=\"400ms\"/> Three days, <emphasis level=\"moderate\">one semicolon.</emphasis> <break time=\"300ms\"/> <laugh/> <break time=\"300ms\"/> I will take the win."
+              "situation": "the-aside",
+              "ssml": "It works now. <break time=\"300ms\"/> <chuckle/> <break time=\"400ms\"/> <prosody volume=\"soft\">after all that.</prosody>"
             }
           ]
         }
