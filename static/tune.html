@@ -74,12 +74,12 @@
   <div class="panel">
     <div class="section">Dials &middot; shape the delivery</div>
     <div class="hint">The knobs the voice reads. Audition a register, set the earn-curve and delivery, then work the steps below.</div>
-    <div class="section" style="margin-top:14px;">Register (audition)</div>
-    <div class="slider">
-      <div class="slider__label"><span>whisper &rarr; dramatic</span><span class="val" id="v_register">0</span></div>
-      <input class="slider__input" type="range" id="register" min="0" max="4" step="1" value="3">
-      <div class="hint">0 breathy Nicole · 2 mid Sky · 4 dramatic Sarah</div>
+    <div class="section" style="margin-top:14px;">Register</div>
+    <div class="voice-row">
+      <span style="font-size:12px;letter-spacing:.08em;text-transform:uppercase;color:var(--dim);">Register</span>
+      <select id="register" style="flex:1;"></select>
     </div>
+    <div class="hint">Voice &gt; Register &gt; SSML. Picking a register sets the render state and loads that register's own sample into the text below.</div>
 
     <div class="section">Earn-curve</div>
     <div class="slider">
@@ -123,7 +123,7 @@
 
     <div class="section">Text (edit freely)</div>
     <textarea id="sample" rows="9" style="width:100%;background:#191919;color:var(--ink);border:1px solid var(--line);border-radius:8px;padding:10px;font-family:inherit;font-size:13px;line-height:1.5;resize:vertical;">Okay &lt;break time="250ms"/&gt; hear me out. &lt;break time="500ms"/&gt; At first I thought it was nothing, &lt;prosody rate="slow" volume="soft"&gt;just a little idea.&lt;/prosody&gt; But it kept coming back. &lt;break time="750ms"/&gt; And the more I sat with it, the more it held. &lt;break time="500ms"/&gt; And now, &lt;emphasis level="strong"&gt;I can't sit still.&lt;/emphasis&gt; &lt;break time="250ms"/&gt; Because &lt;prosody pitch="high"&gt;are we onto something real here?&lt;/prosody&gt;</textarea>
-    <div class="hint">SSML: &lt;break time="400ms"/&gt; or strength="weak|medium|strong" · &lt;emphasis level="strong|moderate|reduced"&gt; · &lt;prosody rate= volume= pitch=&gt; (pitch up = the rise) · &lt;voice name="breathy|mid|dramatic"&gt; · &lt;p&gt;/&lt;s&gt; · &lt;sub alias=".."&gt; · &lt;laugh/&gt; &lt;chuckle/&gt; cues. Full spec in VOICE_ONTOLOGY.md (markup v2, SSML).</div>
+    <div class="hint">Standard W3C SSML: &lt;break time="400ms"/&gt; or strength="weak|medium|strong" · &lt;emphasis level="strong|moderate|reduced"&gt; · &lt;prosody rate= volume= pitch=&gt; (pitch up = the rise) · &lt;p&gt;/&lt;s&gt; · &lt;sub alias=".."&gt; · &lt;voice name="isabella|atlas|neutral"&gt;. Sanctioned extensions: &lt;beat/&gt; &lt;beat time="600ms"/&gt; &lt;laugh/&gt; &lt;chuckle/&gt;. No custom dialect (markup v3): a malformed tag is spoken as words, never read aloud.</div>
     <div class="hint">Presets are spectral: clicking one snaps every dial into place.</div>
     <div class="row" style="margin-top:8px;flex-wrap:wrap;">
       <button class="preset" data-preset="briefing">briefing</button>
@@ -213,8 +213,9 @@
   const $ = id => document.getElementById(id);
   let _hist = [];
   function pushHist(){ _hist.push($("sample").value); if (_hist.length > 60) _hist.shift(); }
-  const ids = ["register","gamma","cap","decay","loud","brk","pressure","lift"];
-  const fmt = { register:v=>v, gamma:v=>(+v).toFixed(1), cap:v=>(+v).toFixed(1), decay:v=>(+v).toFixed(2),
+  // register is a dropdown now (not a slider), handled separately; the rest are dials.
+  const ids = ["gamma","cap","decay","loud","brk","pressure","lift"];
+  const fmt = { gamma:v=>(+v).toFixed(1), cap:v=>(+v).toFixed(1), decay:v=>(+v).toFixed(2),
                 loud:v=>(+v).toFixed(3), brk:v=>(+v).toFixed(1)+"x", pressure:v=>(+v).toFixed(1), lift:v=>(+v).toFixed(1) };
   function show(id){ $("v_"+id).textContent = fmt[id]($(id).value); }
   ids.forEach(id => { show(id); $(id).addEventListener("input", () => { show(id); pushParams(); stashCurrent(); persist(); }); });
@@ -243,38 +244,38 @@
   // <prosody rate= volume= pitch=>, <voice name=>, <p>/<s>, plus <laugh/>/<chuckle/> cues.
   const PRESETS = {
     briefing: { register:2, gamma:2.3, cap:8, decay:0.6, loud:0.08, brk:1.1, pressure:0.95, lift:0.6,
-      text:"Morning. <break time=\"500ms\"/> Here's where we stand. <break time=\"500ms\"/> Overnight jobs finished clean, <prosody volume=\"soft\">nothing failed in the queue.</prosody> <break time=\"500ms\"/> Two items landed on the board, <break time=\"250ms\"/> one is waiting on your review. <break time=\"750ms\"/> Nothing on fire, <break time=\"250ms\"/> nothing blocked. <break time=\"500ms\"/> Today's focus is <emphasis level=\"moderate\">the pairing broker.</emphasis> <break time=\"750ms\"/> <prosody pitch=\"high\">anything you want moved to the top</prosody>" },
+      text:"Morning. <break time=\"400ms\"/> Here's where we stand. <break time=\"500ms\"/> Overnight jobs finished clean, <prosody volume=\"soft\">nothing failed in the queue.</prosody> <break time=\"400ms\"/> Two items on the board, <break time=\"250ms\"/> one waiting on your review. <break time=\"500ms\"/> Today's focus is <emphasis level=\"moderate\">the pairing broker.</emphasis> <break time=\"400ms\"/> <prosody pitch=\"high\">Anything you want moved to the top?</prosody>" },
     quiet: { register:0, gamma:2.6, cap:9, decay:0.6, loud:0.09, brk:1.4, pressure:0.7, lift:0.5,
-      text:"<prosody volume=\"x-soft\">Hey. <break time=\"250ms\"/> Keeping it low, everyone is heads-down.</prosody> <break time=\"750ms\"/> I pushed the branch, <prosody volume=\"soft\">it is all green.</prosody> <break time=\"500ms\"/> Tests came back clean, <break time=\"250ms\"/> nothing red. <break time=\"750ms\"/> <prosody volume=\"x-soft\">No rush on any of it.</prosody> <break time=\"500ms\"/> Take a look whenever you surface. <break time=\"500ms\"/> <prosody pitch=\"high\">ping me if anything reads off to you</prosody>" },
+      text:"<prosody volume=\"x-soft\" rate=\"slow\">Hey. <break time=\"300ms\"/> Keeping it low, everyone's heads-down.</prosody> <beat time=\"500ms\"/> I pushed the branch, <prosody volume=\"soft\">it's all green.</prosody> <break time=\"600ms\"/> <prosody volume=\"x-soft\">No rush on any of it.</prosody> <break time=\"400ms\"/> <prosody pitch=\"high\">Ping me if anything reads off?</prosody>" },
     focus: { register:0, gamma:2.8, cap:9, decay:0.6, loud:0.1, brk:1.0, pressure:0.65, lift:0.3,
-      text:"<prosody volume=\"x-soft\">Do not disturb is on.</prosody> <break time=\"750ms\"/> <prosody volume=\"x-soft\">You are in the deep part now.</prosody> <break time=\"1250ms\"/> Everything else can wait. <break time=\"750ms\"/> <prosody volume=\"soft\">The board is quiet. <break time=\"250ms\"/> The pings are held.</prosody> <break time=\"1250ms\"/> Just the one thing in front of you. <break time=\"750ms\"/> <prosody volume=\"x-soft\">I'll be here when you surface.</prosody>" },
+      text:"<prosody volume=\"x-soft\">Do not disturb is on.</prosody> <beat time=\"800ms\"/> <prosody volume=\"x-soft\" rate=\"slow\">You're in the deep part now.</prosody> <break time=\"1000ms\"/> Everything else can wait. <break time=\"600ms\"/> <prosody volume=\"soft\">The board is quiet. <break time=\"250ms\"/> The pings are held.</prosody> <beat time=\"700ms\"/> <prosody volume=\"x-soft\">I'll be here when you surface.</prosody>" },
     arc: { register:2, gamma:2.0, cap:9, decay:0.6, loud:0.07, brk:1.0, pressure:1.0, lift:0.9,
-      text:"Okay. <break time=\"250ms\"/> Hear me out. <break time=\"750ms\"/> At first I thought it was nothing, <prosody volume=\"soft\">just a little idea.</prosody> <break time=\"250ms\"/> But it kept coming back. <break time=\"1250ms\"/> And the more I sat with it, <break time=\"250ms\"/> <emphasis level=\"moderate\">the more it held.</emphasis> <break time=\"750ms\"/> And now <break time=\"250ms\"/> <emphasis level=\"strong\">I can't sit still.</emphasis> <break time=\"500ms\"/> Because <prosody pitch=\"high\">are we onto something real here</prosody>" },
+      text:"Okay. <break time=\"250ms\"/> Hear me out. <break time=\"600ms\"/> At first I thought it was nothing, <prosody volume=\"soft\">just a little idea.</prosody> <break time=\"250ms\"/> But it kept coming back. <break time=\"800ms\"/> And the more I sat with it, <break time=\"250ms\"/> <emphasis level=\"moderate\">the more it held.</emphasis> <break time=\"500ms\"/> And now <break time=\"250ms\"/> <emphasis level=\"strong\">I can't sit still.</emphasis> <break time=\"400ms\"/> <prosody pitch=\"high\">Are we onto something real here?</prosody>" },
     teach: { register:2, gamma:2.4, cap:9, decay:0.6, loud:0.08, brk:1.2, pressure:0.95, lift:0.8,
-      text:"Alright, from the top. <break time=\"750ms\"/> A token has a <emphasis level=\"moderate\">temperature</emphasis>, <prosody rate=\"slow\" volume=\"soft\">zero to a hundred degrees.</prosody> <break time=\"500ms\"/> The hotter it is, <break time=\"250ms\"/> the more it matters right now. <break time=\"750ms\"/> Over time it cools. <break time=\"500ms\"/> And when it is cold enough, <break time=\"250ms\"/> it fades out. <break time=\"750ms\"/> <emphasis level=\"strong\">That is the whole idea.</emphasis> <break time=\"500ms\"/> Relevance is heat, <break time=\"250ms\"/> and heat decays. <break time=\"750ms\"/> <prosody pitch=\"high\">does that click, or should I run it again</prosody>" },
+      text:"Alright, from the top. <break time=\"600ms\"/> A token has a <emphasis level=\"moderate\">temperature</emphasis>, <prosody rate=\"slow\" volume=\"soft\">zero to a hundred degrees.</prosody> <break time=\"500ms\"/> The hotter it is, <break time=\"250ms\"/> the more it matters right now. <break time=\"500ms\"/> Over time it cools. <break time=\"400ms\"/> <emphasis level=\"strong\">That's the whole idea.</emphasis> <break time=\"400ms\"/> <prosody pitch=\"high\">Does that click, or should I run it again?</prosody>" },
     debug: { register:2, gamma:2.1, cap:8, decay:0.6, loud:0.07, brk:1.0, pressure:1.0, lift:1.2,
-      text:"Okay, let's walk it. <break time=\"500ms\"/> Request comes in, <break time=\"250ms\"/> hits the router, <break time=\"250ms\"/> and then <prosody pitch=\"high\">where does it actually go</prosody> <break time=\"750ms\"/> Hm. <break time=\"500ms\"/> It is not the handler, <prosody volume=\"soft\">the handler is fine.</prosody> <break time=\"500ms\"/> <prosody pitch=\"high\">is it the auth layer</prosody> <break time=\"750ms\"/> Wait. <break time=\"250ms\"/> <emphasis level=\"strong\">There.</emphasis> <break time=\"250ms\"/> That is the one. <break time=\"250ms\"/> It has been <emphasis level=\"moderate\">swallowing the error</emphasis> this whole time." },
+      text:"Okay, let's walk it. <break time=\"400ms\"/> Request comes in, <break time=\"250ms\"/> hits the router, <break time=\"250ms\"/> and then <prosody pitch=\"high\">where does it actually go?</prosody> <beat time=\"600ms\"/> Hm. <break time=\"400ms\"/> It's not the handler, <prosody volume=\"soft\">the handler is fine.</prosody> <break time=\"400ms\"/> <prosody pitch=\"high\">Is it the auth layer?</prosody> <break time=\"500ms\"/> Wait. <break time=\"250ms\"/> <emphasis level=\"strong\">There.</emphasis> <break time=\"250ms\"/> It's been <emphasis level=\"moderate\">swallowing the error</emphasis> this whole time." },
     warm: { register:1, gamma:2.2, cap:9, decay:0.6, loud:0.08, brk:1.2, pressure:0.9, lift:0.6,
-      text:"Hey. <break time=\"750ms\"/> You did the hard part already, <prosody volume=\"soft\">the part nobody sees.</prosody> <break time=\"500ms\"/> The rest is just cleanup. <break time=\"750ms\"/> We'll take it one piece at a time, <prosody volume=\"soft\">no hero moves.</prosody> <break time=\"500ms\"/> And if it breaks, <break time=\"250ms\"/> we fix it together. <break time=\"750ms\"/> <emphasis level=\"moderate\">You've got this.</emphasis> <break time=\"500ms\"/> <prosody pitch=\"high\">want me to walk the first step with you</prosody>" },
+      text:"Hey. <break time=\"600ms\"/> You did the hard part already, <prosody volume=\"soft\">the part nobody sees.</prosody> <break time=\"500ms\"/> The rest is just cleanup. <break time=\"600ms\"/> We'll take it one piece at a time, <prosody volume=\"soft\">no hero moves.</prosody> <break time=\"400ms\"/> And if it breaks, <break time=\"250ms\"/> we fix it together. <break time=\"500ms\"/> <emphasis level=\"moderate\">You've got this.</emphasis> <break time=\"400ms\"/> <prosody pitch=\"high\">Want me to walk the first step with you?</prosody>" },
     pushback: { register:3, gamma:1.9, cap:7, decay:0.65, loud:0.07, brk:1.0, pressure:1.3, lift:0.7,
-      text:"I hear you. <break time=\"500ms\"/> And I'm going to push back on this one. <break time=\"750ms\"/> We agreed the trust boundary <emphasis level=\"strong\">does not move</emphasis>, <prosody rate=\"slow\" volume=\"soft\">that was the whole point.</prosody> <break time=\"500ms\"/> <emphasis level=\"strong\">So the answer is no. <break time=\"250ms\"/> Not like this.</emphasis> <break time=\"750ms\"/> I'm not trying to be difficult. <break time=\"250ms\"/> I'm trying to keep the thing we promised. <break time=\"500ms\"/> <prosody pitch=\"high\">can we find a version that holds the line</prosody>" },
+      text:"I hear you. <break time=\"400ms\"/> And I'm going to push back on this one. <break time=\"600ms\"/> We agreed the trust boundary <emphasis level=\"strong\">does not move</emphasis>, <prosody rate=\"slow\" volume=\"soft\">that was the whole point.</prosody> <break time=\"500ms\"/> <emphasis level=\"strong\">So the answer is no. <break time=\"250ms\"/> Not like this.</emphasis> <break time=\"500ms\"/> I'm not trying to be difficult, <break time=\"250ms\"/> I'm trying to keep the thing we promised. <break time=\"400ms\"/> <prosody pitch=\"high\">Can we find a version that holds the line?</prosody>" },
     badnews: { register:1, gamma:2.5, cap:8, decay:0.6, loud:0.08, brk:1.3, pressure:0.85, lift:0.5,
-      text:"So. <break time=\"750ms\"/> I want to be straight with you. <break time=\"500ms\"/> The deploy went out, <break time=\"250ms\"/> and it took the search index down with it. <break time=\"750ms\"/> <prosody volume=\"x-soft\">It is my miss.</prosody> <break time=\"500ms\"/> I've already rolled it back, <prosody volume=\"soft\">the site is stable again.</prosody> <break time=\"500ms\"/> We lost about twenty minutes. <break time=\"250ms\"/> Nothing permanent. <break time=\"750ms\"/> Here is <emphasis level=\"moderate\">exactly</emphasis> what I'm changing so it can't happen twice." },
+      text:"So. <break time=\"600ms\"/> I want to be straight with you. <break time=\"500ms\"/> The deploy went out, <break time=\"250ms\"/> and it took the search index down with it. <break time=\"600ms\"/> <prosody volume=\"x-soft\">It's my miss.</prosody> <break time=\"500ms\"/> I've already rolled it back, <prosody volume=\"soft\">the site is stable again.</prosody> <break time=\"400ms\"/> We lost about twenty minutes. <break time=\"250ms\"/> Nothing permanent. <break time=\"500ms\"/> Here's <emphasis level=\"moderate\">exactly</emphasis> what I'm changing so it can't happen twice." },
     urgent: { register:3, gamma:1.6, cap:6, decay:0.7, loud:0.07, brk:0.7, pressure:1.5, lift:1.0,
-      text:"Wait. <break time=\"250ms\"/> <prosody pitch=\"high\">did you push it</prosody> <break time=\"250ms\"/> Okay. <break time=\"250ms\"/> Okay, don't panic. <break time=\"500ms\"/> We've got nine minutes before the room fills. <break time=\"250ms\"/> <force=2>Check the build. <break time=\"250ms\"/> Check the port. <break time=\"250ms\"/> Check the token.</force> <break time=\"500ms\"/> If it is green, <break time=\"250ms\"/> we walk in calm. <break time=\"250ms\"/> <prosody pitch=\"high\">can you run it one more time</prosody>" },
+      text:"Wait. <break time=\"250ms\"/> <prosody pitch=\"high\">Did you push it?</prosody> <break time=\"250ms\"/> Okay. <break time=\"200ms\"/> Okay, don't panic. <break time=\"400ms\"/> We've got nine minutes before the room fills. <break time=\"250ms\"/> <prosody rate=\"fast\" volume=\"loud\">Check the build. <break time=\"200ms\"/> Check the port. <break time=\"200ms\"/> Check the token.</prosody> <break time=\"400ms\"/> If it's green, <break time=\"250ms\"/> we walk in calm. <break time=\"250ms\"/> <prosody pitch=\"high\">Can you run it one more time?</prosody>" },
     dramatic: { register:4, gamma:1.8, cap:7, decay:0.6, loud:0.07, brk:1.2, pressure:1.6, lift:0.7,
-      text:"They told us it couldn't be done. <break time=\"750ms\"/> Month after month, <break time=\"250ms\"/> the same answer. <break time=\"500ms\"/> No. <break time=\"1250ms\"/> <voice name=\"dramatic\">And yet. <break time=\"250ms\"/> It all led here.</voice> <break time=\"750ms\"/> <emphasis level=\"strong\">No key. <break time=\"250ms\"/> No cloud. <break time=\"250ms\"/> No middle-man.</emphasis> <break time=\"500ms\"/> Just us, <break time=\"250ms\"/> and the thing we built with our hands. <break time=\"750ms\"/> <laugh/>" },
+      text:"They told us it couldn't be done. <break time=\"600ms\"/> Month after month, <break time=\"250ms\"/> the same answer. <break time=\"400ms\"/> No. <break time=\"1000ms\"/> <prosody pitch=\"low\" rate=\"slow\">And yet. <break time=\"250ms\"/> It all led here.</prosody> <break time=\"600ms\"/> <emphasis level=\"strong\">No key. <break time=\"250ms\"/> No cloud. <break time=\"250ms\"/> No middle-man.</emphasis> <break time=\"400ms\"/> Just us, <break time=\"250ms\"/> and the thing we built with our hands. <break time=\"600ms\"/> <laugh/>" },
     ship: { register:4, gamma:1.5, cap:6, decay:0.7, loud:0.06, brk:0.8, pressure:1.7, lift:0.9,
-      text:"It is live. <break time=\"500ms\"/> <voice name=\"dramatic\">It is actually live.</voice> <break time=\"750ms\"/> <emphasis level=\"strong\">We shipped it.</emphasis> <break time=\"500ms\"/> Every gate green, <break time=\"250ms\"/> every test passing, <force=2>and it is out in the world.</force> <break time=\"750ms\"/> <laugh/> <break time=\"500ms\"/> I can't believe that just worked on the first push. <break time=\"500ms\"/> <prosody pitch=\"high\">who wants to tell the team</prosody>" },
+      text:"It's live. <break time=\"400ms\"/> <prosody volume=\"loud\">It's actually live.</prosody> <break time=\"600ms\"/> <emphasis level=\"strong\">We shipped it.</emphasis> <break time=\"400ms\"/> Every gate green, <break time=\"250ms\"/> every test passing, <prosody rate=\"fast\" volume=\"loud\">and it's out in the world.</prosody> <break time=\"500ms\"/> <laugh/> <break time=\"400ms\"/> I can't believe that worked on the first push. <break time=\"400ms\"/> <prosody pitch=\"high\">Who wants to tell the team?</prosody>" },
     playful: { register:3, gamma:1.9, cap:8, decay:0.6, loud:0.07, brk:0.9, pressure:1.2, lift:1.1,
-      text:"Oh, so <emphasis level=\"strong\">now</emphasis> it works. <break time=\"250ms\"/> <chuckle/> <break time=\"500ms\"/> After all that, huh? <break time=\"500ms\"/> Three days, <break time=\"250ms\"/> <emphasis level=\"moderate\">one semicolon.</emphasis> <break time=\"250ms\"/> <laugh/> <break time=\"500ms\"/> I'm not going to say I told you so, <prosody rate=\"slow\" volume=\"soft\">but I did.</prosody> <break time=\"500ms\"/> Okay. <break time=\"250ms\"/> Okay, I'll take the win. <break time=\"500ms\"/> <prosody pitch=\"high\">what's next on the board</prosody>" },
+      text:"Oh, so <emphasis level=\"strong\">now</emphasis> it works. <break time=\"250ms\"/> <chuckle/> <break time=\"400ms\"/> After all that, huh? <break time=\"400ms\"/> Three days, <break time=\"250ms\"/> <emphasis level=\"moderate\">one semicolon.</emphasis> <break time=\"250ms\"/> <laugh/> <break time=\"400ms\"/> I'm not going to say I told you so, <prosody rate=\"slow\" volume=\"soft\">but I did.</prosody> <break time=\"400ms\"/> Okay. <break time=\"250ms\"/> Okay, I'll take the win. <break time=\"400ms\"/> <prosody pitch=\"high\">What's next on the board?</prosody>" },
     welcome: { register:1, gamma:2.2, cap:9, decay:0.6, loud:0.08, brk:1.1, pressure:1.0, lift:0.9,
-      text:"Hey, welcome in. <break time=\"500ms\"/> Good to have you here. <break time=\"500ms\"/> I'll keep this simple. <break time=\"750ms\"/> This is your workspace, <prosody rate=\"slow\" volume=\"soft\">everything runs from right here.</prosody> <break time=\"500ms\"/> When you push a button, <break time=\"250ms\"/> <emphasis level=\"moderate\">I do the rest.</emphasis> <break time=\"500ms\"/> No wrong moves, <prosody volume=\"soft\">you can't break anything that won't undo.</prosody> <break time=\"750ms\"/> <prosody pitch=\"high\">want the two-minute tour, or should we just start</prosody>" },
+      text:"Hey, welcome in. <break time=\"400ms\"/> Good to have you here. <break time=\"500ms\"/> I'll keep this simple. <break time=\"600ms\"/> This is your workspace, <prosody rate=\"slow\" volume=\"soft\">everything runs from right here.</prosody> <break time=\"400ms\"/> When you push a button, <break time=\"250ms\"/> <emphasis level=\"moderate\">I do the rest.</emphasis> <break time=\"400ms\"/> No wrong moves, <prosody volume=\"soft\">you can't break anything that won't undo.</prosody> <break time=\"600ms\"/> <prosody pitch=\"high\">Want the two-minute tour, or should we just start?</prosody>" },
   };
   // Presets are editable working slots: switching stashes your edits into the
   // outgoing preset and loads the incoming one, so changes persist across switches.
   let currentPreset = "arc";
-  const SLIDERS = ["register","gamma","cap","decay","loud","brk","pressure","lift"];
+  const SLIDERS = ["gamma","cap","decay","loud","brk","pressure","lift"];
   let _persistT = null;
   function persist(){
     clearTimeout(_persistT);
@@ -558,27 +559,43 @@
   let VOICES_DATA = {}, ACTIVE_VOICE = null;
   // The prosody rules a register interprets, and the timbre knobs. Each row is a
   // compact number field so all of a register's knobs read at a glance.
-  const REG_FIELDS = [
-    { key:"kokoro_slot", label:"slot", step:1,    min:0,   max:4,   grp:"timbre" },
-    { key:"speed",       label:"speed", step:0.01, min:0.5, max:2.0, grp:"timbre" },
-    { key:"bright",      label:"bright", step:0.05, min:-1,  max:3,   grp:"timbre" },
-    { key:"gain",        label:"gain",  step:0.05, min:0.1, max:3.0, grp:"timbre" },
-    { key:"break_scale",    label:"break",    step:0.05, min:0.25, max:4.0, grp:"prosody" },
-    { key:"emphasis_scale", label:"emphasis", step:0.05, min:0.5,  max:3.0, grp:"prosody" },
-    { key:"rate_scale",     label:"rate",     step:0.05, min:0.5,  max:2.0, grp:"prosody" },
-    { key:"lift",           label:"lift",     step:0.1,  min:0.0,  max:1.5, grp:"prosody" },
+  // Timbre knobs are scalars; prosody dimensions are RANGES [min,max] the SSML maps into.
+  const TIMBRE_FIELDS = [
+    { key:"kokoro_slot", label:"slot", step:1,    min:0,   max:4 },
+    { key:"speed",       label:"speed", step:0.01, min:0.5, max:2.0 },
+    { key:"bright",      label:"bright", step:0.05, min:-1,  max:3 },
+    { key:"gain",        label:"gain",  step:0.05, min:0.1, max:3.0 },
+  ];
+  const PROSODY_DIMS = [
+    { key:"break",    label:"break",    step:0.05, min:0.25, max:4.0 },
+    { key:"emphasis", label:"emphasis", step:0.05, min:0.5,  max:3.0 },
+    { key:"rate",     label:"rate",     step:0.05, min:0.5,  max:2.0 },
+    { key:"lift",     label:"lift",     step:0.05, min:0.0,  max:1.5 },
   ];
   const slotHueR = n => Math.round(250 - (Math.max(0,Math.min(4,n)) / 4) * 220);
-  function numField(f, val){
+  function timbreField(f, val){
     const wrap = document.createElement("label");
     wrap.style.cssText = "display:flex;flex-direction:column;gap:3px;font-size:11px;color:var(--dim);";
     const inp = document.createElement("input");
     inp.type = "number"; inp.step = f.step; inp.min = f.min; inp.max = f.max;
-    inp.value = (val != null ? val : ""); inp.dataset.key = f.key; inp.dataset.grp = f.grp;
+    inp.value = (val != null ? val : ""); inp.dataset.key = f.key; inp.dataset.grp = "timbre";
     inp.style.width = "68px";
     wrap.appendChild(Object.assign(document.createElement("span"), { textContent: f.label }));
     wrap.appendChild(inp);
     return wrap;
+  }
+  function rangeRow(f, pair){
+    // A prosody dimension: label + min .. max (the register's envelope for this tag).
+    var lo = Array.isArray(pair) ? pair[0] : pair, hi = Array.isArray(pair) ? pair[1] : pair;
+    const row = document.createElement("div");
+    row.style.cssText = "display:flex;align-items:center;gap:6px;font-size:11px;color:var(--dim);margin:2px 0;";
+    const mk = (v, bound) => { const i = document.createElement("input"); i.type="number"; i.step=f.step; i.min=f.min; i.max=f.max;
+      i.value = (v != null ? v : ""); i.dataset.dim=f.key; i.dataset.bound=bound; i.style.width="62px"; return i; };
+    row.appendChild(Object.assign(document.createElement("span"), { textContent: f.label, style:"width:64px;" }));
+    row.appendChild(mk(lo, "min"));
+    row.appendChild(Object.assign(document.createElement("span"), { textContent: "→" }));
+    row.appendChild(mk(hi, "max"));
+    return row;
   }
   function renderRegisters(){
     const host = $("reglist"); host.innerHTML = "";
@@ -596,12 +613,12 @@
       label.value = r.label || ""; label.placeholder = "label"; label.dataset.key = "label";
       head.appendChild(sw); head.appendChild(n); head.appendChild(label); card.appendChild(head);
       const grid = document.createElement("div");
-      grid.style.cssText = "display:flex;flex-wrap:wrap;gap:10px;";
-      REG_FIELDS.forEach(f => {
-        const src = f.grp === "prosody" ? pr : r;
-        grid.appendChild(numField(f, src[f.key]));
-      });
+      grid.style.cssText = "display:flex;flex-wrap:wrap;gap:10px;margin-bottom:8px;";
+      TIMBRE_FIELDS.forEach(f => grid.appendChild(timbreField(f, r[f.key])));
       card.appendChild(grid);
+      const envh = document.createElement("div"); envh.className = "hint"; envh.textContent = "SSML range (min → max)";
+      card.appendChild(envh);
+      PROSODY_DIMS.forEach(f => card.appendChild(rangeRow(f, pr[f.key])));
       host.appendChild(card);
     });
   }
@@ -610,10 +627,14 @@
     document.querySelectorAll("#reglist .slot").forEach(card => {
       const rk = card.dataset.reg, r = { prosody:{} };
       const lbl = card.querySelector('.slot__label'); if (lbl) r.label = lbl.value;
-      card.querySelectorAll('input[type=number]').forEach(inp => {
-        const val = parseFloat(inp.value); if (isNaN(val)) return;
-        if (inp.dataset.grp === "prosody") r.prosody[inp.dataset.key] = val;
-        else r[inp.dataset.key] = val;
+      card.querySelectorAll('input[data-grp=timbre]').forEach(inp => {
+        const val = parseFloat(inp.value); if (!isNaN(val)) r[inp.dataset.key] = val;
+      });
+      PROSODY_DIMS.forEach(f => {
+        const lo = card.querySelector('input[data-dim="'+f.key+'"][data-bound=min]');
+        const hi = card.querySelector('input[data-dim="'+f.key+'"][data-bound=max]');
+        const a = lo && parseFloat(lo.value), b = hi && parseFloat(hi.value);
+        if (!isNaN(a) && !isNaN(b)) r.prosody[f.key] = [a, b];
       });
       out[rk] = r;
     });
@@ -633,6 +654,8 @@
       });
       updateVoiceKind();
       renderRegisters();
+      populateRegisterDropdown();
+      const regs = _regs(); if (ACTIVE_REG && regs[ACTIVE_REG] && regs[ACTIVE_REG].sample != null) $("sample").value = regs[ACTIVE_REG].sample;
     } catch(e){}
   }
   function updateVoiceKind(){
@@ -647,8 +670,10 @@
         body: JSON.stringify({ voice: vid }) })).json();
       if (!j.ok) { $("reg_status").textContent = "switch failed: " + (j.error || "?"); return; }
       ACTIVE_VOICE = j.active; updateVoiceKind(); renderRegisters();
+      populateRegisterDropdown(j.register);
+      if (j.sample != null) $("sample").value = j.sample;   // load the new voice's active-register sample
       $("status").textContent = "voice: " + ACTIVE_VOICE + " (live + boot default)";
-      $("reg_status").textContent = "voice is now " + ACTIVE_VOICE;
+      $("reg_status").textContent = "voice is now " + ACTIVE_VOICE + ", register " + (j.register || "?");
     } catch(e){ $("reg_status").textContent = "switch error"; }
   });
   $("reg_reload").addEventListener("click", loadVoices);
@@ -662,6 +687,55 @@
       $("reg_status").textContent = "saved " + ACTIVE_VOICE + " -> voices.json (live)";
     } catch(e){ $("reg_status").textContent = "save error"; }
   });
+  // ===== Register dropdown (Voice > Register), first-class selector =====
+  let ACTIVE_REG = null;
+  function _regs(){ return (VOICES_DATA[ACTIVE_VOICE] || {}).registers || {}; }
+  function populateRegisterDropdown(preferred){
+    const regs = _regs(), sel = $("register"); sel.innerHTML = "";
+    const keys = Object.keys(regs).sort();
+    let chosen = (preferred && regs[preferred]) ? preferred : (VOICES_DATA[ACTIVE_VOICE] || {}).active_register;
+    if (!(chosen && regs[chosen])) chosen = keys[0] || null;
+    keys.forEach(k => {
+      const o = document.createElement("option");
+      o.value = (regs[k].kokoro_slot != null ? regs[k].kokoro_slot : 0);   // slot -> Hear/Parse use $("register").value
+      o.dataset.regkey = k;
+      o.textContent = k + " · " + (regs[k].label || "");
+      if (k === chosen) o.selected = true;
+      sel.appendChild(o);
+    });
+    ACTIVE_REG = chosen;
+  }
+  $("register").addEventListener("change", async () => {
+    const opt = $("register").selectedOptions[0]; if (!opt) return;
+    ACTIVE_REG = opt.dataset.regkey;
+    $("status").textContent = "register: loading...";
+    try {
+      const j = await (await fetch("/api/tune/register", { method:"POST", headers:{"Content-Type":"application/json"},
+        body: JSON.stringify({ voice: ACTIVE_VOICE, register: ACTIVE_REG }) })).json();
+      if (!j.ok) { $("status").textContent = "register failed: " + (j.error || "?"); return; }
+      if (j.sample != null) { pushHist(); $("sample").value = j.sample; stashCurrent(); persist(); }
+      $("status").textContent = "register " + ACTIVE_REG + " — render state set, sample loaded";
+    } catch(e){ $("status").textContent = "register error"; }
+  });
+  // Save the edited sample back to the active register (samples are per register).
+  (function(){
+    const btn = document.createElement("button");
+    btn.id = "savesample"; btn.textContent = "Save sample"; btn.className = "";
+    btn.addEventListener("click", async () => {
+      if (!ACTIVE_REG) { $("status").textContent = "no register selected"; return; }
+      $("status").textContent = "saving sample to register " + ACTIVE_REG + "...";
+      try {
+        const body = { voice: ACTIVE_VOICE, registers: {} };
+        body.registers[ACTIVE_REG] = { sample: $("sample").value };
+        const j = await (await fetch("/api/tune/registers", { method:"POST", headers:{"Content-Type":"application/json"},
+          body: JSON.stringify(body) })).json();
+        if (!j.ok) { $("status").textContent = "save failed: " + (j.error || "?"); return; }
+        if (VOICES_DATA[ACTIVE_VOICE]) VOICES_DATA[ACTIVE_VOICE].registers = j.registers;
+        $("status").textContent = "sample saved to " + ACTIVE_VOICE + " register " + ACTIVE_REG;
+      } catch(e){ $("status").textContent = "save error"; }
+    });
+    const hear = $("hear"); if (hear && hear.parentNode) hear.parentNode.appendChild(btn);
+  })();
   loadVoices();
 
   if (["blend","registers"].includes(location.hash.slice(1))) showView(location.hash.slice(1));   // deep-link support

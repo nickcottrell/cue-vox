@@ -1014,7 +1014,7 @@ _register_lock = None  # 1/2/3 to pin that register (no autotone drift); None = 
 
 
 def _prosody_for_slot(slot):
-    """The active voice's prosody rules for a live register slot (0..4), chosen by the
+    """The active voice's prosody envelope for a live register slot (0..4), chosen by the
     register whose kokoro_slot is nearest. Empty dict (identity) if none defined."""
     regs = (_VOICE_REGISTERS or {}).get("registers", {}) or {}
     best, best_d = None, 99
@@ -1023,6 +1023,56 @@ def _prosody_for_slot(slot):
         if d < best_d:
             best, best_d = r, d
     return (best or {}).get("prosody", {}) or {}
+
+
+def _active_register_prosody():
+    """The prosody envelope of the ACTIVE register (the render state), or the nearest to
+    the current slot before one is set. This is what SSML maps into."""
+    regs = (_VOICE_REGISTERS or {}).get("registers", {}) or {}
+    if _active_register in regs:
+        return (regs.get(_active_register, {}) or {}).get("prosody", {}) or {}
+    return _prosody_for_slot(kokoro_voice._register if _kokoro_available else 0)
+
+
+# --- Register-as-range: SSML supplies an intensity, the register maps it into [min,max].
+def _rng(v):
+    """Coerce a prosody value to (min, max). A scalar s reads as (s, s) -- back-compat
+    with the step-1 single-factor form."""
+    if isinstance(v, (list, tuple)) and len(v) == 2:
+        try:
+            return float(v[0]), float(v[1])
+        except (TypeError, ValueError):
+            return 1.0, 1.0
+    try:
+        s = float(v)
+        return s, s
+    except (TypeError, ValueError):
+        return 1.0, 1.0
+
+
+def _map_range(v, t):
+    """Map a normalized intensity t in [0,1] into the register's [min,max] envelope."""
+    lo, hi = _rng(v)
+    t = max(0.0, min(1.0, t))
+    return lo + t * (hi - lo)
+
+
+def _emph_intensity(force):
+    """Emphasis force -> intensity: reduced/none (<=1.0) -> 0, moderate (1.25) -> 0.5,
+    strong (1.5) -> 1.0."""
+    return max(0.0, min(1.0, (float(force) - 1.0) / 0.5))
+
+
+def _rate_intensity(rate):
+    """Prosody rate multiplier -> intensity: x-slow (0.7) -> 0, medium (1.0) -> 0.5,
+    x-fast (1.3) -> 1.0."""
+    return max(0.0, min(1.0, (float(rate) - 0.7) / 0.6))
+
+
+def _break_intensity(ms):
+    """Break duration -> intensity: a longer authored pause sits higher in the register's
+    envelope, so dramatic registers stretch long pauses more than short ones."""
+    return max(0.0, min(1.0, float(ms) / 1200.0))
 
 
 def set_active_voice(voice_id):
@@ -1041,12 +1091,18 @@ def set_active_voice(voice_id):
                                use_blend=bool(v.get("blend_slots")))
     print("[VOICE] active=%s sid=%s blend=%s blend_slots=%s"
           % (voice_id, v.get("sid"), v.get("blend"), bool(v.get("blend_slots"))), flush=True)
+    # Establish the register render-state for this voice: its saved choice, else the
+    # first register. set_render_register is defined below; it runs fine at call time.
+    regs = v.get("registers", {}) or {}
+    ar = v.get("active_register")
+    set_render_register(ar if ar in regs else (sorted(regs.keys())[0] if regs else "1"), "voice-init")
     return True
 
 
-def _apply_register(n):
-    """Pin register n (1/2/3): timbre slot + prosody + exaggeration, from the active voice.
-    Expressive-ceiling clamp lives at the call site (off -> always 1)."""
+def _apply_register(n, apply_exag=True):
+    """Derive a register's engine state onto the voice: timbre slot + prosody (+ the
+    Chatterbox exaggeration, unless apply_exag is False so a caller can keep its own
+    continuous dial). This is the DERIVATION half; set_render_register owns the STATE."""
     global _exaggeration
     reg = ((_VOICE_REGISTERS or {}).get("registers", {}) or {}).get(str(n))
     if not reg:
@@ -1057,10 +1113,68 @@ def _apply_register(n):
         _pr = reg.get("prosody") or {}
         if "lift" in _pr:
             kokoro_voice.set_prosody(lift=_pr.get("lift"))
+    if apply_exag:
+        try:
+            _exaggeration = float(reg.get("exaggeration", _exaggeration))
+        except (TypeError, ValueError):
+            pass
+
+
+# === Register render-state: the ONE source of truth ========================
+# Register is a RENDER STATE (Voice > Register > SSML): the engine is *in* a register
+# when it synthesizes. _active_register is the single owned variable -- a key into the
+# active voice's registers ("1"/"2"/"3"). Everything the engine renders with (kokoro
+# slot, prosody rules, Chatterbox exaggeration) DERIVES from it via _apply_register.
+# Every writer -- the bench lock, the weight lever, autotone, hold/release, the tuner,
+# and (step 3) the async model manager -- goes through set_render_register, so register
+# changes in exactly one place. The render just reads the derived slot at synth time.
+_active_register = None       # current register key; None until first set
+
+
+def _register_keys():
+    ks = list(((_VOICE_REGISTERS or {}).get("registers", {}) or {}).keys())
+    return sorted(ks, key=lambda k: (int(k) if str(k).isdigit() else 99, str(k)))
+
+
+def _register_for_slot(slot):
+    """Nearest register key to a kokoro slot (0..4), by each register's kokoro_slot."""
+    regs = (_VOICE_REGISTERS or {}).get("registers", {}) or {}
     try:
-        _exaggeration = float(reg.get("exaggeration", _exaggeration))
+        s = float(slot)
     except (TypeError, ValueError):
-        pass
+        s = 0.0
+    best, bestd = None, 1e9
+    for k, r in regs.items():
+        d = abs(int(r.get("kokoro_slot", 0)) - s)
+        if d < bestd:
+            best, bestd = k, d
+    return best
+
+
+def _floor_register():
+    """The register floor as a key (derived from _LIVE_REGISTER_FLOOR, a slot). None = off."""
+    return _register_for_slot(_LIVE_REGISTER_FLOOR) if _LIVE_REGISTER_FLOOR is not None else None
+
+
+def set_render_register(reg, reason="", apply_exag=True):
+    """The SINGLE mutator for the register render-state. Accepts a register key or a slot
+    (snapped to the nearest register), clamps to the floor, records _active_register, and
+    applies the derived engine state. apply_exag=False lets a caller (autotone) keep its
+    own continuous Chatterbox dial while still owning the discrete Kokoro register here."""
+    global _active_register
+    keys = _register_keys()
+    if not keys:
+        return None
+    key = str(reg)
+    if key not in keys:
+        key = _register_for_slot(reg) or keys[0]
+    floor = _floor_register()
+    if floor and str(floor).isdigit() and str(key).isdigit() and int(key) < int(floor):
+        key = floor
+    _active_register = key
+    _apply_register(key, apply_exag=apply_exag)
+    _vlog("register", "active=%s%s" % (key, (" (" + reason + ")") if reason else ""))
+    return key
 
 # --- Auto-tone: emotion BUILDS from a breathy default -----------------------
 # Each turn emits energy tokens into a decaying pool. When the pool climbs, the
@@ -1158,17 +1272,14 @@ def _render_ssml_to_wav(text):
     Returns a wav path (the play worker deletes it) or None. This is what makes the
     agent's SSML actually shape the LIVE delivery, not just the tuner."""
     import tempfile
-    base = kokoro_voice._register            # the turn's base register (autotone + weight)
-    # The active register's prosody RULES: same markup, per-register interpretation.
-    # break_scale rides on the global _BREAK_MULT; emphasis_scale/rate_scale flow into
-    # resolve_instructions; lift is a voice knob set here for this register.
-    rules = _prosody_for_slot(base)
-    if "lift" in rules:
-        kokoro_voice.set_prosody(lift=rules.get("lift"))
-    tone = {"pressure": _PRESSURE,
-            "break_mult": _BREAK_MULT * float(rules.get("break_scale", 1.0)),
-            "emphasis_scale": float(rules.get("emphasis_scale", 1.0)),
-            "rate_scale": float(rules.get("rate_scale", 1.0))}
+    base = kokoro_voice._register            # the turn's base register slot (derived from state)
+    # The active register's prosody ENVELOPE: same markup, mapped into this register's
+    # [min,max] ranges (Voice > Register > SSML). break/emphasis/rate flow into
+    # resolve_instructions as ranges; lift is set here from the register's lift envelope.
+    pr = _active_register_prosody()
+    if "lift" in pr:
+        kokoro_voice.set_prosody(lift=_map_range(pr.get("lift"), 0.5))   # register baseline rise
+    tone = {"pressure": _PRESSURE, "break_mult": _BREAK_MULT, "prosody": pr}
     instr = resolve_instructions(text, base, tone)
     if len(instr) == 1 and "say" in instr[0]:    # plain span -> flat synth
         return kokoro_voice.synth_to_file(instr[0]["say"], question=instr[0].get("lift"))
@@ -2003,13 +2114,18 @@ def speak_chunked(text):
     # synth so the client's gap ambience previews it and crossfades into the voice.
     w = _reply_weight(text)
     if _register_lock is not None:
-        # A register is PINNED (bench tuning rig / register track): apply it exactly and
-        # skip the autotone/weight drift, so the deliberate register does not wobble.
-        _apply_register(_register_lock)
+        # A register is PINNED (bench tuning rig / register track): set it exactly and
+        # skip the weight/autotone drift, so the deliberate register does not wobble.
+        set_render_register(_register_lock, "lock")
     else:
-        if _kokoro_available:
-            kokoro_voice.set_register(max(0, min(4, kokoro_voice._register + int(round(w * 1.5)))))
-        _exaggeration = min(2.0, _exaggeration + w * 0.4)
+        # Weight lever: heavier lines climb the register (register is the render state,
+        # so climbing = stepping up register keys). Its exaggeration derives from there.
+        keys = _register_keys()
+        cur = _active_register if _active_register in keys else _register_for_slot(
+            kokoro_voice._register if _kokoro_available else 0)
+        if cur in keys:
+            idx = min(len(keys) - 1, keys.index(cur) + int(round(w)))
+            set_render_register(keys[idx], "weight")
     try:
         socketio.emit("voice_weight", {"weight": round(w, 3), "expressive": bool(_expressive_mode)})
     except Exception:
@@ -3005,13 +3121,12 @@ def _release_hold(data=None):
         # shows 'thinking', so the model latency reads as deliberation, not a stall.
         cont = _regenerate_resume(said, r) if turns > 0 else None
         body = cont if (cont and cont.strip()) else (r or "")
-        # Reset the voice to the live baseline before the stitch-back. The weight lever
-        # ACCUMULATES register/exaggeration across every subchannel turn, and this path skips
-        # the per-turn autotone -- without this reset the continuation synthesizes at a maxed,
-        # distorted register (the "cracked out robot" on resume).
-        if _kokoro_available:
-            kokoro_voice.set_register(_LIVE_REGISTER_FLOOR if _LIVE_REGISTER_FLOOR is not None else 1)
-        _exaggeration = 1.0
+        # Reset the register render-state to the live baseline (floor, or chill) before the
+        # stitch-back. The weight lever ACCUMULATES register across every subchannel turn,
+        # and this path skips the per-turn autotone -- without this reset the continuation
+        # synthesizes at a maxed register (the "cracked out robot" on resume). One mutator,
+        # which also re-derives exaggeration from the baseline register.
+        set_render_register(_floor_register() or "1", "release")
         _vlog("barge", "RELEASE -> %s + continuation (%d chars, %d subchannel turns)"
               % ("regen" if cont else "verbatim", len(body or ""), turns))
         speak_chunked((b + " " + (body or "")).strip())
@@ -5427,21 +5542,15 @@ def _texture_wav(ms, out, rate=24000):
 
 
 def deterministic_markup(text):
-    """Rule-based translation of raw typographic signals into voice markup. No model,
-    fully deterministic. Not perfect on purpose -- a draft to hand-tweak.
-      **bold**/*italic* -> tags · ALL CAPS -> emphasis (lowercased) ·
-      ... -> long break · ' -- ' -> break
-    """
+    """Rule-based translation of markdown emphasis into standard SSML. No model, fully
+    deterministic -- a draft to hand-tweak. Only **bold**/*italic* -> <emphasis> (valid
+    SSML). The old typographic heuristics (ALL-CAPS -> emphasis, ... -> break, ' -- ' ->
+    break) were GUT with the custom-markup dialect: author pauses/emphasis with explicit
+    SSML tags, not magic punctuation."""
     s = text or ""
     s = re.sub(r"\*\*\*(.+?)\*\*\*", r'<emphasis level="strong">\1</emphasis>', s)
     s = re.sub(r"\*\*(.+?)\*\*", r'<emphasis level="strong">\1</emphasis>', s)
     s = re.sub(r"\*(.+?)\*", r'<emphasis level="moderate">\1</emphasis>', s)
-    # ALL-CAPS runs (2+ letters, one or more words) -> strong emphasis, lowercased so
-    # the synth speaks words not letters. Single-letter caps (I, A) are left alone.
-    s = re.sub(r"\b[A-Z][A-Z']+(?:\s+[A-Z][A-Z']*)*\b",
-               lambda m: '<emphasis level="strong">%s</emphasis>' % m.group(0).lower(), s)
-    s = s.replace("...", ' <break time="600ms"/> ')
-    s = re.sub(r"\s--\s", ' <break time="300ms"/> ', s)
     s = re.sub(r"[ \t]{2,}", " ", s).strip()
     return s
 
@@ -5454,12 +5563,15 @@ def deterministic_markup(text):
 #   <prosody rate= volume= pitch=>                                            speed/gain/pitch
 #   <p> / <s>                                                                 paragraph / sentence pause
 #   <say-as interpret-as=> / <sub alias="..">                                 spoken form
-#   <voice name="breathy|mid|dramatic|0-4">                                   register/blend slot
-#   <laugh/> <chuckle/>                                                       signature earcons (cvx extension)
+#   <voice name="isabella|atlas|neutral">                                     voice select (standard use)
+#   <beat/> <beat time="600ms"/> <laugh/> <chuckle/>                          SANCTIONED cvx extensions
+# Everything else is NOT markup. The custom dialect was GUT: no <force=N>, no
+# <break=N/>, no <soft>/<loud>, no ALL-CAPS/.../-- auto-conversion, no <strong>/<b>/
+# <em>/<i> shorthand. Standard W3C SSML plus the four sanctioned extensions above.
 # The markup LANGUAGE / parser version. Bump when tag semantics change, so a package
 # records which markup its text was authored against. v1 = count/stacking model
-# (retired); v2 = SSML.
-MARKUP_VERSION = 2
+# (retired); v2 = SSML + custom dialect (retired); v3 = W3C SSML + sanctioned extensions.
+MARKUP_VERSION = 3
 
 
 def _ssml_break_ms(el):
@@ -5513,16 +5625,12 @@ def _ssml_pitch_off(v):
 
 
 def _ssml_voice(name):
-    """SSML <voice name=> -> a register slot 0..4 (breathy -> dramatic)."""
-    n = (name or "").strip().lower()
-    m = {"breathy": 0, "nicole": 0, "soft": 1, "mid": 2, "neutral": 2, "sky": 2,
-         "warm": 3, "dramatic": 4, "sarah": 4}
-    if n in m:
-        return {"reg": m[n]}
-    try:
-        return {"reg": max(0, min(4, int(n)))}
-    except ValueError:
-        return {}
+    """SSML <voice name=> is standard voice SELECTION (isabella/atlas/neutral), not a
+    register knob -- the register-overload was gut with the custom dialect. Per-span
+    voice switching would force an engine reload, so for now <voice> is a transparent
+    container (its content is still spoken) and voice selection lives in the tuner
+    picker / POST /api/tune/voice. Returns no delivery contribution."""
+    return {}
 
 
 def _tag_contrib(tag, el):
@@ -5533,10 +5641,6 @@ def _tag_contrib(tag, el):
     if t == "emphasis":
         return {"force": {"strong": 1.5, "moderate": 1.25, "reduced": 0.8, "none": 1.0}
                 .get((g("level") or "moderate").lower(), 1.25)}
-    if t in ("strong", "b"):        # markdown-fallback shorthand -> strong emphasis
-        return {"force": 1.5}
-    if t in ("em", "i"):            # markdown-fallback shorthand -> moderate emphasis
-        return {"force": 1.25}
     if t == "prosody":
         c = {}
         if g("rate") is not None:
@@ -5585,32 +5689,48 @@ def directive_to_vrgb(dv, base=0):
     return "#%02x%02x%02x" % (int(r * 255), int(gg * 255), int(b * 255))
 
 
+# The sanctioned vocabulary: W3C SSML core + four cvx extensions (beat/rest/laugh/
+# chuckle). Anything else is flagged unknown by the parse view (and stripped from TTS).
 _KNOWN_TAGS = {"speak", "break", "pause", "beat", "rest", "emphasis", "prosody", "p", "s",
-               "say-as", "sub", "voice", "em", "i", "strong", "b", "laugh", "chuckle"}
+               "say-as", "sub", "voice", "laugh", "chuckle"}
 
 
 def resolve_instructions(text, base, tone):
-    """Resolve markup to the executable instruction list (what the renderer will do)."""
+    """Resolve markup to the executable instruction list. The SSML supplies a normalized
+    intensity per dimension; the ACTIVE REGISTER'S envelope (tone['prosody'] ranges) maps
+    that intensity into the delivered value -- so the same markup lands bigger in a wider
+    register. No envelope (Chatterbox / plain callers) -> the raw SSML values pass through."""
     ops = _ops_from_text(text) or [("say", text, {})]
+    pr = tone.get("prosody") or {}
     out = []
     for op in ops:
         if op[0] == "say":
             _, span, dv = op
             reg = dv["reg"] if "reg" in dv else base + dv.get("reg_off", 0)
             reg = max(0, min(4, int(reg)))
-            # Per-register prosody rules: emphasis_scale shapes how far <emphasis>/CAPS
-            # push force above 1.0; rate_scale multiplies the resolved speed.
-            force = 1.0 + (dv.get("force", 1.0) - 1.0) * tone.get("emphasis_scale", 1.0)
+            # emphasis: intensity from the tag's force, mapped into the register's range.
+            raw_force = dv.get("force", 1.0)
+            if raw_force != 1.0 and "emphasis" in pr:
+                force = _map_range(pr["emphasis"], _emph_intensity(raw_force))
+            else:
+                force = raw_force
             gain = float(dv["gain"]) if "gain" in dv else tone.get("pressure", 1.0) * (1.0 + 0.08 * reg) * force
-            speed = float(dv.get("speed", dv.get("rate", 1.0))) * tone.get("rate_scale", 1.0)
+            # rate: intensity from the tag's rate, mapped into the register's range.
+            raw_rate = float(dv.get("speed", dv.get("rate", 1.0)))
+            if raw_rate != 1.0 and "rate" in pr:
+                speed = _map_range(pr["rate"], _rate_intensity(raw_rate))
+            else:
+                speed = raw_rate
             out.append({"say": span.strip(), "register": reg, "gain": round(max(0.4, min(2.5, gain)), 3),
                         "speed": round(max(0.5, min(2.0, speed)), 3),
                         "lift": bool(dv.get("lift") or span.rstrip().endswith("?")),
                         "vrgb": directive_to_vrgb(dv, base)})
-        elif op[0] == "pause":
-            out.append({"pause_ms": int(op[1] * tone.get("break_mult", 1.0))})
-        elif op[0] == "beat":
-            out.append({"beat_ms": int(op[1] * tone.get("break_mult", 1.0))})
+        elif op[0] in ("pause", "beat"):
+            # break/beat: a longer authored pause sits higher in the register's envelope,
+            # so dramatic registers stretch long pauses more. Global break_mult still rides.
+            mult = _map_range(pr["break"], _break_intensity(op[1])) if "break" in pr else 1.0
+            ms = int(op[1] * mult * tone.get("break_mult", 1.0))
+            out.append({"pause_ms": ms} if op[0] == "pause" else {"beat_ms": ms})
         elif op[0] == "clip":
             out.append({"cue": op[1]})
     return out
@@ -5765,16 +5885,25 @@ def _fold_orphan_punct(ops):
 
 
 def _ops_from_text(text):
-    """Semantic XML if it parses, else fall back to markdown/[pause] tags. Unified ops."""
+    """Semantic XML if it parses, else fall back to markdown/[pause] tags. Unified ops.
+
+    If markup was ATTEMPTED (angle brackets present) but did not parse as SSML -- e.g.
+    stale v1 markup like <break=3/> or <soft>, or a malformed tag -- strip residual
+    <...> from the spoken spans so a broken tag is never READ ALOUD. Degrade to the
+    words, never to tag-reading (dumb-by-design)."""
     ov = parse_vox(text)
     if ov is not None:
         return _fold_orphan_punct(ov)
+    markup_attempted = "<" in (text or "") and ">" in (text or "")
     ops = []
     for op in parse_script(text):
         if op[0] == "say":
             _, span, emph = op
+            if markup_attempted:
+                span = re.sub(r"\s+", " ", re.sub(r"<[^>]+>", " ", span)).strip()
             off, spd = _EMPH_MAP.get(emph, (0, 1.0))
-            ops.append(("say", span, {"reg_off": off, "speed": spd}))
+            if span:
+                ops.append(("say", span, {"reg_off": off, "speed": spd}))
         else:
             ops.append(op)
     return _fold_orphan_punct(ops)
@@ -6179,7 +6308,10 @@ def tune_parse():
             return float(d.get(k, dflt))
         except (TypeError, ValueError):
             return dflt
-    tone = {'pressure': _f('pressure', _PRESSURE), 'break_mult': _f('break_mult', _BREAK_MULT)}
+    # Parse auditions the register at `base` (the tuner's register slider), so map the
+    # SSML through THAT register's envelope.
+    tone = {'pressure': _f('pressure', _PRESSURE), 'break_mult': _f('break_mult', _BREAK_MULT),
+            'prosody': _prosody_for_slot(base)}
     instr = resolve_instructions(text, base, tone)
     tags = set(m.lower() for m in re.findall(r"</?([a-zA-Z][\w-]*)", text))
     unknown = sorted(t for t in tags if t not in _KNOWN_TAGS)
@@ -6227,7 +6359,31 @@ def tune_voice():
     if _VOICES is not None:
         _VOICES['active'] = vid
         _save_voices()
-    return jsonify(ok=True, active=_ACTIVE_VOICE)
+    v = ((_VOICES or {}).get('voices', {}) or {}).get(_ACTIVE_VOICE, {})
+    reg = ((v.get('registers') or {}).get(_active_register) or {})
+    return jsonify(ok=True, active=_ACTIVE_VOICE, register=_active_register, sample=reg.get('sample', ''))
+
+
+@app.route('/api/tune/register', methods=['POST'])
+def tune_register():
+    """Select the active register (the render state) for the active voice, and return that
+    register's sample so the tuner can load it. Persists the choice per voice. This is the
+    register dropdown's endpoint -- Voice > Register, both first-class selectors."""
+    d = request.get_json(force=True, silent=True) or {}
+    vid = (d.get('voice') or _ACTIVE_VOICE or '').strip()
+    if vid != _ACTIVE_VOICE:
+        set_active_voice(vid)
+    key = str(d.get('register', '')).strip()
+    regs = (_VOICE_REGISTERS or {}).get('registers', {}) or {}
+    if key not in regs:
+        return jsonify(ok=False, error='unknown register: %s' % key), 200
+    set_render_register(key, 'tuner')
+    v = ((_VOICES or {}).get('voices', {}) or {}).get(vid)
+    if v is not None:
+        v['active_register'] = key       # remember per voice (survives boot)
+        _save_voices()
+    reg = regs.get(key, {})
+    return jsonify(ok=True, register=key, slot=int(reg.get('kokoro_slot', 0)), sample=reg.get('sample', ''))
 
 
 @app.route('/api/tune/registers', methods=['POST'])
@@ -6235,7 +6391,8 @@ def tune_registers():
     """Save a voice's registers + per-register prosody rules back to voices.json (the
     source of truth, so it survives boot) and refresh the live view if it is the active
     voice. Body: {voice, registers:{"1":{label,speed,bright,gain,exaggeration,kokoro_slot,
-    prosody:{break_scale,emphasis_scale,rate_scale,lift}}, ...}}."""
+    prosody:{break:[min,max],emphasis:[min,max],rate:[min,max],lift:[min,max]}}, ...}}.
+    A scalar prosody value is accepted and stored as [s,s]."""
     global _VOICE_REGISTERS
     d = request.get_json(force=True, silent=True) or {}
     vid = (d.get('voice') or _ACTIVE_VOICE or '').strip()
@@ -6257,6 +6414,8 @@ def tune_registers():
         cur = regs.setdefault(str(key), {})
         if 'label' in r:
             cur['label'] = str(r['label'])[:32]
+        if 'sample' in r:                       # per-register SSML sample
+            cur['sample'] = str(r['sample'])
         if 'kokoro_slot' in r:
             cur['kokoro_slot'] = int(_cl(r['kokoro_slot'], 0, 4, cur.get('kokoro_slot', 0)))
         for k, lo, hi in (('speed', 0.5, 2.0), ('bright', -1.0, 3.0), ('gain', 0.1, 3.0), ('exaggeration', 0.3, 2.0)):
@@ -6265,10 +6424,17 @@ def tune_registers():
         pin = r.get('prosody') or {}
         if pin:
             pr = cur.setdefault('prosody', {})
-            for k, lo, hi in (('break_scale', 0.25, 4.0), ('emphasis_scale', 0.5, 3.0),
-                              ('rate_scale', 0.5, 2.0), ('lift', 0.0, 1.5)):
+            for k, lo, hi in (('break', 0.25, 4.0), ('emphasis', 0.5, 3.0),
+                              ('rate', 0.5, 2.0), ('lift', 0.0, 1.5)):
                 if k in pin:
-                    pr[k] = round(_cl(pin[k], lo, hi, pr.get(k, 1.0)), 3)
+                    val = pin[k]
+                    if isinstance(val, (list, tuple)) and len(val) == 2:
+                        a = round(_cl(val[0], lo, hi, lo), 3)
+                        b = round(_cl(val[1], lo, hi, hi), 3)
+                        pr[k] = [min(a, b), max(a, b)]
+                    else:                       # scalar -> degenerate [s,s]
+                        s = round(_cl(val, lo, hi, 1.0), 3)
+                        pr[k] = [s, s]
     if not _save_voices():
         return jsonify(ok=False, error='write failed'), 200
     if vid == _ACTIVE_VOICE:                    # refresh the live register view
@@ -8484,15 +8650,16 @@ def handle_audio(data):
             except (TypeError, ValueError):
                 _exaggeration = 0.6
 
-        # Drive the fast Kokoro register (0..4) from the same dial. An applied package
-        # can raise the floor so the live voice never drops below its register.
+        # Autotone writes the register render-state (the ONE mutator). It maps the energy
+        # dial to a register KEY and keeps its own continuous exaggeration for Chatterbox
+        # (apply_exag=False). Floor clamp lives inside set_render_register. This is the
+        # dumb stand-in the async model manager replaces in step 3.
         if _kokoro_available:
-            live_reg = int(round(max(0.0, min(1.0, _exaggeration - 1.0)) * 4))
-            if _LIVE_REGISTER_FLOOR is not None:
-                live_reg = max(live_reg, _LIVE_REGISTER_FLOOR)
-            kokoro_voice.set_register(live_reg)
-            _vlog("register", "live_reg=%d  (exag=%.2f floor=%s autotone=%s)"
-                  % (live_reg, _exaggeration, _LIVE_REGISTER_FLOOR, _v.get('autotone', True)))
+            keys = _register_keys()
+            if keys:
+                frac = max(0.0, min(1.0, _exaggeration - 1.0))
+                i = min(len(keys) - 1, int(frac * len(keys)))
+                set_render_register(keys[i], "autotone", apply_exag=False)
 
         # Inject temporal context if query is time-related
         enhanced_text = inject_temporal_context(text)

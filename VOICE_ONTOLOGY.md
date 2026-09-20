@@ -1,8 +1,12 @@
 # Voice Ontology
 
-**Markup version: 2 (SSML)** (the `MARKUP_VERSION` constant in `web.py`). SSML is the
-standard markup across both surfaces: the tuner and the agent's spoken replies. v1 (the
-count/stacking model) is retired.
+**Markup version: 3 (W3C SSML + sanctioned extensions)** (the `MARKUP_VERSION` constant
+in `web.py`). Standard W3C SSML is the language across both surfaces: the tuner and the
+agent's spoken replies. The custom dialect is retired: v1 (count/stacking) and the v2
+extras (`<force=N>`, `<break=N/>`, `<soft>`/`<loud>`, ALL-CAPS/`...`/`--` auto-conversion,
+`<strong>/<b>/<em>/<i>` shorthand) are all gone. A tag that is not in the vocabulary
+below is never read aloud: if markup fails to parse, the words are spoken and the tags
+are dropped.
 
 Cue-vox parses a practical subset of W3C SSML and maps it onto the voice engine
 (Kokoro register blend + DSP + pause splices + the WORLD pitch edit). Author inline;
@@ -21,7 +25,7 @@ you do not need to wrap a reply in `<speak>` (the parser tolerates it either way
 | `<prosody rate="slow\|fast\|1.2\|80%">` | pace | speed |
 | `<prosody volume="soft\|loud\|+6dB">` | loudness | gain |
 | `<prosody pitch="high\|low\|+2st">` | pitch | register offset; a pitch-up carries the rising/question contour |
-| `<voice name="breathy\|mid\|dramatic\|0-4">` | shift the register for a span | register slot 0..4 |
+| `<voice name="isabella\|atlas\|neutral">` | select a voice (standard SSML use) | voice pick (see the tuner picker) |
 | `<p>` / `<s>` | paragraph / sentence | boundary pause (600 / 250 ms) |
 | `<sub alias="three D math">3DMATH</sub>` | say it differently than written | speaks the alias |
 | `<say-as interpret-as="...">` | spoken form | content spoken as-is (passthrough) |
@@ -41,13 +45,21 @@ a deliberate rest.
 ## Example
 
 ```
-<voice name="breathy">Hey, keeping it low.</voice>
+<prosody volume="soft" rate="slow">Hey, keeping it low.</prosody>
 <break time="500ms"/>
-I pushed the branch, <prosody rate="slow" volume="soft">it's all green.</prosody>
-<break strength="strong"/>
+I pushed the branch, <prosody volume="soft">it's all green.</prosody>
+<beat time="500ms"/>
 So <emphasis level="strong">are we good to ship?</emphasis>
-<voice name="dramatic">Let's go.</voice> <chuckle/>
+<break time="300ms"/>
+Let's go. <chuckle/>
 ```
+
+Register (the chill / mid / peak energy tier) is NOT a markup tag -- it is set by the
+tuner, the autotone energy pool, or a deployed voice package, and each register brings
+its own prosody rules (how it reads `<break>`, `<emphasis>`, rate, and question rise).
+Voice selection (`isabella` / `atlas` / `neutral`) lives in the tuner picker; per-span
+`<voice>` switching is out of scope for the live render (it would force an engine
+reload), so `<voice>` currently passes its content through unchanged.
 
 ---
 
@@ -64,6 +76,7 @@ The renderer folds an orphan punctuation span onto the previous span as a safety
 
 ---
 
-Plain text and `*italic*`/`**bold**` still work (the deterministic translator converts
-them to `<emphasis>` and typographic signals like `...` to `<break/>`). SSML is the
-standard; the markdown fallback is the dumb layer underneath.
+Plain text works as-is. The **Translate** button converts `*italic*`/`**bold**` markdown
+into standard `<emphasis>` (the only convenience left; the ALL-CAPS / `...` / `--`
+heuristics were gut with the custom dialect). Author pauses and emphasis with explicit
+SSML tags, not typographic tricks. W3C SSML is the whole language now.
