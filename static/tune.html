@@ -65,8 +65,10 @@
   .tabs.bottom { margin-top:22px; }
   .view[hidden] { display:none; }
   /* slot cards (registers / ladder) */
-  .slot { border:1px solid var(--border); border-radius:var(--radius-md); padding:14px; margin-bottom:14px; background:var(--surface-light,var(--surface)); }
-  .slot__head { display:flex; align-items:center; gap:10px; margin-bottom:10px; }
+  .slot { border:1px solid var(--border); border-radius:var(--radius-md); padding:14px; margin-bottom:14px; background:var(--surface-light,var(--surface)); transition:box-shadow .12s,border-color .12s; }
+  .slot.active { border-color:var(--primary); box-shadow:0 0 0 2px var(--primary) inset; }
+  .slot__head { display:flex; align-items:center; gap:10px; margin-bottom:10px; cursor:pointer; }
+  .slot.active .slot__head::after { content:"● shaping"; font-size:10px; letter-spacing:.06em; text-transform:uppercase; color:var(--primary); white-space:nowrap; }
   .slot__n { font-size:22px; font-weight:var(--font-weight-bold); font-variant-numeric:tabular-nums; color:var(--text-heading); }
   .slot__swatch { width:16px; height:16px; border-radius:4px; border:1px solid rgba(0,0,0,.4); flex:none; }
   .slot__label { background:var(--input-bg,var(--surface)); color:var(--text); border:1px solid var(--border); border-radius:var(--radius-sm); padding:4px 8px; font-family:inherit; font-size:13px; flex:1; }
@@ -116,8 +118,7 @@
       <input type="file" id="importfile" accept=".svg,image/svg+xml" style="display:none;">
     </div>
     <div class="row">
-      <button class="btn btn--primary" id="applylive" title="Push this voice to the running conversation now">Apply to live</button>
-      <button class="btn" id="deploy" title="Write it to maestro as the boot voice">Deploy</button>
+      <button class="btn btn--primary" id="loadlocal" title="Load this tuned voice into the running local cue-vox now AND set it as the boot voice. One way.">Load into local Cue-Vox</button>
     </div>
     <div id="status" style="margin-top:10px;"></div>
   </div><!-- /view-tuner -->
@@ -182,6 +183,7 @@
 
   <div class="panel" style="margin-top:14px;">
     <div class="section">Envelope &middot; per-register bounds</div>
+    <div class="hint">The card marked <b style="color:var(--primary);">● shaping</b> is the register picked in the <b>Register</b> dropdown up top. Pick a register there, or <b>click any card here</b>, to choose which one you shape. They are one selection.</div>
     <div class="hint">Each register is a <b>timbre</b> (how the voice sounds) plus a <b>prosody envelope</b> (how it reads the same markup). The envelope is a range: min = the gentlest that dimension gets in this register, max = the boldest. A wider range = a more expressive register.</div>
     <div class="hint" style="line-height:1.7;margin-top:6px;">
       <b>Timbre</b><br>
@@ -208,18 +210,18 @@
 
   <div class="view" id="view-blend" hidden>
   <div class="panel">
-    <div class="section">Register ladder &middot; the instrument</div>
-    <div class="hint">The dials in the Tuner PLAY this ladder. Here you set what it IS: each <b>slot</b> (0 breathy &rarr; 4 dramatic) is a blend of base voices. Fill the slots, rebuild, and the live engine hot-swaps.</div>
-    <div class="section" style="margin-top:14px;">Slots</div>
+    <div class="section">Register voices &middot; the neural blend per register</div>
+    <div class="hint">Set the neural voice blend for <b>each register</b> (chill / mid / peak). Each is a weighted mix of the base Kokoro voices, so a register can literally be a different-sounding voice. Registers themselves are added/removed on the <b>Envelope</b> tab; here you set what each one <i>sounds</i> like.</div>
+    <div class="hint" style="margin-top:6px;"><b>The pipeline:</b> edit a register's mix &rarr; <b>Save &amp; rebuild</b> (regenerates the blend and hot-swaps the live engine) &rarr; go to the <b>Tuner</b>, pick that register, and <b>Play</b> to hear it.</div>
+    <div class="section" style="margin-top:14px;">Registers</div>
     <div id="slots"></div>
     <div class="row">
-      <button class="btn" id="bl_add">+ Add slot</button>
       <button class="btn" id="bl_load">Load</button>
-      <button class="btn" id="bl_save">Save</button>
-      <button class="btn btn--primary" id="bl_rebuild">Save &amp; rebuild</button>
+      <button class="btn btn--primary" id="bl_rebuild">Save &amp; rebuild &rarr; hear on Tuner</button>
+      <button class="btn" id="bl_save">Save only</button>
     </div>
     <div id="bl_status" style="color:var(--dim);font-size:12px;margin-top:12px;min-height:16px;"></div>
-    <div class="hint">Save writes maestro/config/voice/blend.json. Rebuild regenerates register-voices.bin and hot-swaps the running engine, so the next spoken line uses the new blend. Audition slots with the Register dropdown at the top.</div>
+    <div class="hint">Save writes maestro/config/voice/blend.json; rebuild regenerates register-voices.bin and hot-swaps the running engine, so the next Play uses the new blend. A weight sum near 1.0 is ideal (it normalizes on rebuild).</div>
   </div>
   </div><!-- /view-blend -->
 
@@ -441,33 +443,22 @@
     } catch(err){ $("status").textContent = "import error"; }
     finally { e.target.value = ""; }              // allow re-importing the same file
   });
-  $("applylive").addEventListener("click", async () => {
-    $("status").textContent = "applying to live conversation...";
-    try {
-      const r = await fetch("/api/tune/params", { method:"POST", headers:{"Content-Type":"application/json"},
-        body: JSON.stringify(currentParams()) });    // register + lift + earn-curve + breaks + pressure
-      const j = await r.json();
-      if (!j.ok) { $("status").textContent = "apply failed: " + (j.error || "?"); return; }
-      console.log("%c cue-vox voice APPLIED to live ",
-        "font-size:13px;font-weight:700;color:#161616;background:#8fb98f;padding:3px 8px;border-radius:4px;",
-        "register floor " + j.register_floor);
-      $("status").textContent = "applied to live (register floor " + j.register_floor + ", lift + earn-curve now live)";
-    } catch(e){ $("status").textContent = "apply error"; }
-  });
-  // Deploy writes the current package to the maestro-owned deployed-voice path, so
-  // it becomes THE voice cue-vox boots with (and applies it live immediately).
-  $("deploy").addEventListener("click", async () => {
-    $("status").textContent = "deploying to maestro...";
+  // One-way: apply to the running local cue-vox AND persist as the boot voice, in one
+  // action. /api/tune/deploy writes the deployed package (survives boot) and applies it
+  // live on the serving instance; the voice/register/ranges/situations already live in
+  // voices.json. Apply + Deploy are one and the same now.
+  $("loadlocal").addEventListener("click", async () => {
+    $("status").textContent = "loading into local cue-vox...";
     try {
       const body = Object.assign({ text:$("sample").value, steer:$("steer").value }, currentParams());
       const r = await fetch("/api/tune/deploy", { method:"POST", headers:{"Content-Type":"application/json"},
         body: JSON.stringify(body) });
       const j = await r.json();
-      if (!j.ok) { $("status").textContent = "deploy failed: " + (j.error || "?"); return; }
-      console.log("%c cue-vox voice DEPLOYED v" + j.version + " ",
-        "font-size:13px;font-weight:700;color:#161616;background:#c9a0d0;padding:3px 8px;border-radius:4px;", j.path);
-      $("status").textContent = "deployed v" + j.version + " -> " + j.path;
-    } catch(e){ $("status").textContent = "deploy error"; }
+      if (!j.ok) { $("status").textContent = "load failed: " + (j.error || "?"); return; }
+      console.log("%c cue-vox voice LOADED into local (v" + j.version + ") ",
+        "font-size:13px;font-weight:700;color:#161616;background:#8fb98f;padding:3px 8px;border-radius:4px;", j.path);
+      $("status").textContent = "loaded into local cue-vox (live now + boot voice) -> " + j.path;
+    } catch(e){ $("status").textContent = "load error"; }
   });
 
   // ===== SPA tabs: Tuner <-> Register Ladder (one page, no reloads) =====
@@ -477,7 +468,11 @@
       $("view-" + v).hidden = (v !== name);
       $("tab-" + v).classList.toggle("active", v === name);
     });
-    if (name === "blend" && !_blendLoaded) { _blendLoaded = true; blendLoad(); }
+    if (name === "blend") {
+      if (!_blendLoaded) { _blendLoaded = true; blendLoad(); }
+      else if (BLEND) renderSlots();       // re-render for the current active voice's registers
+    }
+    if (name === "registers" && typeof highlightActiveRegister === "function") highlightActiveRegister();
     const hash = name === "tuner" ? "#" : "#" + name;
     if (location.hash.slice(1) !== (name === "tuner" ? "" : name)) history.replaceState(null, "", hash);
   }
@@ -516,9 +511,45 @@
     card.appendChild(add); card.appendChild(sum);
     return card;
   }
+  // Per-register blend card: the neural voice blend for ONE register (mapped to its
+  // kokoro_slot in the recipe). This is "voice selection at each register".
+  function registerBlendCard(rk, reg, slot, bl){
+    const card = document.createElement("div"); card.className = "slot"; card.dataset.slot = slot;
+    const head = document.createElement("div"); head.className = "slot__head";
+    const sw = document.createElement("span"); sw.className = "slot__swatch"; sw.style.background = "hsl(" + slotHue(slot) + " 45% 62%)";
+    const n = document.createElement("span"); n.className = "slot__n"; n.textContent = rk;
+    const lab = document.createElement("span"); lab.style.cssText = "font-size:13px;color:var(--text);flex:1;font-weight:var(--font-weight-medium,600);";
+    lab.textContent = (reg.label || ("register " + rk)) + " voice";
+    const label = document.createElement("input"); label.className = "slot__label"; label.type = "hidden"; label.value = (bl.label || reg.label || "");
+    head.appendChild(sw); head.appendChild(n); head.appendChild(lab); head.appendChild(label); card.appendChild(head);
+    const rows = document.createElement("div"); rows.className = "rows";
+    Object.entries(bl.weights || {}).forEach(([v, w]) => rows.appendChild(voiceRow(v, w)));
+    if (!Object.keys(bl.weights || {}).length) rows.appendChild(voiceRow(VOICES[0], 1.0));
+    card.appendChild(rows);
+    const add = document.createElement("button"); add.className = "btn btn--sm"; add.textContent = "+ voice";
+    add.addEventListener("click", () => { rows.appendChild(voiceRow(VOICES[0], 0.5)); updateSums(); });
+    const sum = document.createElement("div"); sum.className = "sum";
+    card.appendChild(add); card.appendChild(sum);
+    return card;
+  }
   function renderSlots(){
-    const host = $("slots"); host.innerHTML = "";
-    (BLEND.registers || []).forEach((reg, i) => host.appendChild(slotCard(reg, reg.slot != null ? reg.slot : i)));
+    const host = $("slots"); host.innerHTML = ""; if (!BLEND) return;
+    const bySlot = {}; (BLEND.registers || []).forEach(r => bySlot[r.slot] = r);
+    const regs = (VOICES_DATA[ACTIVE_VOICE] || {}).registers || {};
+    const keys = Object.keys(regs).sort();
+    const v = VOICES_DATA[ACTIVE_VOICE] || {};
+    if (v.blend_slots === false) {
+      host.innerHTML = '<div class="hint">' + (v.label || ACTIVE_VOICE) + ' uses a stock speaker (sid ' + v.sid + '), not a neural blend, so per-register blends do not apply. Switch to a blend voice (Isabella) to shape register blends.</div>';
+      return;
+    }
+    if (keys.length) {
+      keys.forEach(rk => {
+        const reg = regs[rk]; const slot = reg.kokoro_slot != null ? reg.kokoro_slot : 0;
+        host.appendChild(registerBlendCard(rk, reg, slot, bySlot[slot] || { slot, label:"", weights:{} }));
+      });
+    } else {   // no registers loaded -> fall back to raw slots
+      (BLEND.registers || []).forEach((reg, i) => host.appendChild(slotCard(reg, reg.slot != null ? reg.slot : i)));
+    }
     updateSums();
   }
   function _nextSlot(){
@@ -534,15 +565,19 @@
     });
   }
   function collectBlend(){
-    const regs = [];
-    document.querySelectorAll(".slot").forEach(card => {
-      const weights = {};
+    // Merge the edited cards back into the FULL recipe by slot, preserving any slots not
+    // shown (so editing 3 register blends never drops the rest of the recipe).
+    const bySlot = {}; (BLEND.registers || []).forEach(r => bySlot[r.slot] = Object.assign({}, r));
+    document.querySelectorAll("#slots .slot").forEach(card => {
+      const slot = +card.dataset.slot, weights = {};
       card.querySelectorAll(".voice-row").forEach(r => {
         const v = r.querySelector("select").value, w = parseFloat(r.querySelector("input[type=number]").value) || 0;
         if (w) weights[v] = (weights[v] || 0) + w;
       });
-      regs.push({ slot: +card.dataset.slot, label: card.querySelector(".slot__label").value, weights });
+      const lbl = card.querySelector(".slot__label");
+      bySlot[slot] = { slot, label: (lbl ? lbl.value : (bySlot[slot] || {}).label) || "", weights };
     });
+    const regs = Object.keys(bySlot).map(Number).sort((a, b) => a - b).map(s => bySlot[s]);
     return Object.assign({}, BLEND, { registers: regs });
   }
   async function blendLoad(){
@@ -551,7 +586,7 @@
       const j = await (await fetch("/api/tune/blend")).json();
       if (!j.ok){ $("bl_status").textContent = "load failed: " + (j.error || "?"); return; }
       BLEND = j.blend; VOICES = BLEND.voice_order || []; renderSlots();
-      VLOG.pkg("blend loaded", j.path);
+      console.log("blend loaded", j.path);
       $("bl_status").textContent = "loaded " + j.path;
     } catch(e){ $("bl_status").textContent = "load error"; }
   }
@@ -559,21 +594,17 @@
     if (!BLEND){ $("bl_status").textContent = "load first"; return; }
     $("bl_status").textContent = rebuild ? "saving + rebuilding..." : "saving...";
     try {
+      const saved = collectBlend();               // snapshot the current edits
       const j = await (await fetch("/api/tune/blend", { method:"POST", headers:{"Content-Type":"application/json"},
-        body: JSON.stringify({ blend: collectBlend(), rebuild: !!rebuild }) })).json();
+        body: JSON.stringify({ blend: saved, rebuild: !!rebuild }) })).json();
       if (!j.ok){ $("bl_status").textContent = "save failed: " + (j.error || "?"); return; }
-      VLOG.pkg("blend saved" + (rebuild ? " + rebuilt=" + j.rebuilt : ""), j.path);
+      BLEND = saved;                              // keep in-memory in sync with disk so re-render keeps the edits
+      console.log("blend saved" + (rebuild ? " + rebuilt=" + j.rebuilt : ""), j.path);
       $("bl_status").textContent = rebuild
         ? (j.rebuilt ? "saved + rebuilt + engine hot-swapped" : "saved, rebuild failed: " + (j.rebuild_msg || "?"))
         : "saved -> " + j.path;
     } catch(e){ $("bl_status").textContent = "save error"; }
   }
-  $("bl_add").addEventListener("click", () => {
-    if (!BLEND) { $("bl_status").textContent = "load the ladder first"; return; }
-    $("slots").appendChild(slotCard({ label: "new", weights: {} }, _nextSlot()));
-    updateSums();
-    $("bl_status").textContent = "added slot (Save or rebuild to persist)";
-  });
   $("bl_load").addEventListener("click", blendLoad);
   $("bl_save").addEventListener("click", () => blendSave(false));
   $("bl_rebuild").addEventListener("click", () => blendSave(true));
@@ -631,7 +662,13 @@
     Object.keys(regs).sort().forEach(rk => {
       const r = regs[rk] || {}, pr = r.prosody || {};
       const card = document.createElement("div"); card.className = "slot"; card.dataset.reg = rk;
+      if (rk === ACTIVE_REG) card.classList.add("active");
       const head = document.createElement("div"); head.className = "slot__head";
+      head.title = "Click to shape this register (syncs the Register dropdown)";
+      head.addEventListener("click", (e) => {          // click a card to make it the register you're shaping
+        if (e.target.closest("input,button")) return;
+        selectRegisterFromCard(rk);
+      });
       const sw = document.createElement("span"); sw.className = "slot__swatch";
       sw.style.background = "hsl(" + slotHueR(r.kokoro_slot || 0) + " 45% 62%)";
       const n = document.createElement("span"); n.className = "slot__n"; n.textContent = rk;
@@ -655,6 +692,30 @@
       const envh = document.createElement("div"); envh.className = "hint"; envh.textContent = "SSML range (min → max)";
       card.appendChild(envh);
       PROSODY_DIMS.forEach(f => card.appendChild(rangeRow(f, pr[f.key])));
+      // Chatterbox performer: the profile the expressive SSML renders through.
+      const cbx = r.chatterbox_profile || {};
+      const cbxh = document.createElement("div"); cbxh.className = "hint"; cbxh.style.marginTop = "6px";
+      cbxh.textContent = "Chatterbox performer (expressive path)";
+      card.appendChild(cbxh);
+      const exRow = document.createElement("div");
+      exRow.style.cssText = "display:flex;align-items:center;gap:6px;font-size:11px;color:var(--text-secondary);margin:2px 0;";
+      exRow.title = "exaggeration: this register's Chatterbox performance-intensity range (min -> max)";
+      const mkc = (v, bound) => { const i = document.createElement("input"); i.type = "number"; i.step = 0.05; i.min = 0.3; i.max = 2.0;
+        i.value = (v != null ? v : ""); i.dataset.cbx = "exaggeration"; i.dataset.bound = bound; i.style.width = "62px"; return i; };
+      const exPair = cbx.exaggeration || [];
+      exRow.appendChild(Object.assign(document.createElement("span"), { textContent: "exaggeration", style: "width:80px;" }));
+      exRow.appendChild(mkc(exPair[0], "min"));
+      exRow.appendChild(Object.assign(document.createElement("span"), { textContent: "→" }));
+      exRow.appendChild(mkc(exPair[1], "max"));
+      card.appendChild(exRow);
+      const cfgRow = document.createElement("div");
+      cfgRow.style.cssText = "display:flex;align-items:center;gap:6px;font-size:11px;color:var(--text-secondary);margin:2px 0;";
+      cfgRow.title = "cfg_weight: pacing / adherence feel (lower = looser and more dramatic)";
+      const ci = document.createElement("input"); ci.type = "number"; ci.step = 0.05; ci.min = 0.1; ci.max = 1.0;
+      ci.value = (cbx.cfg_weight != null ? cbx.cfg_weight : ""); ci.dataset.cbx = "cfg_weight"; ci.style.width = "62px";
+      cfgRow.appendChild(Object.assign(document.createElement("span"), { textContent: "cfg_weight", style: "width:80px;" }));
+      cfgRow.appendChild(ci);
+      card.appendChild(cfgRow);
       host.appendChild(card);
     });
   }
@@ -672,6 +733,12 @@
         const a = lo && parseFloat(lo.value), b = hi && parseFloat(hi.value);
         if (!isNaN(a) && !isNaN(b)) r.prosody[f.key] = [a, b];
       });
+      const cp = {}, exLo = card.querySelector('input[data-cbx="exaggeration"][data-bound=min]'),
+            exHi = card.querySelector('input[data-cbx="exaggeration"][data-bound=max]'),
+            cfg = card.querySelector('input[data-cbx="cfg_weight"]');
+      if (exLo && exHi) { const a = parseFloat(exLo.value), b = parseFloat(exHi.value); if (!isNaN(a) && !isNaN(b)) cp.exaggeration = [a, b]; }
+      if (cfg) { const w = parseFloat(cfg.value); if (!isNaN(w)) cp.cfg_weight = w; }
+      if (Object.keys(cp).length) r.chatterbox_profile = cp;
       out[rk] = r;
     });
     return out;
@@ -772,9 +839,24 @@
     });
     ACTIVE_REG = chosen;
   }
+  // Register <-> Envelope are ONE selection: highlight the active register's card, and
+  // let clicking a card drive the dropdown (and vice versa).
+  function highlightActiveRegister(){
+    document.querySelectorAll("#reglist .slot").forEach(c => {
+      const on = c.dataset.reg === ACTIVE_REG;
+      c.classList.toggle("active", on);
+      if (on && !$("view-registers").hidden) c.scrollIntoView({ block:"nearest", behavior:"smooth" });
+    });
+  }
+  function selectRegisterFromCard(key){
+    const sel = $("register");
+    for (const o of sel.options) if (o.dataset.regkey === key) { sel.value = o.value; break; }
+    sel.dispatchEvent(new Event("change"));           // run the normal register-select flow
+  }
   $("register").addEventListener("change", async () => {
     const opt = $("register").selectedOptions[0]; if (!opt) return;
     ACTIVE_REG = opt.dataset.regkey;
+    highlightActiveRegister();                         // Envelope follows the dropdown
     const heldSit = $("situation").value;    // HOLD the situation across register switches (A/B compare)
     $("status").textContent = "register: loading...";
     try {

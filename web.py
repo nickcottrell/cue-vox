@@ -1034,6 +1034,16 @@ def _active_register_prosody():
     return _prosody_for_slot(kokoro_voice._register if _kokoro_available else 0)
 
 
+def _active_chatterbox_profile():
+    """The active register's Chatterbox profile (the performer the SSML renders through):
+    exaggeration range + cfg_weight. The register selects the profile; the expressive
+    render uses it. Empty dict falls back to the caller's defaults."""
+    regs = (_VOICE_REGISTERS or {}).get("registers", {}) or {}
+    key = _active_register if _active_register in regs else _register_for_slot(
+        kokoro_voice._register if _kokoro_available else 0)
+    return ((regs.get(key, {}) or {}).get("chatterbox_profile", {}) or {})
+
+
 # --- Register-as-range: SSML supplies an intensity, the register maps it into [min,max].
 def _rng(v):
     """Coerce a prosody value to (min, max). A scalar s reads as (s, s) -- back-compat
@@ -1151,16 +1161,28 @@ def _register_for_slot(slot):
     return best
 
 
+def _max_render_slot():
+    """The highest kokoro slot any register uses (the register IS the slot, so this bounds
+    the render to real register rows; no phantom slots beyond the register set)."""
+    regs = (_VOICE_REGISTERS or {}).get("registers", {}) or {}
+    return max([int(r.get("kokoro_slot", 0)) for r in regs.values()] or [4])
+
+
 def _floor_register():
     """The register floor as a key (derived from _LIVE_REGISTER_FLOOR, a slot). None = off."""
     return _register_for_slot(_LIVE_REGISTER_FLOOR) if _LIVE_REGISTER_FLOOR is not None else None
 
 
-def set_render_register(reg, reason="", apply_exag=True):
+def set_render_register(reg, reason="", apply_exag=True, gated=True):
     """The SINGLE mutator for the register render-state. Accepts a register key or a slot
     (snapped to the nearest register), clamps to the floor, records _active_register, and
     applies the derived engine state. apply_exag=False lets a caller (autotone) keep its
-    own continuous Chatterbox dial while still owning the discrete Kokoro register here."""
+    own continuous Chatterbox dial while still owning the discrete Kokoro register here.
+
+    Expressive gate (gated=True, the default for the model's autonomous climb): with
+    expressive OFF, only the lowest register is available; the higher registers unlock
+    when expressive is ON. gated=False bypasses the gate for deliberate human auditioning
+    (the tuner's Register dropdown)."""
     global _active_register
     keys = _register_keys()
     if not keys:
@@ -1171,6 +1193,9 @@ def set_render_register(reg, reason="", apply_exag=True):
     floor = _floor_register()
     if floor and str(floor).isdigit() and str(key).isdigit() and int(key) < int(floor):
         key = floor
+    # Expressive gate: expressive OFF pins to the lowest register; ON unlocks the rest.
+    if gated and not _expressive_mode:
+        key = keys[0]
     _active_register = key
     _apply_register(key, apply_exag=apply_exag)
     _vlog("register", "active=%s%s" % (key, (" (" + reason + ")") if reason else ""))
@@ -1328,16 +1353,23 @@ def _render_expressive_to_wav(text, exaggeration):
     cue clips between the runs. Beat-free chunks take the cheap flat path (one synth call),
     identical to before. All engines emit 24kHz/16k mono, so the splices concat directly."""
     import tempfile
+    # The SSML performs THROUGH the active register's Chatterbox profile: the incoming
+    # intensity lerps into the register's exaggeration range, and cfg_weight is the
+    # register's pacing/feel. This is "register -> Chatterbox prosody".
+    prof = _active_chatterbox_profile()
+    t = max(0.0, min(1.0, float(exaggeration) - 1.0))
+    exag = _map_range(prof["exaggeration"], t) if "exaggeration" in prof else exaggeration
+    cfg = float(prof.get("cfg_weight", 0.4))
     ops = resolve_instructions(text, 0, {"pressure": _PRESSURE, "break_mult": _BREAK_MULT})
     if not any(("beat_ms" in o or "pause_ms" in o or "cue" in o) for o in ops):
-        return chatterbox_voice.synth_to_file(strip_markdown_for_tts(text), exaggeration=exaggeration)
+        return chatterbox_voice.synth_to_file(strip_markdown_for_tts(text), exaggeration=exag, cfg_weight=cfg)
     parts, buf = [], []
 
     def _flush_say():
         span = " ".join(s.strip() for s in buf if s.strip())
         buf.clear()
         if span:
-            p = chatterbox_voice.synth_to_file(span, exaggeration=exaggeration)
+            p = chatterbox_voice.synth_to_file(span, exaggeration=exag, cfg_weight=cfg)
             if p:
                 parts.append(p)
 
@@ -5707,7 +5739,7 @@ def resolve_instructions(text, base, tone):
         if op[0] == "say":
             _, span, dv = op
             reg = dv["reg"] if "reg" in dv else base + dv.get("reg_off", 0)
-            reg = max(0, min(4, int(reg)))
+            reg = max(0, min(_max_render_slot(), int(reg)))
             # emphasis: intensity from the tag's force, mapped into the register's range.
             raw_force = dv.get("force", 1.0)
             if raw_force != 1.0 and "emphasis" in pr:
@@ -5755,7 +5787,7 @@ def crystallize_package(text, base, tone, steer="", state=None):
         if op[0] == "say":
             _, span, dv = op
             reg = dv["reg"] if "reg" in dv else base + dv.get("reg_off", 0)
-            reg = max(0, min(4, int(reg)))
+            reg = max(0, min(_max_render_slot(), int(reg)))
             if "gain" in dv:
                 gain = float(dv["gain"])
             else:
@@ -5939,7 +5971,7 @@ def tune_sample():
         if op[0] == "say":
             _, span, dv = op
             reg = dv["reg"] if "reg" in dv else base + dv.get("reg_off", 0)
-            regc = max(0, min(4, int(reg)))
+            regc = max(0, min(_max_render_slot(), int(reg)))
             kokoro_voice.set_register(regc)
             # Precise <prosody gain=...> overrides; otherwise volume pressure that
             # intensifies with the register (heat), scaled by accumulated force.
@@ -6378,7 +6410,7 @@ def tune_register():
     regs = (_VOICE_REGISTERS or {}).get('registers', {}) or {}
     if key not in regs:
         return jsonify(ok=False, error='unknown register: %s' % key), 200
-    set_render_register(key, 'tuner')
+    set_render_register(key, 'tuner', gated=False)   # deliberate audition bypasses the expressive gate
     v = ((_VOICES or {}).get('voices', {}) or {}).get(vid)
     if v is not None:
         v['active_register'] = key       # remember per voice (survives boot)
@@ -6447,6 +6479,17 @@ def tune_registers():
                     else:                       # scalar -> degenerate [s,s]
                         s = round(_cl(val, lo, hi, 1.0), 3)
                         pr[k] = [s, s]
+        cbx = r.get('chatterbox_profile')       # the register's Chatterbox performer
+        if isinstance(cbx, dict):
+            cp = cur.setdefault('chatterbox_profile', {})
+            ex = cbx.get('exaggeration')
+            if isinstance(ex, (list, tuple)) and len(ex) == 2:
+                a = round(_cl(ex[0], 0.3, 2.0, 0.6), 3); b = round(_cl(ex[1], 0.3, 2.0, 1.0), 3)
+                cp['exaggeration'] = [min(a, b), max(a, b)]
+            if 'cfg_weight' in cbx:
+                cp['cfg_weight'] = round(_cl(cbx['cfg_weight'], 0.1, 1.0, 0.4), 3)
+            if 'reference_voice' in cbx:
+                cp['reference_voice'] = str(cbx['reference_voice'])[:40]
     if not _save_voices():
         return jsonify(ok=False, error='write failed'), 200
     if vid == _ACTIVE_VOICE:                    # refresh the live register view
