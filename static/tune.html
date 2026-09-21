@@ -79,16 +79,35 @@
   input[type=number] { width:78px; }
   .sum { font-size:12px; color:var(--text-secondary); margin-top:6px; font-variant-numeric:tabular-nums; }
   .sum.off { color:var(--warning,#d08a5a); }
+  /* Preview freshness: does Play render through the latest saved stack, or stale edits? */
+  .stackstat { font-size:11px; padding:5px 10px; border-radius:999px; white-space:nowrap; align-self:center;
+               border:1px solid transparent; letter-spacing:.01em; }
+  .stackstat.ok { color:var(--success,#5aa469); border-color:color-mix(in srgb, var(--success,#5aa469) 40%, transparent); }
+  .stackstat.stale { color:var(--warning,#d08a5a); border-color:color-mix(in srgb, var(--warning,#d08a5a) 45%, transparent); }
+  /* Per-knob legibility: what it is + a named scale you can place any value on */
+  .pdesc { font-size:10.5px; color:var(--text-secondary); margin:1px 0 3px; line-height:1.4; opacity:.9; }
+  .pscale { font-size:10px; color:var(--text-secondary); margin:2px 0 0; line-height:1.4; font-variant-numeric:tabular-nums; opacity:.75; }
+  .pscale b { color:var(--text); font-weight:var(--font-weight-medium,600); }
+  .pval { color:var(--primary); font-variant-numeric:tabular-nums; }
+  .pval .q { color:var(--text-secondary); }
+  /* Voice fingerprint: a dumb "same voice?" stamp you can eyeball, log, and hear */
+  .vfp { display:flex; align-items:center; gap:8px; margin:0 0 16px; font-size:12px; color:var(--text-secondary); max-width:560px; }
+  .vfp__sw { width:16px; height:16px; border-radius:4px; border:1px solid var(--border); background:var(--surface); flex:0 0 auto; }
+  .vfp__lab { letter-spacing:.06em; text-transform:uppercase; font-size:10px; }
+  .vfp__hash { color:var(--text); font-weight:var(--font-weight-medium,600); font-variant-numeric:tabular-nums; letter-spacing:.04em; }
 </style>
 </head>
 <body>
   <h1>cue-vox &middot; neural tuning wizard</h1>
-  <p class="sub">Governed neural: every knob is a visible bound, not a vibe. Voice sets who speaks, Register sets the range, the Envelope sets the limits, the words fill them.</p>
+  <p class="sub">Governed neural: every knob is a visible bound, not a vibe. A <b>Personality</b> is made of <b>Envelopes</b> (energy bands), each made of <b>Registers</b> (named modes), each made of <b>Voices</b> (Kokoro blends). <b>One ceiling:</b> the engine holds a single ceiling (chill / mid / peak); content fills UP TO it, and peak is a reserved gear reached only by <code>&lt;perform&gt;</code>. The words fill the bounds.</p>
 
-  <!-- Global selectors: Voice > Register, persist across tabs -->
-  <select id="voicesel" class="bigsel" title="Voice: who is speaking"></select>
+  <!-- Global selectors: Personality > Envelope, persist across tabs -->
+  <select id="voicesel" class="bigsel" title="Personality: the character speaking"></select>
   <div class="hint" id="voicekind" style="max-width:560px;margin:2px 0 12px;"></div>
-  <select id="register" class="bigsel" style="margin-bottom:16px;" title="Register: the energy tier (chill / mid / peak)"></select>
+  <select id="register" class="bigsel" style="margin-bottom:10px;" title="Ceiling: the highest register expression can reach right now. Content fills UP TO it; nothing pins at max. chill / mid / peak are its stops. Peak is reserved for &lt;perform&gt; / a deliberate lift."></select>
+  <div id="vfp" class="vfp" title="Voice fingerprint: a hash of the sound-determining config. If this matches the code the bench speaks (and the server log), it is the same voice.">
+    <span class="vfp__sw"></span><span class="vfp__lab">voice</span><span class="vfp__hash">reading…</span>
+  </div>
 
   <!-- ===== Tuner: the situation card + package + deploy ===== -->
   <div class="view" id="view-tuner">
@@ -96,19 +115,29 @@
       <div class="voice-row" style="margin-bottom:8px;">
         <span style="font-size:12px;letter-spacing:.08em;text-transform:uppercase;color:var(--dim);">Situation</span>
         <select id="situation" style="flex:1;"></select>
+        <button class="btn btn--sm" id="sit_add" title="Add and name a new situation for this personality">+ new</button>
       </div>
-      <textarea id="sample" rows="8" style="width:100%;background:#191919;color:var(--ink);border:1px solid var(--line);border-radius:8px;padding:10px;font-family:inherit;font-size:13px;line-height:1.5;resize:vertical;">Okay &lt;break time="250ms"/&gt; hear me out. &lt;break time="500ms"/&gt; At first I thought it was nothing, &lt;prosody rate="slow" volume="soft"&gt;just a little idea.&lt;/prosody&gt; But it kept coming back. &lt;break time="750ms"/&gt; And the more I sat with it, the more it held. &lt;break time="500ms"/&gt; And now, &lt;emphasis level="strong"&gt;I can't sit still.&lt;/emphasis&gt; &lt;break time="250ms"/&gt; Because &lt;prosody pitch="high"&gt;are we onto something real here?&lt;/prosody&gt;</textarea>
-      <div class="hint">The Voice / Register / Situation dropdowns fill this box. Edit freely, then Save sample writes it back to the register. W3C SSML: &lt;break&gt; &lt;emphasis&gt; &lt;prosody rate|volume|pitch&gt; &lt;p&gt;/&lt;s&gt; &lt;sub&gt; &lt;voice&gt;; extensions &lt;beat/&gt; &lt;laugh/&gt; &lt;chuckle/&gt;. Markup v3: a bad tag is spoken as words, never read aloud.</div>
+      <textarea id="sample" rows="8" placeholder="Pick a situation above, or + new to author one. SSML lives here." style="width:100%;background:#191919;color:var(--ink);border:1px solid var(--line);border-radius:8px;padding:10px;font-family:inherit;font-size:13px;line-height:1.5;resize:vertical;"></textarea>
+      <div class="hint">The Personality / Envelope / Situation dropdowns fill this box. Edit freely; changes auto-save to the selected situation (persisted). W3C SSML: &lt;break&gt; &lt;emphasis&gt; &lt;prosody rate|volume|pitch&gt; &lt;p&gt;/&lt;s&gt; &lt;sub&gt; &lt;voice&gt;; extensions &lt;beat/&gt; &lt;laugh/&gt; &lt;giggle/&gt; &lt;chuckle/&gt; &lt;perform&gt;…&lt;/perform&gt; (lift a phrase into the peak register for a bit). Markup v3: a bad tag is spoken as words, never read aloud.</div>
       <div class="row">
-        <button class="btn" id="encode" title="Regenerate: augment the markup, words unchanged">Regenerate</button>
-        <button class="btn" id="translate" title="Translate: infer markup from plain typing">Translate</button>
-        <button class="btn" id="parse" title="Parse: show how the markup renders">Parse</button>
+        <button class="btn" id="parse" title="Inspect: how the active envelope reads this markup (the resolved spans + range mapping)">Inspect</button>
         <button class="btn" id="undo">Undo</button>
       </div>
       <div class="row">
         <button class="btn btn--primary" id="hear">Play</button>
         <button class="btn" id="stop">Stop</button>
+        <span id="stackstatus" class="stackstat ok" title="Whether Play renders through the latest saved stack">● preview is live</span>
       </div>
+      <div class="row" style="align-items:center;gap:10px;">
+        <label style="display:flex;align-items:center;gap:6px;font-size:12px;color:var(--dim);cursor:pointer;" title="Audition through Chatterbox (the expressive engine cue-vox uses). Off = Kokoro.">
+          <input type="checkbox" id="expr"> expressive (Chatterbox)
+        </label>
+        <label id="expr_int_wrap" style="display:none;align-items:center;gap:6px;font-size:11px;color:var(--dim);flex:1;">
+          intensity <input type="range" id="expr_int" min="0" max="1" step="0.05" value="1.0" style="flex:1;max-width:170px;">
+          <span id="expr_int_v" class="pval">1.00</span>
+        </label>
+      </div>
+      <div class="hint" id="expr_hint" style="display:none;">Auditions the <b>selected envelope</b> through Chatterbox, exactly like cue-vox. Intensity 1.0 = the boldest this envelope gets (its exaggeration ceiling); lower it to hear the floor.</div>
       <div id="parseout" style="margin-top:12px;font-size:12px;color:var(--dim);"></div>
     </div>
 
@@ -128,81 +157,33 @@
   <div class="panel">
     <div class="section">Governed neural &middot; the stack</div>
     <div class="hint" style="line-height:1.8;">
-      <b>1 &middot; Voice</b> &rarr; who is speaking<br>
-      <b>2 &middot; Register</b> &rarr; the energy tier (how much range this mood gets)<br>
-      <b>3 &middot; Envelope</b> &rarr; the min &rarr; max bounds each register allows (the leash)<br>
-      <b>4 &middot; Situation</b> &rarr; the script for the moment<br>
-      <b>5 &middot; SSML</b> &rarr; the words, filling the bounds
+      <b>1 &middot; Personality</b> &rarr; the character (a set of envelopes)<br>
+      <b>2 &middot; Envelope</b> &rarr; an energy band (chill / mid / peak): its sound + the min &rarr; max bounds it allows<br>
+      <b>3 &middot; Register</b> &rarr; a named mode inside the envelope (holds one or more voices + a policy)<br>
+      <b>4 &middot; Voice</b> &rarr; the Kokoro blend the register plays (the leaf)<br>
+      <b>5 &middot; Situation + SSML</b> &rarr; the script and words, filling the bounds
     </div>
     <div class="hint" style="margin-top:6px;">A human sets a legible limit at every layer; the model performs inside it. Nothing is a black box.</div>
   </div>
 
-  <div class="panel" style="margin-top:14px;">
-    <div class="section">Delivery &middot; global, on top of the register</div>
-    <div class="slider">
-      <div class="slider__label"><span>Break length &middot; pause</span><span class="val" id="v_brk">1.0x</span></div>
-      <input class="slider__input" type="range" id="brk" min="0.5" max="3" step="0.1" value="1.0">
-      <div class="hint">Pause length: stretches or compresses every silence. In voice design a pause is a "beat", longer beats let a line land and read as weight.</div>
-    </div>
-    <div class="slider">
-      <div class="slider__label"><span>Volume pressure &middot; projection</span><span class="val" id="v_pressure">1.0</span></div>
-      <input class="slider__input" type="range" id="pressure" min="0.5" max="2" step="0.1" value="1.0">
-      <div class="hint">How much harder the voice pushes as the register climbs. This is "intensity" or "projection", the sense of leaning in.</div>
-    </div>
-    <div class="slider">
-      <div class="slider__label"><span>Question rise &middot; terminal rise</span><span class="val" id="v_lift">0.8</span></div>
-      <input class="slider__input" type="range" id="lift" min="0" max="1.5" step="0.1" value="0.8">
-      <div class="hint">How much the last syllable tilts UP: the amount it sounds like a question. High = uptalk (rising boundary tone); zero = flat, declarative, certain.</div>
-    </div>
-    <div class="section">Steering</div>
-    <input id="steer" type="text" placeholder="design direction, e.g. more urgent, lean breathy, add pauses in the middle" style="width:100%;background:#191919;color:var(--ink);border:1px solid var(--line);border-radius:8px;padding:9px;font-family:inherit;font-size:13px;">
-    <div class="hint">Steers Regenerate on the Tuner tab. Leave blank to just refine the existing markup.</div>
-    <div class="section">Earn-curve &middot; how loud is earned</div>
-    <div class="hint">The auto-tone stand-in: how the voice earns its way up to a louder register from the energy in the room. (A model will drive register directly later.)</div>
-    <div class="slider">
-      <div class="slider__label"><span>Gamma &middot; earn steepness</span><span class="val" id="v_gamma">2.2</span></div>
-      <input class="slider__input" type="range" id="gamma" min="1" max="3.5" step="0.1" value="2.2">
-      <div class="hint">How hard it is to get loud. Higher = whisper is the default and drama is expensive; lower = it jumps to loud easily.</div>
-    </div>
-    <div class="slider">
-      <div class="slider__label"><span>Cap &middot; energy budget</span><span class="val" id="v_cap">9.0</span></div>
-      <input class="slider__input" type="range" id="cap" min="3" max="16" step="0.5" value="9">
-      <div class="hint">How much built-up energy it takes to reach the top register. Higher = the peak is rare and hard-won.</div>
-    </div>
-    <div class="slider">
-      <div class="slider__label"><span>Decay &middot; cool-down</span><span class="val" id="v_decay">0.60</span></div>
-      <input class="slider__input" type="range" id="decay" min="0.2" max="0.95" step="0.05" value="0.6">
-      <div class="hint">How fast the energy settles between turns. Low = calms down quickly; high = stays hot longer (momentum).</div>
-    </div>
-    <div class="slider">
-      <div class="slider__label"><span>Loudness floor &middot; what counts as trying</span><span class="val" id="v_loud">0.07</span></div>
-      <input class="slider__input" type="range" id="loud" min="0.03" max="0.15" step="0.005" value="0.07">
-      <div class="hint">The mic level that registers as energy. Talking below this reads as calm; above it spends into the pool.</div>
-    </div>
-  </div>
+  <!-- No globals: every knob is per-register (below). These stay as neutral hidden
+       inputs only so the autotone stand-in + package/deploy keep working at identity;
+       there is no global tuning surface. -->
+  <input id="brk" type="hidden" value="1.0"><input id="pressure" type="hidden" value="1.0">
+  <input id="lift" type="hidden" value="0.8"><input id="steer" type="hidden" value="">
+  <input id="gamma" type="hidden" value="2.2"><input id="cap" type="hidden" value="9">
+  <input id="decay" type="hidden" value="0.6"><input id="loud" type="hidden" value="0.07">
 
   <div class="panel" style="margin-top:14px;">
-    <div class="section">Envelope &middot; per-register bounds</div>
-    <div class="hint">The card marked <b style="color:var(--primary);">● shaping</b> is the register picked in the <b>Register</b> dropdown up top. Pick a register there, or <b>click any card here</b>, to choose which one you shape. They are one selection.</div>
-    <div class="hint">Each register is a <b>timbre</b> (how the voice sounds) plus a <b>prosody envelope</b> (how it reads the same markup). The envelope is a range: min = the gentlest that dimension gets in this register, max = the boldest. A wider range = a more expressive register.</div>
-    <div class="hint" style="line-height:1.7;margin-top:6px;">
-      <b>Timbre</b><br>
-      &bull; <b>slot</b>: which blended voice character (0 breathy &rarr; 4 dramatic). Only bites on the neural-blend voice.<br>
-      &bull; <b>speed</b>: baseline talking pace (industry: <i>rate</i>). 1.0 is natural.<br>
-      &bull; <b>bright</b>: crisp vs soft (industry: <i>brightness / presence</i>, a high-frequency lift). Up = present and forward, down = muffled and intimate.<br>
-      &bull; <b>gain</b>: overall volume (industry: <i>level</i>).<br>
-      <b>Prosody envelope</b> (min &rarr; max)<br>
-      &bull; <b>break</b>: pause length between phrases (industry: <i>pause / dwell</i>). Bigger = more room, weight, gravity.<br>
-      &bull; <b>emphasis</b>: how hard a stressed word gets punched (industry: <i>emphasis / prominence</i>, louder + higher + longer on that word).<br>
-      &bull; <b>rate</b>: how far a slow/fast tag can push the pace (industry: <i>rate / tempo</i>).<br>
-      &bull; <b>lift</b>: how much a "?" tilts the last syllable up (industry: <i>terminal rise / boundary tone</i>), the amount it sounds like a question.
-    </div>
-    <div class="hint" style="margin-top:6px;">Saving writes voices.json, so it survives boot. Hover any field for its meaning.</div>
+    <div class="section">Envelopes &middot; energy bands + their bounds</div>
+    <div class="hint">The card marked <b style="color:var(--primary);">● shaping</b> is the envelope picked in the <b>Envelope</b> dropdown up top. Pick one there, or <b>click any card here</b>, to choose which envelope you shape. They are one selection.</div>
+    <div class="hint">Each envelope is a <b>timbre</b> (how the band sounds) plus a <b>prosody envelope</b> (how it reads the same markup). Scalars are single values; ranges read as <b>min &rarr; max</b> (min = gentlest, max = boldest; a wider range = a more expressive band). Every knob names its own scale, so a value reads as a place (<i>natural</i>, <i>punched</i>) not just a number. Its <b>registers &amp; voices</b> live on the <b>Voices</b> tab.</div>
+    <div class="hint" style="margin-top:6px;">Saving writes voices.json, so it survives boot.</div>
     <div id="reglist" style="margin-top:14px;"></div>
     <div class="row">
-      <button class="btn" id="reg_add">+ Add register</button>
+      <button class="btn" id="reg_add">+ Add envelope</button>
       <button class="btn" id="reg_reload">Reload</button>
-      <button class="btn btn--primary" id="reg_save">Save registers</button>
+      <button class="btn btn--primary" id="reg_save">Save envelopes</button>
     </div>
     <div id="reg_status" style="color:var(--dim);font-size:12px;margin-top:12px;min-height:16px;"></div>
   </div>
@@ -210,10 +191,10 @@
 
   <div class="view" id="view-blend" hidden>
   <div class="panel">
-    <div class="section">Register voices &middot; the neural blend per register</div>
-    <div class="hint">Set the neural voice blend for <b>each register</b> (chill / mid / peak). Each is a weighted mix of the base Kokoro voices, so a register can literally be a different-sounding voice. Registers themselves are added/removed on the <b>Envelope</b> tab; here you set what each one <i>sounds</i> like.</div>
-    <div class="hint" style="margin-top:6px;"><b>The pipeline:</b> edit a register's mix &rarr; <b>Save &amp; rebuild</b> (regenerates the blend and hot-swaps the live engine) &rarr; go to the <b>Tuner</b>, pick that register, and <b>Play</b> to hear it.</div>
-    <div class="section" style="margin-top:14px;">Registers</div>
+    <div class="section">Voices &middot; the neural blend each envelope plays</div>
+    <div class="hint">A <b>Voice</b> is the leaf: the Kokoro blend an envelope's register plays. Set the blend for <b>each envelope</b> (chill / mid / peak) here. Each is a weighted mix of the base Kokoro voices, so an envelope can literally sound like a different person. Envelopes are added/removed on the <b>Envelope</b> tab; here you set what each one <i>sounds</i> like.</div>
+    <div class="hint" style="margin-top:6px;"><b>The pipeline:</b> edit an envelope's voice mix &rarr; <b>Save &amp; rebuild</b> (regenerates the blend and hot-swaps the live engine) &rarr; go to the <b>Tuner</b>, pick that envelope, and <b>Play</b> to hear it.</div>
+    <div class="section" style="margin-top:14px;">Envelopes</div>
     <div id="slots"></div>
     <div class="row">
       <button class="btn" id="bl_load">Load</button>
@@ -229,15 +210,49 @@
   <div class="tabs bottom">
     <button class="tab active" id="tab-tuner" data-view="tuner">Tuner</button>
     <button class="tab" id="tab-registers" data-view="registers">Envelope</button>
-    <button class="tab" id="tab-blend" data-view="blend">Register</button>
+    <button class="tab" id="tab-blend" data-view="blend">Voices</button>
   </div>
 
 <script>
   const $ = id => document.getElementById(id);
   let _hist = [];
   function pushHist(){ _hist.push($("sample").value); if (_hist.length > 60) _hist.shift(); }
+
+  // ===== Voice fingerprint: dumb "same voice?" stamp (hash of the sound config) =====
+  // The server hashes the sound-determining config to a VRGB-style #xxxxxx. We paint it
+  // as its own colour, log it, and the bench speaks it: if all three agree, same voice.
+  let VFP = null;
+  function setFingerprint(fp){
+    if (!fp) return; VFP = fp;
+    const box = $("vfp"); if (!box) return;
+    box.querySelector(".vfp__sw").style.background = fp;   // the hash IS a colour
+    box.querySelector(".vfp__hash").textContent = fp;
+    console.log("%c voice fingerprint " + fp + " ",
+      "font-weight:700;color:#fff;background:" + fp + ";padding:3px 8px;border-radius:4px;");
+  }
+
+  // ===== Preview freshness: is the LIVE stack what Play renders through? =====
+  // Play sends the current text through the live engine (the SAVED envelopes + rebuilt
+  // blend). Edits on the Envelope / Voices tabs do not reach the engine until Saved, so
+  // the preview would be stale. This flag says so honestly.
+  let STACK = { envelopes: false, voices: false };
+  function markStackDirty(kind){ if (kind in STACK && !STACK[kind]) { STACK[kind] = true; renderStackStatus(); } }
+  function markStackClean(kind){ if (kind in STACK && STACK[kind]) { STACK[kind] = false; renderStackStatus(); } }
+  function renderStackStatus(){
+    const el = $("stackstatus"); if (!el) return;
+    const dirty = [];
+    if (STACK.envelopes) dirty.push("envelope edits (Save envelopes)");
+    if (STACK.voices) dirty.push("voice blend (Save & rebuild)");
+    if (!dirty.length){
+      el.className = "stackstat ok"; el.textContent = "● preview is live";
+      el.title = "Play renders through the latest saved stack";
+    } else {
+      el.className = "stackstat stale"; el.textContent = "○ preview stale: " + dirty.join(" + ");
+      el.title = "Play still uses the last saved stack. " + dirty.join("; then Play.") + ".";
+    }
+  }
   // register is a dropdown now (not a slider), handled separately; the rest are dials.
-  const ids = ["gamma","cap","decay","loud","brk","pressure","lift"];
+  const ids = [];   // no global sliders anymore; every knob is per-register (Register/Envelope cards)
   const fmt = { gamma:v=>(+v).toFixed(1), cap:v=>(+v).toFixed(1), decay:v=>(+v).toFixed(2),
                 loud:v=>(+v).toFixed(3), brk:v=>(+v).toFixed(1)+"x", pressure:v=>(+v).toFixed(1), lift:v=>(+v).toFixed(1) };
   function show(id){ $("v_"+id).textContent = fmt[id]($(id).value); }
@@ -298,7 +313,7 @@
   // Presets are editable working slots: switching stashes your edits into the
   // outgoing preset and loads the incoming one, so changes persist across switches.
   let currentPreset = "arc";
-  const SLIDERS = ["gamma","cap","decay","loud","brk","pressure","lift"];
+  const SLIDERS = [];
   let _persistT = null;
   function persist(){
     clearTimeout(_persistT);
@@ -336,12 +351,25 @@
       loadIntoUI(PRESETS[currentPreset]);
     } catch(e){}
   })();
+  // Expressive toggle: reveal the intensity control + hint, so you audition the Chatterbox
+  // path the same way cue-vox renders it.
+  $("expr").addEventListener("change", () => {
+    const on = $("expr").checked;
+    $("expr_int_wrap").style.display = on ? "flex" : "none";
+    $("expr_hint").style.display = on ? "block" : "none";
+  });
+  $("expr_int").addEventListener("input", () => { $("expr_int_v").textContent = (+$("expr_int").value).toFixed(2); });
   $("hear").addEventListener("click", async () => {
-    $("status").textContent = "synthesizing...";
-    await fetch("/api/tune/sample", { method:"POST", headers:{"Content-Type":"application/json"},
-      body: JSON.stringify({ register:+$("register").value, text:$("sample").value,
-        break_mult:+$("brk").value, pressure:+$("pressure").value, lift_amount:+$("lift").value }) });
-    $("status").textContent = "played";
+    const expressive = $("expr").checked;
+    $("status").textContent = expressive ? "synthesizing (chatterbox)..." : "synthesizing...";
+    const j = await (await fetch("/api/tune/sample", { method:"POST", headers:{"Content-Type":"application/json"},
+      body: JSON.stringify({ register:+$("register").value, envelope:ACTIVE_REG, text:$("sample").value,
+        break_mult:+$("brk").value, pressure:+$("pressure").value, lift_amount:+$("lift").value,
+        expressive, intensity:+$("expr_int").value }) })).json();
+    if (!j.ok) { $("status").textContent = "play failed: " + (j.error || "?"); return; }
+    $("status").textContent = j.engine === "chatterbox"
+      ? "played · chatterbox · " + (j.envelope || "?") + " · exag " + j.exaggeration
+      : "played · kokoro · " + (ACTIVE_REG || "?");
   });
   $("stop").addEventListener("click", async () => {
     await fetch("/api/tune/stop", { method:"POST" });
@@ -352,28 +380,6 @@
              decay:+$("decay").value, loud_floor:+$("loud").value, break_mult:+$("brk").value,
              pressure:+$("pressure").value, lift:+$("lift").value };
   }
-  $("encode").addEventListener("click", async () => {
-    $("status").textContent = "regenerating (steered)...";
-    pushHist();
-    try {
-      const r = await fetch("/api/tune/encode", { method:"POST", headers:{"Content-Type":"application/json"},
-        body: JSON.stringify({ text:$("sample").value, steer:$("steer").value }) });
-      const j = await r.json();
-      if (j.ok && j.text) {
-        $("sample").value = j.text;
-        $("status").textContent = j.augmented === false ? (j.warning || "kept words unchanged") : "regenerated (augmented)";
-      } else { _hist.pop(); $("status").textContent = "encode failed: " + (j.error || "?"); }
-    } catch (e) { _hist.pop(); $("status").textContent = "encode error"; }
-  });
-  $("translate").addEventListener("click", async () => {
-    pushHist(); $("status").textContent = "translating (deterministic)...";
-    try {
-      const r = await fetch("/api/tune/translate", { method:"POST", headers:{"Content-Type":"application/json"},
-        body: JSON.stringify({ text:$("sample").value }) });
-      const j = await r.json();
-      if (j.ok) { $("sample").value = j.text; $("status").textContent = "translated (deterministic, tweak freely)"; }
-    } catch (e) { _hist.pop(); $("status").textContent = "translate error"; }
-  });
   $("undo").addEventListener("click", () => {
     if (_hist.length) { $("sample").value = _hist.pop(); $("status").textContent = "undo"; }
     else { $("status").textContent = "nothing to undo"; }
@@ -455,9 +461,10 @@
         body: JSON.stringify(body) });
       const j = await r.json();
       if (!j.ok) { $("status").textContent = "load failed: " + (j.error || "?"); return; }
-      console.log("%c cue-vox voice LOADED into local (v" + j.version + ") ",
+      setFingerprint(j.fingerprint);
+      console.log("%c cue-vox voice LOADED into local (v" + j.version + ") " + (j.fingerprint || ""),
         "font-size:13px;font-weight:700;color:#161616;background:#8fb98f;padding:3px 8px;border-radius:4px;", j.path);
-      $("status").textContent = "loaded into local cue-vox (live now + boot voice) -> " + j.path;
+      $("status").textContent = "loaded into local cue-vox " + (j.fingerprint || "") + " (live now + boot voice); the bench will speak this stamp";
     } catch(e){ $("status").textContent = "load error"; }
   });
 
@@ -488,38 +495,19 @@
     const w = document.createElement("input"); w.type = "number"; w.step = "0.05"; w.min = "0"; w.max = "2";
     w.value = (weight != null ? weight : 0.5); w.addEventListener("input", updateSums);
     const del = document.createElement("button"); del.className = "btn btn--sm"; del.textContent = "remove";
-    del.addEventListener("click", () => { row.remove(); updateSums(); });
+    del.addEventListener("click", () => { row.remove(); updateSums(); markStackDirty("voices"); });
     row.appendChild(sel); row.appendChild(w); row.appendChild(del);
     return row;
   }
-  function slotCard(reg, slot){
-    const card = document.createElement("div"); card.className = "slot"; card.dataset.slot = slot;
-    const head = document.createElement("div"); head.className = "slot__head";
-    const sw = document.createElement("span"); sw.className = "slot__swatch"; sw.style.background = "hsl(" + slotHue(slot) + " 45% 62%)";
-    const n = document.createElement("span"); n.className = "slot__n"; n.textContent = "slot " + slot;
-    const label = document.createElement("input"); label.className = "slot__label"; label.value = reg.label || ""; label.placeholder = "label (e.g. breathy)";
-    const rm = document.createElement("button"); rm.className = "btn btn--sm"; rm.textContent = "remove slot";
-    rm.addEventListener("click", () => { card.remove(); updateSums(); $("bl_status").textContent = "removed slot " + slot + " (Save or rebuild to persist)"; });
-    head.appendChild(sw); head.appendChild(n); head.appendChild(label); head.appendChild(rm); card.appendChild(head);
-    const rows = document.createElement("div"); rows.className = "rows";
-    Object.entries(reg.weights || {}).forEach(([v, w]) => rows.appendChild(voiceRow(v, w)));
-    if (!Object.keys(reg.weights || {}).length) rows.appendChild(voiceRow(VOICES[0], 0.5));   // new slot seeds one voice
-    card.appendChild(rows);
-    const add = document.createElement("button"); add.className = "btn btn--sm"; add.textContent = "+ voice";
-    add.addEventListener("click", () => { rows.appendChild(voiceRow(VOICES[0], 0.5)); updateSums(); });
-    const sum = document.createElement("div"); sum.className = "sum";
-    card.appendChild(add); card.appendChild(sum);
-    return card;
-  }
-  // Per-register blend card: the neural voice blend for ONE register (mapped to its
-  // kokoro_slot in the recipe). This is "voice selection at each register".
+  // Per-register blend card: the neural voice blend for ONE register (mapped to its own
+  // render row in the recipe). This is "voice selection at each register".
   function registerBlendCard(rk, reg, slot, bl){
     const card = document.createElement("div"); card.className = "slot"; card.dataset.slot = slot;
     const head = document.createElement("div"); head.className = "slot__head";
     const sw = document.createElement("span"); sw.className = "slot__swatch"; sw.style.background = "hsl(" + slotHue(slot) + " 45% 62%)";
     const n = document.createElement("span"); n.className = "slot__n"; n.textContent = rk;
     const lab = document.createElement("span"); lab.style.cssText = "font-size:13px;color:var(--text);flex:1;font-weight:var(--font-weight-medium,600);";
-    lab.textContent = (reg.label || ("register " + rk)) + " voice";
+    lab.textContent = (reg.label || ("envelope " + rk)) + " voice";
     const label = document.createElement("input"); label.className = "slot__label"; label.type = "hidden"; label.value = (bl.label || reg.label || "");
     head.appendChild(sw); head.appendChild(n); head.appendChild(lab); head.appendChild(label); card.appendChild(head);
     const rows = document.createElement("div"); rows.className = "rows";
@@ -527,7 +515,7 @@
     if (!Object.keys(bl.weights || {}).length) rows.appendChild(voiceRow(VOICES[0], 1.0));
     card.appendChild(rows);
     const add = document.createElement("button"); add.className = "btn btn--sm"; add.textContent = "+ voice";
-    add.addEventListener("click", () => { rows.appendChild(voiceRow(VOICES[0], 0.5)); updateSums(); });
+    add.addEventListener("click", () => { rows.appendChild(voiceRow(VOICES[0], 0.5)); updateSums(); markStackDirty("voices"); });
     const sum = document.createElement("div"); sum.className = "sum";
     card.appendChild(add); card.appendChild(sum);
     return card;
@@ -535,26 +523,22 @@
   function renderSlots(){
     const host = $("slots"); host.innerHTML = ""; if (!BLEND) return;
     const bySlot = {}; (BLEND.registers || []).forEach(r => bySlot[r.slot] = r);
-    const regs = (VOICES_DATA[ACTIVE_VOICE] || {}).registers || {};
+    const regs = (VOICES_DATA[ACTIVE_VOICE] || {}).envelopes || {};
     const keys = Object.keys(regs).sort();
     const v = VOICES_DATA[ACTIVE_VOICE] || {};
     if (v.blend_slots === false) {
-      host.innerHTML = '<div class="hint">' + (v.label || ACTIVE_VOICE) + ' uses a stock speaker (sid ' + v.sid + '), not a neural blend, so per-register blends do not apply. Switch to a blend voice (Isabella) to shape register blends.</div>';
+      host.innerHTML = '<div class="hint">' + (v.label || ACTIVE_VOICE) + ' uses a stock speaker (sid ' + v.sid + '), not a neural blend, so per-envelope voices do not apply. Switch to a blend personality (Isabella) to shape voices.</div>';
       return;
     }
     if (keys.length) {
       keys.forEach(rk => {
-        const reg = regs[rk]; const slot = reg.kokoro_slot != null ? reg.kokoro_slot : 0;
+        const reg = regs[rk]; const slot = _envSlot(reg);
         host.appendChild(registerBlendCard(rk, reg, slot, bySlot[slot] || { slot, label:"", weights:{} }));
       });
-    } else {   // no registers loaded -> fall back to raw slots
-      (BLEND.registers || []).forEach((reg, i) => host.appendChild(slotCard(reg, reg.slot != null ? reg.slot : i)));
+    } else {
+      host.innerHTML = '<div class="hint">No envelopes yet. Add one on the Envelope tab, then set its voice here.</div>';
     }
     updateSums();
-  }
-  function _nextSlot(){
-    let mx = -1; document.querySelectorAll("#slots .slot").forEach(c => { mx = Math.max(mx, +c.dataset.slot); });
-    return mx + 1;
   }
   function updateSums(){
     document.querySelectorAll(".slot").forEach(card => {
@@ -600,6 +584,7 @@
       if (!j.ok){ $("bl_status").textContent = "save failed: " + (j.error || "?"); return; }
       BLEND = saved;                              // keep in-memory in sync with disk so re-render keeps the edits
       console.log("blend saved" + (rebuild ? " + rebuilt=" + j.rebuilt : ""), j.path);
+      if (rebuild && j.rebuilt) markStackClean("voices");   // only a rebuild hot-swaps the engine; save-only stays stale
       $("bl_status").textContent = rebuild
         ? (j.rebuilt ? "saved + rebuilt + engine hot-swapped" : "saved, rebuild failed: " + (j.rebuild_msg || "?"))
         : "saved -> " + j.path;
@@ -613,52 +598,137 @@
   let VOICES_DATA = {}, ACTIVE_VOICE = null;
   // The prosody rules a register interprets, and the timbre knobs. Each row is a
   // compact number field so all of a register's knobs read at a glance.
-  // Timbre knobs are scalars; prosody dimensions are RANGES [min,max] the SSML maps into.
+  // Envelope (energy) knobs are scalars; prosody dimensions are RANGES [min,max] the SSML
+  // maps into. (A register's render row is auto-managed, not a knob; no "slot" here.)
+  // Each knob carries: what it is (desc), a unit shown on the readout, and a SCALE of
+  // named anchors across (and past) its range. The anchors let you place ANY value on a
+  // legible scale, so even a hypothetical extreme reads as "past theatrical" not just "2.7".
   const TIMBRE_FIELDS = [
-    { key:"kokoro_slot", label:"slot", step:1,    min:0,   max:4,   desc:"which blended voice character (0 breathy to 4 dramatic). Only bites on the neural-blend voice." },
-    { key:"speed",       label:"speed", step:0.01, min:0.5, max:2.0, desc:"baseline talking pace (industry: rate). 1.0 is natural." },
-    { key:"bright",      label:"bright", step:0.05, min:-1,  max:3,   desc:"crisp vs soft (industry: brightness / presence). Up = present and forward, down = muffled and intimate." },
-    { key:"gain",        label:"gain",  step:0.05, min:0.1, max:3.0, desc:"overall volume (industry: level)." },
+    { key:"speed", label:"speed", step:0.01, min:0.5, max:2.0, unit:"×",
+      desc:"baseline talking pace for the whole band (industry: rate). 1.0 is natural.",
+      scale:[[0.7,"slow"],[1.0,"natural"],[1.3,"brisk"],[1.6,"fast"],[2.0,"rushed"]] },
+    { key:"bright", label:"bright", step:0.05, min:-1, max:3, unit:"",
+      desc:"crisp vs soft (industry: brightness / presence, a high-frequency lift). Up = present and forward, down = muffled and intimate.",
+      scale:[[-1,"muffled"],[0,"neutral"],[1,"present"],[2,"crisp"],[3,"piercing"]] },
+    { key:"gain", label:"gain", step:0.05, min:0.1, max:3.0, unit:"×",
+      desc:"overall loudness of the band (industry: level). 1.0 is unity.",
+      scale:[[0.5,"quiet"],[1.0,"unity"],[1.5,"loud"],[2.0,"forceful"],[3.0,"blaring"]] },
   ];
   const PROSODY_DIMS = [
-    { key:"break",    label:"break",    step:0.05, min:0.25, max:4.0, desc:"pause length between phrases (industry: pause / dwell). Bigger = more room, weight, gravity." },
-    { key:"emphasis", label:"emphasis", step:0.05, min:0.5,  max:3.0, desc:"how hard a stressed word gets punched (industry: emphasis / prominence: louder + higher + longer)." },
-    { key:"rate",     label:"rate",     step:0.05, min:0.5,  max:2.0, desc:"how far a slow/fast tag can push the pace (industry: rate / tempo)." },
-    { key:"lift",     label:"lift",     step:0.05, min:0.0,  max:1.5, desc:"how much a question mark tilts the last syllable up (industry: terminal rise). The amount it sounds like a question." },
+    { key:"break", label:"break", step:0.05, min:0.25, max:4.0, unit:"× dwell",
+      desc:"how far this band stretches a written pause (industry: pause / dwell). Bigger = more room, weight, gravity.",
+      scale:[[0.5,"clipped"],[1.0,"natural"],[2.0,"spacious"],[3.0,"dramatic"],[4.0,"suspended"]] },
+    { key:"emphasis", label:"emphasis", step:0.05, min:0.5, max:3.0, unit:"× punch",
+      desc:"how hard a stressed word lands (industry: prominence, louder + higher + longer on the word).",
+      scale:[[1.0,"flat"],[1.5,"firm"],[2.0,"punched"],[3.0,"theatrical"]] },
+    { key:"rate", label:"rate", step:0.05, min:0.5, max:2.0, unit:"× tempo",
+      desc:"how far a slow/fast tag can push the pace inside this band (industry: rate / tempo).",
+      scale:[[0.7,"drawl"],[1.0,"steady"],[1.4,"quick"],[2.0,"patter"]] },
+    { key:"lift", label:"lift", step:0.05, min:0.0, max:1.5, unit:"rise",
+      desc:"how much a question mark tilts the last syllable up (industry: terminal rise). The amount it reads as a question.",
+      scale:[[0.0,"flat"],[0.5,"slight"],[1.0,"question"],[1.5,"sing-song"]] },
   ];
+  // Chatterbox performer knobs (built inline below), same shape so they get scales too.
+  const CBX_EXAG = { key:"exaggeration", ns:"cbx", label:"exaggeration", step:0.05, min:0.3, max:2.5, unit:"",
+    desc:"this band's Chatterbox performance intensity (the expressive path). Range: min = its calmest reading, max = its boldest.",
+    scale:[[0.4,"deadpan"],[0.7,"calm"],[1.0,"expressive"],[1.5,"animated"],[2.0,"over the top"],[2.5,"blown out"]] };
+  const CBX_CFG = { key:"cfg_weight", ns:"cbx", label:"cfg_weight (pace)", step:0.02, min:0.1, max:1.0, unit:"",
+    desc:"pace: floor = slow and deliberate (dry, sarcastic), ceiling = fast and driving (energetic). Rides intensity with exag.",
+    scale:[[0.2,"deliberate"],[0.4,"measured"],[0.55,"driving"],[0.7,"fast"],[0.9,"clipped"]] };
+  const CBX_GAIN = { key:"gain", ns:"cbx", label:"gain (loudness)", step:0.05, min:0.3, max:2.0, unit:"×",
+    desc:"loudness of the expressive path, interpreted post-synth (attenuated below full so it never clips). Floor = quieter, ceiling = full.",
+    scale:[[0.6,"quiet"],[0.9,"soft"],[1.2,"present"],[1.5,"loud"],[2.0,"blaring"]] };
+  // Place a value on a field's named scale, including past the top anchor (hypotheticals).
+  function scaleLabel(v, f){
+    const s = f.scale; if (!s || !s.length) return "";
+    v = parseFloat(v); if (isNaN(v)) return "";
+    if (v <= s[0][0]) return s[0][1] + (v < s[0][0] ? "-" : "");
+    const top = s[s.length - 1];
+    if (v >= top[0]) return top[1] + (v > top[0] ? "+" : "");
+    for (let i = 0; i < s.length - 1; i++)
+      if (v >= s[i][0] && v <= s[i + 1][0])
+        return (v - s[i][0] <= s[i + 1][0] - v) ? s[i][1] : s[i + 1][1];
+    return "";
+  }
+  // The named scale as a legend line, e.g. "0.7 slow · 1.0 natural · 1.6 fast".
+  function scaleLegendEl(f){
+    const el = document.createElement("div"); el.className = "pscale";
+    if (!f.scale) return el;
+    el.innerHTML = (f.unit ? "<b>" + f.unit + "</b>  " : "") +
+      f.scale.map(a => a[0] + " " + a[1]).join("  ·  ");
+    return el;
+  }
+  function descEl(f){
+    const el = document.createElement("div"); el.className = "pdesc"; el.textContent = f.desc || ""; return el;
+  }
   const slotHueR = n => Math.round(250 - (Math.max(0,Math.min(4,n)) / 4) * 220);
+  // A single per-envelope slider (scalar): label + live value with its scale descriptor,
+  // a plain description, the slider, and the named-scale legend under it.
   function timbreField(f, val){
-    const wrap = document.createElement("label");
-    wrap.style.cssText = "display:flex;flex-direction:column;gap:3px;font-size:11px;color:var(--dim);";
-    const inp = document.createElement("input");
-    inp.type = "number"; inp.step = f.step; inp.min = f.min; inp.max = f.max;
-    inp.value = (val != null ? val : ""); inp.dataset.key = f.key; inp.dataset.grp = "timbre";
-    inp.style.width = "68px"; if (f.desc) inp.title = f.label + ": " + f.desc;
-    const lab = Object.assign(document.createElement("span"), { textContent: f.label });
-    if (f.desc) lab.title = f.label + ": " + f.desc;
-    wrap.appendChild(lab);
-    wrap.appendChild(inp);
+    const wrap = document.createElement("div"); wrap.style.cssText = "margin:9px 0;";
+    if (f.desc) wrap.title = f.label + ": " + f.desc;
+    const head = document.createElement("div");
+    head.style.cssText = "display:flex;justify-content:space-between;font-size:11px;color:var(--text);";
+    head.appendChild(Object.assign(document.createElement("span"), { textContent: f.label }));
+    const vv = document.createElement("span"); vv.className = "pval";
+    head.appendChild(vv);
+    const inp = document.createElement("input"); inp.type = "range"; inp.className = "slider__input";
+    inp.step = f.step; inp.min = f.min; inp.max = f.max; inp.value = (val != null ? val : f.min);
+    if (f.cbx) inp.dataset.cbx = f.key; else { inp.dataset.key = f.key; inp.dataset.grp = "timbre"; }
+    const show = () => { vv.innerHTML = (+inp.value) + (f.unit || "") + ' <span class="q">· ' + scaleLabel(inp.value, f) + "</span>"; };
+    inp.addEventListener("input", show);
+    wrap.appendChild(head);
+    if (f.desc) wrap.appendChild(descEl(f));
+    wrap.appendChild(inp); wrap.appendChild(scaleLegendEl(f)); show();
     return wrap;
   }
+  // A per-envelope RANGE (min + max sliders). The band reads the same markup somewhere
+  // between these two anchors, so the readout names both ends on the scale ("natural →
+  // dramatic") and the legend places every value.
   function rangeRow(f, pair){
-    // A prosody dimension: label + min .. max (the register's envelope for this tag).
     var lo = Array.isArray(pair) ? pair[0] : pair, hi = Array.isArray(pair) ? pair[1] : pair;
-    const row = document.createElement("div");
-    row.style.cssText = "display:flex;align-items:center;gap:6px;font-size:11px;color:var(--dim);margin:2px 0;";
-    if (f.desc) row.title = f.label + ": " + f.desc;
-    const mk = (v, bound) => { const i = document.createElement("input"); i.type="number"; i.step=f.step; i.min=f.min; i.max=f.max;
-      i.value = (v != null ? v : ""); i.dataset.dim=f.key; i.dataset.bound=bound; i.style.width="62px"; if (f.desc) i.title = f.label + ": " + f.desc; return i; };
-    row.appendChild(Object.assign(document.createElement("span"), { textContent: f.label, style:"width:64px;" }));
-    row.appendChild(mk(lo, "min"));
-    row.appendChild(Object.assign(document.createElement("span"), { textContent: "→" }));
-    row.appendChild(mk(hi, "max"));
-    return row;
+    const box = document.createElement("div"); box.style.cssText = "margin:9px 0;";
+    if (f.desc) box.title = f.label + ": " + f.desc;
+    const mk = (v, bound) => { const i = document.createElement("input"); i.type = "range"; i.className = "slider__input";
+      i.step = f.step; i.min = f.min; i.max = f.max; i.value = (v != null ? v : f.min); i.dataset[f.ns || "dim"] = f.key; i.dataset.bound = bound;
+      i.style.margin = "2px 0"; return i; };
+    const loInp = mk(lo, "min"), hiInp = mk(hi, "max");
+    const head = document.createElement("div");
+    head.style.cssText = "display:flex;justify-content:space-between;font-size:11px;color:var(--text);";
+    head.appendChild(Object.assign(document.createElement("span"), { textContent: f.label }));
+    const rd = document.createElement("span"); rd.className = "pval";
+    const sync = () => {
+      const a = scaleLabel(loInp.value, f), b = scaleLabel(hiInp.value, f);
+      rd.innerHTML = loInp.value + " → " + hiInp.value +
+        ' <span class="q">· ' + (a === b ? a : a + " → " + b) + "</span>";
+    };
+    head.appendChild(rd);
+    loInp.addEventListener("input", sync); hiInp.addEventListener("input", sync);
+    box.appendChild(head);
+    if (f.desc) box.appendChild(descEl(f));
+    box.appendChild(loInp); box.appendChild(hiInp); box.appendChild(scaleLegendEl(f)); sync();
+    return box;
   }
-  function renderRegisters(){
+  // The Kokoro blend row an envelope plays lives on the Voice leaf (envelope > register >
+  // voice), the single source of truth. Mirrors _env_slot in web.py.
+  function _envSlot(env){
+    const regs = (env && env.registers) || {};
+    const ar = env && env.active_register;
+    const order = (ar && regs[ar] ? [regs[ar]] : []).concat(
+      Object.keys(regs).filter(k => k !== ar).map(k => regs[k]));
+    for (const r of order){
+      const vs = (r && r.voices) || [];
+      const av = r && r.active_voice;
+      const pick = (Number.isInteger(av) && vs[av]) ? vs[av] : vs[0];
+      if (pick && pick.kokoro_slot != null) return pick.kokoro_slot;
+    }
+    return (env && env.kokoro_slot != null) ? env.kokoro_slot : 0;
+  }
+  function renderRegisters(){          // renders the ENVELOPE cards (energy band editor)
     const host = $("reglist"); host.innerHTML = "";
     const v = VOICES_DATA[ACTIVE_VOICE];
-    if (!v) { host.innerHTML = '<div class="hint">no voice loaded</div>'; return; }
-    const regs = v.registers || {};
+    if (!v) { host.innerHTML = '<div class="hint">no personality loaded</div>'; return; }
+    const regs = v.envelopes || {};
     Object.keys(regs).sort().forEach(rk => {
       const r = regs[rk] || {}, pr = r.prosody || {};
       const card = document.createElement("div"); card.className = "slot"; card.dataset.reg = rk;
@@ -670,52 +740,39 @@
         selectRegisterFromCard(rk);
       });
       const sw = document.createElement("span"); sw.className = "slot__swatch";
-      sw.style.background = "hsl(" + slotHueR(r.kokoro_slot || 0) + " 45% 62%)";
+      sw.style.background = "hsl(" + slotHueR(_envSlot(r)) + " 45% 62%)";
       const n = document.createElement("span"); n.className = "slot__n"; n.textContent = rk;
       const label = document.createElement("input"); label.className = "slot__label";
       label.value = r.label || ""; label.placeholder = "label"; label.dataset.key = "label";
       label.addEventListener("input", () => {          // live: description shows on the Tuner tab's Register dropdown as you type
         const rr = _regs()[rk]; if (rr) rr.label = label.value;
         populateRegisterDropdown(ACTIVE_REG);
-        $("reg_status").textContent = "renamed register " + rk + " to \"" + label.value + "\" (live; Save registers to persist)";
+        markStackDirty("envelopes");
+        $("reg_status").textContent = "renamed envelope " + rk + " to \"" + label.value + "\" (live; Save envelopes to persist)";
       });
       const rm = document.createElement("button"); rm.className = "btn btn--sm"; rm.textContent = "remove";
       rm.addEventListener("click", () => {
         delete _regs()[rk]; renderRegisters(); populateRegisterDropdown();
-        $("reg_status").textContent = "removed register " + rk + " (Save registers to persist)";
+        markStackDirty("envelopes");
+        $("reg_status").textContent = "removed envelope " + rk + " (Save envelopes to persist)";
       });
       head.appendChild(sw); head.appendChild(n); head.appendChild(label); head.appendChild(rm); card.appendChild(head);
       const grid = document.createElement("div");
       grid.style.cssText = "display:flex;flex-wrap:wrap;gap:10px;margin-bottom:8px;";
       TIMBRE_FIELDS.forEach(f => grid.appendChild(timbreField(f, r[f.key])));
       card.appendChild(grid);
-      const envh = document.createElement("div"); envh.className = "hint"; envh.textContent = "SSML range (min → max)";
+      const envh = document.createElement("div"); envh.className = "hint"; envh.style.marginTop = "8px";
+      envh.textContent = "Prosody · per-tag (min → max)";
       card.appendChild(envh);
       PROSODY_DIMS.forEach(f => card.appendChild(rangeRow(f, pr[f.key])));
-      // Chatterbox performer: the profile the expressive SSML renders through.
+      // Chatterbox performer: exaggeration range + cfg, as sliders.
       const cbx = r.chatterbox_profile || {};
-      const cbxh = document.createElement("div"); cbxh.className = "hint"; cbxh.style.marginTop = "6px";
+      const cbxh = document.createElement("div"); cbxh.className = "hint"; cbxh.style.marginTop = "8px";
       cbxh.textContent = "Chatterbox performer (expressive path)";
       card.appendChild(cbxh);
-      const exRow = document.createElement("div");
-      exRow.style.cssText = "display:flex;align-items:center;gap:6px;font-size:11px;color:var(--text-secondary);margin:2px 0;";
-      exRow.title = "exaggeration: this register's Chatterbox performance-intensity range (min -> max)";
-      const mkc = (v, bound) => { const i = document.createElement("input"); i.type = "number"; i.step = 0.05; i.min = 0.3; i.max = 2.0;
-        i.value = (v != null ? v : ""); i.dataset.cbx = "exaggeration"; i.dataset.bound = bound; i.style.width = "62px"; return i; };
-      const exPair = cbx.exaggeration || [];
-      exRow.appendChild(Object.assign(document.createElement("span"), { textContent: "exaggeration", style: "width:80px;" }));
-      exRow.appendChild(mkc(exPair[0], "min"));
-      exRow.appendChild(Object.assign(document.createElement("span"), { textContent: "→" }));
-      exRow.appendChild(mkc(exPair[1], "max"));
-      card.appendChild(exRow);
-      const cfgRow = document.createElement("div");
-      cfgRow.style.cssText = "display:flex;align-items:center;gap:6px;font-size:11px;color:var(--text-secondary);margin:2px 0;";
-      cfgRow.title = "cfg_weight: pacing / adherence feel (lower = looser and more dramatic)";
-      const ci = document.createElement("input"); ci.type = "number"; ci.step = 0.05; ci.min = 0.1; ci.max = 1.0;
-      ci.value = (cbx.cfg_weight != null ? cbx.cfg_weight : ""); ci.dataset.cbx = "cfg_weight"; ci.style.width = "62px";
-      cfgRow.appendChild(Object.assign(document.createElement("span"), { textContent: "cfg_weight", style: "width:80px;" }));
-      cfgRow.appendChild(ci);
-      card.appendChild(cfgRow);
+      card.appendChild(rangeRow(CBX_EXAG, cbx.exaggeration));
+      card.appendChild(rangeRow(CBX_CFG, cbx.cfg_weight));
+      card.appendChild(rangeRow(CBX_GAIN, cbx.gain));
       host.appendChild(card);
     });
   }
@@ -733,11 +790,14 @@
         const a = lo && parseFloat(lo.value), b = hi && parseFloat(hi.value);
         if (!isNaN(a) && !isNaN(b)) r.prosody[f.key] = [a, b];
       });
-      const cp = {}, exLo = card.querySelector('input[data-cbx="exaggeration"][data-bound=min]'),
-            exHi = card.querySelector('input[data-cbx="exaggeration"][data-bound=max]'),
-            cfg = card.querySelector('input[data-cbx="cfg_weight"]');
-      if (exLo && exHi) { const a = parseFloat(exLo.value), b = parseFloat(exHi.value); if (!isNaN(a) && !isNaN(b)) cp.exaggeration = [a, b]; }
-      if (cfg) { const w = parseFloat(cfg.value); if (!isNaN(w)) cp.cfg_weight = w; }
+      const cp = {};
+      const _cbxRange = (key) => {   // exag / cfg / gain are all [min,max] ranges now
+        const lo = card.querySelector('input[data-cbx="' + key + '"][data-bound=min]');
+        const hi = card.querySelector('input[data-cbx="' + key + '"][data-bound=max]');
+        if (lo && hi) { const a = parseFloat(lo.value), b = parseFloat(hi.value);
+          if (!isNaN(a) && !isNaN(b)) cp[key] = [a, b]; }
+      };
+      _cbxRange("exaggeration"); _cbxRange("cfg_weight"); _cbxRange("gain");
       if (Object.keys(cp).length) r.chatterbox_profile = cp;
       out[rk] = r;
     });
@@ -747,7 +807,7 @@
     try {
       const j = await (await fetch("/api/tune/voices")).json();
       if (!j.ok) return;
-      VOICES_DATA = j.voices || {}; ACTIVE_VOICE = j.active;
+      VOICES_DATA = j.voices || {}; ACTIVE_VOICE = j.active; setFingerprint(j.fingerprint);
       const sel = $("voicesel"); sel.innerHTML = "";
       Object.keys(VOICES_DATA).forEach(id => {
         const v = VOICES_DATA[id];
@@ -758,8 +818,8 @@
       updateVoiceKind();
       renderRegisters();
       populateRegisterDropdown();
-      const regs = _regs(); const ar = regs[ACTIVE_REG] || {};
-      populateSituations(ar.samples || []);                // blank default on load; nothing auto-loaded
+      populateSituations((VOICES_DATA[ACTIVE_VOICE] || {}).situations || []);   // shared library; blank default
+      STACK = { envelopes: false, voices: false }; renderStackStatus();         // reloaded straight from disk = live
     } catch(e){}
   }
   function updateVoiceKind(){
@@ -773,38 +833,49 @@
       const j = await (await fetch("/api/tune/voice", { method:"POST", headers:{"Content-Type":"application/json"},
         body: JSON.stringify({ voice: vid }) })).json();
       if (!j.ok) { $("reg_status").textContent = "switch failed: " + (j.error || "?"); return; }
-      ACTIVE_VOICE = j.active; updateVoiceKind(); renderRegisters();
-      populateRegisterDropdown(j.register);
+      ACTIVE_VOICE = j.active; updateVoiceKind(); renderRegisters(); setFingerprint(j.fingerprint);
+      populateRegisterDropdown(j.envelope);
       populateSituations(j.samples || []);                 // blank default; field stays until a situation is picked
-      $("status").textContent = "voice: " + ACTIVE_VOICE + " (live + boot default)";
-      $("reg_status").textContent = "voice is now " + ACTIVE_VOICE + ", register " + (j.register || "?");
+      $("status").textContent = "personality: " + ACTIVE_VOICE + " (live + boot default)";
+      $("reg_status").textContent = "personality is now " + ACTIVE_VOICE + ", envelope " + (j.envelope || "?");
+      STACK = { envelopes: false, voices: false }; renderStackStatus();   // server switched the live voice
     } catch(e){ $("reg_status").textContent = "switch error"; }
   });
   $("reg_reload").addEventListener("click", loadVoices);
   function _nextRegKey(regs){ let n = 1; while (regs[String(n)]) n++; return String(n); }
   $("reg_add").addEventListener("click", () => {
     const regs = _regs(); const k = _nextRegKey(regs);
-    regs[k] = { label: "new", kokoro_slot: 2, speed: 1.0, bright: 0.0, gain: 1.0, exaggeration: 1.0,
-                prosody: { break: [0.9, 1.3], emphasis: [1.0, 1.4], rate: [0.9, 1.1], lift: [0.6, 0.9] }, samples: [] };
+    // Auto-assign the next blend row for the new envelope's default Voice; never a user
+    // knob. New envelopes get a distinct row so their voice does not collide.
+    let nextRow = 0; Object.values(regs).forEach(r => { nextRow = Math.max(nextRow, _envSlot(r) + 1); });
+    regs[k] = { label: "new", speed: 1.0, bright: 0.0, gain: 1.0, exaggeration: 1.0,
+                prosody: { break: [0.9, 1.3], emphasis: [1.0, 1.4], rate: [0.9, 1.1], lift: [0.6, 0.9] },
+                chatterbox_profile: { exaggeration: [0.6, 1.0], cfg_weight: 0.4, reference_voice: "" },
+                active_register: "default",
+                registers: { default: { label: "default", policy: "", active_voice: 0,
+                             voices: [{ label: "new", kokoro_slot: nextRow }] } } };
     renderRegisters(); populateRegisterDropdown();
-    $("reg_status").textContent = "added register " + k + " (Save registers to persist)";
+    markStackDirty("envelopes");
+    $("reg_status").textContent = "added envelope " + k + " (Save to persist)";
   });
   $("reg_save").addEventListener("click", async () => {
-    $("reg_status").textContent = "saving registers...";
+    $("reg_status").textContent = "saving envelopes...";
     try {
       // replace=true: authoritative set (adds new cards, prunes removed ones); the
-      // backend keeps unsent fields (samples) on survivors.
-      const j = await (await fetch("/api/tune/registers", { method:"POST", headers:{"Content-Type":"application/json"},
-        body: JSON.stringify({ voice: ACTIVE_VOICE, registers: collectRegisters(), replace: true }) })).json();
+      // backend keeps unsent fields (the nested registers/voices) on survivors.
+      const j = await (await fetch("/api/tune/envelopes", { method:"POST", headers:{"Content-Type":"application/json"},
+        body: JSON.stringify({ voice: ACTIVE_VOICE, envelopes: collectRegisters(), replace: true }) })).json();
       if (!j.ok) { $("reg_status").textContent = "save failed: " + (j.error || "?"); return; }
-      if (VOICES_DATA[ACTIVE_VOICE]) VOICES_DATA[ACTIVE_VOICE].registers = j.registers;
+      if (VOICES_DATA[ACTIVE_VOICE]) VOICES_DATA[ACTIVE_VOICE].envelopes = j.envelopes;
       renderRegisters(); populateRegisterDropdown();     // reflect adds/removes
-      $("reg_status").textContent = "saved " + ACTIVE_VOICE + " (" + Object.keys(j.registers || {}).length + " registers) -> voices.json";
+      setFingerprint(j.fingerprint);                     // config changed -> new stamp
+      markStackClean("envelopes");                       // saved -> live engine has these on next Play
+      $("reg_status").textContent = "saved " + ACTIVE_VOICE + " (" + Object.keys(j.envelopes || {}).length + " envelopes) -> voices.json";
     } catch(e){ $("reg_status").textContent = "save error"; }
   });
   // ===== Register dropdown (Voice > Register), first-class selector =====
   let ACTIVE_REG = null, CURRENT_SAMPLES = [];
-  function _regs(){ return (VOICES_DATA[ACTIVE_VOICE] || {}).registers || {}; }
+  function _regs(){ return (VOICES_DATA[ACTIVE_VOICE] || {}).envelopes || {}; }   // the personality's envelopes
   function _loadText(s){ if (s == null) return; pushHist(); $("sample").value = s; stashCurrent(); persist(); }
   function populateSituations(samples){
     CURRENT_SAMPLES = Array.isArray(samples) ? samples : [];
@@ -824,14 +895,28 @@
     const s = CURRENT_SAMPLES[parseInt(v, 10)];
     if (s && s.ssml != null) { _loadText(s.ssml); $("status").textContent = "situation: " + (s.situation || v); }
   });
+  $("sit_add").addEventListener("click", async () => {
+    const name = (prompt("Name this situation:") || "").trim();
+    if (!name) return;
+    CURRENT_SAMPLES.push({ situation: name, ssml: $("sample").value });  // captures whatever is in the box
+    try {
+      const j = await (await fetch("/api/tune/situations", { method:"POST", headers:{"Content-Type":"application/json"},
+        body: JSON.stringify({ voice: ACTIVE_VOICE, situations: CURRENT_SAMPLES }) })).json();
+      if (!j.ok) { $("status").textContent = "add failed: " + (j.error || "?"); return; }
+      if (VOICES_DATA[ACTIVE_VOICE]) VOICES_DATA[ACTIVE_VOICE].situations = j.situations;
+      populateSituations(j.situations || CURRENT_SAMPLES);
+      $("situation").value = String(CURRENT_SAMPLES.length - 1);  // select the new one
+      $("status").textContent = 'added situation "' + name + '" (shared across all envelopes)';
+    } catch(e){ $("status").textContent = "add error"; }
+  });
   function populateRegisterDropdown(preferred){
     const regs = _regs(), sel = $("register"); sel.innerHTML = "";
     const keys = Object.keys(regs).sort();
-    let chosen = (preferred && regs[preferred]) ? preferred : (VOICES_DATA[ACTIVE_VOICE] || {}).active_register;
+    let chosen = (preferred && regs[preferred]) ? preferred : (VOICES_DATA[ACTIVE_VOICE] || {}).active_envelope;
     if (!(chosen && regs[chosen])) chosen = keys[0] || null;
     keys.forEach(k => {
       const o = document.createElement("option");
-      o.value = (regs[k].kokoro_slot != null ? regs[k].kokoro_slot : 0);   // slot -> Hear/Parse use $("register").value
+      o.value = _envSlot(regs[k]);   // the envelope's Voice blend row -> Hear/Parse use $("register").value
       o.dataset.regkey = k;
       o.textContent = k + " · " + (regs[k].label || "");
       if (k === chosen) o.selected = true;
@@ -857,41 +942,47 @@
     const opt = $("register").selectedOptions[0]; if (!opt) return;
     ACTIVE_REG = opt.dataset.regkey;
     highlightActiveRegister();                         // Envelope follows the dropdown
-    const heldSit = $("situation").value;    // HOLD the situation across register switches (A/B compare)
-    $("status").textContent = "register: loading...";
+    const heldSit = $("situation").value;    // HOLD the situation across envelope switches (A/B compare)
+    $("status").textContent = "envelope: loading...";
     try {
-      const j = await (await fetch("/api/tune/register", { method:"POST", headers:{"Content-Type":"application/json"},
-        body: JSON.stringify({ voice: ACTIVE_VOICE, register: ACTIVE_REG }) })).json();
-      if (!j.ok) { $("status").textContent = "register failed: " + (j.error || "?"); return; }
+      const j = await (await fetch("/api/tune/envelope", { method:"POST", headers:{"Content-Type":"application/json"},
+        body: JSON.stringify({ voice: ACTIVE_VOICE, envelope: ACTIVE_REG }) })).json();
+      if (!j.ok) { $("status").textContent = "envelope failed: " + (j.error || "?"); return; }
       populateSituations(j.samples || []);
       const s = (heldSit !== "") ? CURRENT_SAMPLES[parseInt(heldSit, 10)] : null;
       if (s) {   // same situation, new register -> reload its script and Hear to compare
         $("situation").value = heldSit; _loadText(s.ssml);
-        $("status").textContent = "register " + ACTIVE_REG + ", situation held (" + (s.situation || heldSit) + "), Play to compare";
+        $("status").textContent = "envelope " + ACTIVE_REG + ", situation held (" + (s.situation || heldSit) + "), Play to compare";
       } else {
-        $("status").textContent = "register " + ACTIVE_REG + " set, " + CURRENT_SAMPLES.length + " situations, pick one";
+        $("status").textContent = "envelope " + ACTIVE_REG + " set, " + CURRENT_SAMPLES.length + " situations, pick one";
       }
     } catch(e){ $("status").textContent = "register error"; }
   });
-  // Save the edited sample back to the active register (samples are per register).
-  (function(){
-    const btn = document.createElement("button");
-    btn.id = "savesample"; btn.textContent = "Save sample"; btn.className = "btn";
-    btn.addEventListener("click", async () => {
-      if (!ACTIVE_REG) { $("status").textContent = "no register selected"; return; }
-      $("status").textContent = "saving sample to register " + ACTIVE_REG + "...";
+  // The text box auto-persists edits to the SELECTED situation in the personality's SHARED
+  // library (so every register performs the same script for A/B compare), debounced. No
+  // situation picked = nowhere to save (pick or + new one first). No Save button.
+  let _autoSaveT = null;
+  function _autoPersistText(){
+    const sitVal = $("situation").value, i = parseInt(sitVal, 10);
+    if (sitVal === "" || !CURRENT_SAMPLES[i]) return;    // nothing to save until a situation is selected
+    clearTimeout(_autoSaveT);
+    _autoSaveT = setTimeout(async () => {
+      CURRENT_SAMPLES[i].ssml = $("sample").value;       // update the selected situation, send the list
       try {
-        const body = { voice: ACTIVE_VOICE, registers: {} };
-        body.registers[ACTIVE_REG] = { sample: $("sample").value };
-        const j = await (await fetch("/api/tune/registers", { method:"POST", headers:{"Content-Type":"application/json"},
-          body: JSON.stringify(body) })).json();
+        const j = await (await fetch("/api/tune/situations", { method:"POST", headers:{"Content-Type":"application/json"},
+          body: JSON.stringify({ voice: ACTIVE_VOICE, situations: CURRENT_SAMPLES }) })).json();
         if (!j.ok) { $("status").textContent = "save failed: " + (j.error || "?"); return; }
-        if (VOICES_DATA[ACTIVE_VOICE]) VOICES_DATA[ACTIVE_VOICE].registers = j.registers;
-        $("status").textContent = "sample saved to " + ACTIVE_VOICE + " register " + ACTIVE_REG;
+        if (VOICES_DATA[ACTIVE_VOICE]) { VOICES_DATA[ACTIVE_VOICE].situations = j.situations; CURRENT_SAMPLES = j.situations || CURRENT_SAMPLES; }
+        $("status").textContent = "saved to situation (shared)";
       } catch(e){ $("status").textContent = "save error"; }
-    });
-    const hear = $("hear"); if (hear && hear.parentNode) hear.parentNode.appendChild(btn);
-  })();
+    }, 600);
+  }
+  $("sample").addEventListener("input", _autoPersistText);
+  // Any edit on the Envelope / Voices tabs makes the live preview stale until Saved.
+  $("reglist").addEventListener("input", () => markStackDirty("envelopes"));
+  $("slots").addEventListener("input", () => markStackDirty("voices"));
+  $("slots").addEventListener("change", () => markStackDirty("voices"));
+  renderStackStatus();
   loadVoices();
 
   if (["blend","registers"].includes(location.hash.slice(1))) showView(location.hash.slice(1));   // deep-link support

@@ -898,6 +898,15 @@ socket.on('bench_lock', (data) => {
   setPendingInput(!!(data && data.locked));
 });
 
+// Voice fingerprint: the dumb "same voice?" stamp. Logged (colored with the hash itself,
+// which is a #xxxxxx) on connect and on every voice change, so the console always shows
+// which voice cue-vox is speaking with. Ask "what's your voice fingerprint" to hear it.
+socket.on('voice_fingerprint', (data) => {
+  if (!data || !data.fingerprint) return;
+  console.log('%c voice fingerprint ' + data.fingerprint + ' ' + (data.voice ? '(' + data.voice + ')' : ''),
+    'font-weight:700;color:#fff;background:' + data.fingerprint + ';padding:3px 8px;border-radius:4px;');
+});
+
 socket.on('state_change', (data) => {
   console.log('🔄 State change:', data.state);
   // The server flips to 'speaking' as soon as it queues the reply, but the voice is
