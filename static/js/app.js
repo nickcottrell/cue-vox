@@ -620,7 +620,7 @@ window.addEventListener('blur', () => {
 // ============================================
 var micStream = null;
 var liveMode = false;
-var _audioCtx = null, _vadAnalyser = null, _vadBuf = null, _vadTimer = null;
+var _audioCtx = null, _vadAnalyser = null, _vadBuf = null, _vadTimer = null, _freqBuf = null;
 var _vadState = 'idle';           // 'idle' | 'capturing'
 var _voiceOnset = 0, _lastVoice = 0;
 var _bargeOnset = 0;              // start of cumulative barge-voiced speech while assistant speaks
@@ -683,6 +683,21 @@ function _vadTick() {
   var now = performance.now();
   var level = _vadRms();
   var voiced = level > window.VAD.threshold;
+
+  // EQ-band particle emission: while the assistant clip is sounding (cvx-audio), read the
+  // mic spectrum -- on speakers it hears the voice -- and emit per band. Bass throws big,
+  // slow, warm dots; treble fast, bright, cool ones. Emission probability tracks each
+  // band's energy, so louder bands throw more. (Live + speakers; headphones have no pickup.)
+  if (_vadAnalyser && document.body.classList.contains('cvx-audio')) {
+    if (!_freqBuf) _freqBuf = new Uint8Array(_vadAnalyser.frequencyBinCount);
+    _vadAnalyser.getByteFrequencyData(_freqBuf);
+    var band = function (lo, hi) { var s = 0; for (var i = lo; i < hi; i++) s += _freqBuf[i]; return s / ((hi - lo) * 255); };
+    var lowE = band(1, 20), midE = band(20, 90), hiE = band(90, 300);   // ~0.9k / 0.9-4k / 4-14k Hz
+    var F = 0.16;
+    if (lowE > F && Math.random() < lowE * 1.1) cvxSpawnParticle({ sz: 8 + lowE * 7, reach: 52 + lowE * 30, dur: 1.5 + lowE * 0.6, op: 0.40 + lowE * 0.30, hue: -30 });
+    if (midE > F && Math.random() < midE * 1.3) cvxSpawnParticle({ sz: 5 + midE * 4, reach: 72 + midE * 40, dur: 1.2,             op: 0.50 + midE * 0.30, hue: 0 });
+    if (hiE  > F && Math.random() < hiE  * 1.5) cvxSpawnParticle({ sz: 3 + hiE  * 3, reach: 92 + hiE  * 40, dur: 0.85,            op: 0.50 + hiE  * 0.35, hue: 45 });
+  }
 
   // VOICE BARGE: talk over the assistant while it is SPEAKING to hold it. Needs voice above
   // the barge threshold for bargeSustainMs of CUMULATIVE loud speech -- brief inter-word dips
@@ -797,6 +812,56 @@ function refreshModeBadges() {
   if (live) live.addEventListener('click', toggleLiveMode);
   if (expr) expr.addEventListener('click', toggleExpressive);
   refreshModeBadges();
+})();
+
+// Tap the circle for a quick check-in: nudge the voice to a short casual greeting.
+// Only when at rest, so it never interrupts a reply / recording / hold.
+if (stateDot) {
+  stateDot.addEventListener('click', function () {
+    var st = stateDot.getAttribute('data-state');
+    if (st && st !== 'idle') return;
+    socket.emit('nudge');
+  });
+}
+
+// Spawn ONE diffuse particle. Shared by the amplitude emitter (non-live) and the EQ-band
+// emitter (live, in _vadTick). It animates ONCE (forwards) and removes itself, so sound
+// emits particles and silence just stops NEW ones -- the in-flight dots always finish.
+// opts: angle, reach, sz, dur, op, hue (deg of hue-rotate for band colour).
+function cvxSpawnParticle(o) {
+  var container = document.querySelector('.state-dot__particles');
+  if (!container) return;
+  o = o || {};
+  var p = document.createElement('span');
+  p.className = 'p';
+  p.style.setProperty('--a', (o.angle != null ? o.angle : Math.random() * 360).toFixed(1) + 'deg');
+  p.style.setProperty('--reach', (o.reach != null ? o.reach : 70).toFixed(0) + 'px');
+  p.style.setProperty('--sz', (o.sz != null ? o.sz : 5).toFixed(1) + 'px');
+  p.style.setProperty('--dur', (o.dur != null ? o.dur : 1.4).toFixed(2) + 's');
+  p.style.setProperty('--op', (o.op != null ? o.op : 0.6).toFixed(2));
+  if (o.hue) p.style.filter = 'hue-rotate(' + o.hue + 'deg) blur(0.6px)';
+  container.appendChild(p);
+  p.addEventListener('animationend', function () { p.remove(); });
+}
+
+// Amplitude emitter (NON-live fallback): while a clip sounds, spawn generic diffuse dots.
+// In live mode the EQ-band emitter (in _vadTick) takes over, so this stands down.
+(function cvxAmplitudeEmitter() {
+  if (!document.querySelector('.state-dot__particles')) return;
+  var emitting = false, timer = null;
+  function tick() {
+    if (!emitting) return;
+    if (!document.body.hasAttribute('data-live')) {   // live -> the FFT band emitter handles it
+      cvxSpawnParticle({ reach: 58 + Math.random() * 34, sz: 3 + Math.random() * 3,
+                         dur: 1.0 + Math.random() * 0.9, op: 0.35 + Math.random() * 0.4 });
+    }
+    timer = setTimeout(tick, 90 + Math.random() * 80);   // jittered ~90-170ms cadence
+  }
+  function start() { if (!emitting) { emitting = true; tick(); } }
+  function stop() { emitting = false; clearTimeout(timer); }   // in-flight dots finish on their own
+  new MutationObserver(function () {
+    if (document.body.classList.contains('cvx-audio')) start(); else stop();
+  }).observe(document.body, { attributes: true, attributeFilter: ['class'] });
 })();
 
 // L toggles live mode (ignored while typing in a field).
@@ -1258,6 +1323,7 @@ socket.on("tts_chunk_ended", function(data) {
   // means seamless back-to-back chunks never blip.
   clearTimeout(interChunkTimer);
   interChunkTimer = setTimeout(function () {
+    document.body.classList.remove('cvx-audio');   // real gap: silence -> particles freeze
     currentState = "synthing";
     stateStartTime = Date.now();
     if (stateDot) stateDot.setAttribute('data-state', 'synthing');
@@ -1273,6 +1339,7 @@ socket.on("tts_chunk_ended", function(data) {
 
 socket.on("tts_chunk_start", function(data) {
   clearTimeout(interChunkTimer);   // next paragraph is ready: no gap to fill
+  document.body.classList.add('cvx-audio');   // a clip is sounding -> particles loop
   hideGateCard();                  // resumed reply clears any WAIT/held cue
   flushPendingResponse();          // voice is playing now: reveal the held text
   // The moment the voice is truly ready: crossfade the gap ambience into the voice
@@ -1319,6 +1386,7 @@ socket.on("tts_chunk_start", function(data) {
 
 socket.on("tts_chunk_done", function() {
   clearTimeout(interChunkTimer);   // reply finished: no more between-paragraph gaps
+  document.body.classList.remove('cvx-audio');   // reply done -> particles stop
   flushPendingResponse();          // safety: reveal text even if no chunk_start fired
   fadeOutSound("thinking", 200);   // clear any initial-gap fill
   fadeOutSound("working", 200);    // clear any inline-gap (working) fill

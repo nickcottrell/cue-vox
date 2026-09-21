@@ -980,6 +980,43 @@ body[data-live] .state-dot__inner {
   50% { transform: scale(1.06); }
 }
 
+/* ===== Speaking particles: an EMITTER tied to the audio (no spinner, no freeze) =====
+   JS spawns each dot while a voice clip is sounding (body.cvx-audio); every dot animates
+   ONCE (forwards) and removes itself -- so sound emits particles and silence just stops
+   NEW ones, never freezing the ones in flight. Diffuse: JS randomizes each dot's angle,
+   reach, size, duration, and opacity; a soft blur spreads them. Live throws them further
+   (JS raises --reach / --sz). */
+.state-dot__particles {
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+  overflow: visible;
+}
+.state-dot__particles .p {
+  position: absolute;
+  top: 50%;
+  left: 50%;
+  width: var(--sz, 5px);
+  height: var(--sz, 5px);
+  margin: calc(var(--sz, 5px) / -2) 0 0 calc(var(--sz, 5px) / -2);
+  border-radius: 50%;
+  background: var(--state-speaking, #00ff00);
+  filter: blur(0.6px);
+  opacity: 0;
+  will-change: transform, opacity;
+  animation: cvx-particle var(--dur, 1.4s) ease-out forwards;
+}
+@keyframes cvx-particle {
+  0%   { opacity: 0; transform: rotate(var(--a, 0deg)) translateX(38px) scale(0.3); }
+  18%  { opacity: var(--op, 0.7); }
+  100% { opacity: 0; transform: rotate(var(--a, 0deg)) translateX(var(--reach, 78px)) scale(1); }
+}
+
+/* Respect reduced-motion: no particle emitter. */
+@media (prefers-reduced-motion: reduce) {
+  .state-dot__particles { display: none; }
+}
+
 /* Stop audio button under dot */
 .canvas__stop-btn {
   position: absolute;

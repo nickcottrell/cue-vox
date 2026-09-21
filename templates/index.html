@@ -153,6 +153,9 @@
         <!-- State Indicator Dot -->
         <div class="state-dot" id="stateDot" role="status" aria-label="System state">
             <div class="state-dot__inner" data-state="idle"></div>
+            <!-- Particle emitter (JS-driven): dots are spawned while a voice clip is
+                 sounding (body.cvx-audio) and drift out + fade on their own. -->
+            <div class="state-dot__particles" aria-hidden="true"></div>
         </div>
 
         <!-- Objection gate cue card: shown while HOLDING for a ruling -->

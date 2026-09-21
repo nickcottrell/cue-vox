@@ -10272,6 +10272,28 @@ def _assemble_and_respond(text, brevity=None, aperture_hex=None):
     }
 
 
+_NUDGE_GREETINGS = [
+    "Hey!", "Hey, how's it going?", "Yeah, what's up?", "Right here.",
+    "Mm, go ahead.", "Ok, I'm listening.", "Hey you.", "What's on your mind?",
+]
+
+
+@socketio.on('nudge')
+def handle_nudge(data=None):
+    """A tap on the circle: a quick check-in. Speak a short, casual greeting in the current
+    voice -- deterministic and instant (no model turn), so the user can poke the voice to
+    say hi. Rides the tuned voice / active track like any reply."""
+    import random
+    g = random.choice(_NUDGE_GREETINGS)
+    try:
+        emit('state_change', {'state': 'speaking'})
+        emit("response", {"text": g, "tts_chunks": tts_chunk_split(sanitize_for_tts(g))})
+        speak_chunked(g)
+        emit('state_change', {'state': 'idle'})
+    except Exception as exc:
+        print("[NUDGE] %s" % exc, flush=True)
+
+
 @socketio.on('text_message')
 def handle_text_message(data):
     """Handle text message from input field - same flow as voice but without transcription"""
