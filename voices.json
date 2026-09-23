@@ -55,7 +55,7 @@
           "label": "chill",
           "speed": 0.97,
           "bright": 0.25,
-          "gain": 0.9,
+          "gain": 0.4,
           "exaggeration": 0.6,
           "prosody": {
             "break": [
@@ -86,8 +86,8 @@
             ],
             "reference_voice": "",
             "gain": [
-              0.7,
-              0.9
+              0.55,
+              0.65
             ]
           },
           "registers": {
@@ -107,7 +107,7 @@
           "label": "mid",
           "speed": 1.0,
           "bright": 0.95,
-          "gain": 1.15,
+          "gain": 1.0,
           "exaggeration": 1.2,
           "prosody": {
             "break": [
@@ -159,7 +159,7 @@
           "label": "peak",
           "speed": 1.05,
           "bright": 1.6,
-          "gain": 1.45,
+          "gain": 1.0,
           "exaggeration": 1.7,
           "prosody": {
             "break": [

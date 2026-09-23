@@ -1286,7 +1286,11 @@ def _apply_register(n, apply_exag=True):
         return
     if _kokoro_available:
         kokoro_voice.set_register(_env_slot(reg))
-        kokoro_voice.set_prosody(speed=reg.get("speed"), bright=reg.get("bright"), gain=reg.get("gain"))
+        kokoro_voice.set_prosody(speed=reg.get("speed"), bright=reg.get("bright"))
+        # The envelope's `gain` is the register's DURABLE master trim (post-synth), not a
+        # per-span value the render would overwrite. This is the knob that sets how loud the
+        # expressive-OFF (Kokoro) register sits relative to expressive-ON.
+        kokoro_voice.set_master(reg.get("gain"))
         _pr = reg.get("prosody") or {}
         if "lift" in _pr:
             kokoro_voice.set_prosody(lift=_pr.get("lift"))
@@ -1716,6 +1720,7 @@ def _render_ssml_to_wav(text):
             p = kokoro_voice.synth_to_file(it["say"], question=it.get("lift"))
             kokoro_voice.set_register(base)
             return p
+        kokoro_voice.set_prosody(speed=it.get("speed"), gain=it.get("gain"))   # single span honors the per-span pressure gain; composes with the register master
         return kokoro_voice.synth_to_file(it["say"], question=it.get("lift"))
     parts = []
     for it in instr:

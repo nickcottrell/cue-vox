@@ -40,6 +40,11 @@ THREADS = int(os.environ.get("CUE_VOX_VOICE_THREADS", "8"))
 _speed = SPEED
 _bright = float(os.environ.get("CUE_VOX_VOICE_BRIGHT", "0.0"))
 _gain = float(os.environ.get("CUE_VOX_VOICE_GAIN", "1.0"))
+# master = a per-register loudness trim, applied post-synth ON TOP of _gain. _gain carries
+# the per-span dynamics (pressure/emphasis); _master is the register's durable output level
+# (its envelope `gain` in voices.json). They multiply, so a quiet register stays quiet while
+# its spans still swell. Lets the expressive-OFF (Kokoro) path sit under expressive-ON.
+_master = float(os.environ.get("CUE_VOX_VOICE_MASTER", "1.0"))
 _lift = float(os.environ.get("CUE_VOX_LIFT", "0.8"))   # question rise strength (0 = off).
 # The rise is baked INTO the voice by editing its pitch track with the WORLD vocoder
 # (see _question_intonation): F0 is scaled up on the tail, timbre + tempo untouched.
@@ -117,6 +122,19 @@ def set_prosody(speed=None, bright=None, gain=None, lift=None):
             _lift = _clamp(float(lift), 0.0, 1.5)
         except (TypeError, ValueError):
             pass
+
+
+def set_master(gain):
+    """Set the per-register master loudness trim. None resets to 1.0 (no trim). Composes
+    with _gain at synth time; this is the durable per-register output level."""
+    global _master
+    if gain is None:
+        _master = 1.0
+        return
+    try:
+        _master = _clamp(float(gain), 0.1, 3.0)
+    except (TypeError, ValueError):
+        _master = 1.0
 
 
 def _brighten(x, k):
@@ -290,8 +308,9 @@ def synth_to_file(text, question=None):
             # Edit the pitch track BEFORE brighten/gain so DSP rides the final voice.
             x = _question_intonation(x, audio.sample_rate, amount=_lift)
         x = _brighten(x, _bright)
-        if _gain != 1.0:
-            x = x * _gain
+        g = _gain * _master
+        if g != 1.0:
+            x = x * g
         x = np.clip(x, -1.0, 1.0)
         fd, path = tempfile.mkstemp(suffix=".wav", prefix="cuevox-tts-")
         os.close(fd)
