@@ -1127,22 +1127,19 @@ def _active_voice():
 
 def voice_fingerprint(vid=None):
     """A dumb, stable "is this the same voice?" fingerprint. sha256 over the
-    sound-determining config of a personality (sid + blend + every envelope's timbre,
-    prosody ranges, Chatterbox profile, and its registers' Voice blend rows), plus the
-    neural blend recipe for blend voices. Rendered as a VRGB-style #xxxxxx so it reads as
-    a colour you can eyeball on the page, grep in the log, and hear on the bench. Same
-    config in, same fingerprint out; any change to how it sounds changes the fingerprint."""
+    sound-determining config of a personality (sid + blend + every register's timbre,
+    prosody ranges, Chatterbox profile, and its first-class blend recipe). Rendered as a
+    VRGB-style #xxxxxx so it reads as a colour you can eyeball on the page, grep in the
+    log, and hear on the bench. Same config in, same fingerprint out; any change to how it
+    sounds -- including a register's blend weights -- changes the fingerprint."""
     vid = vid or _ACTIVE_VOICE
     v = ((_VOICES or {}).get("voices", {}) or {}).get(vid, {}) or {}
+    # Each register's blend recipe now lives on the register (in envelopes), so the whole
+    # sound-determining config is captured by hashing the personality dict directly.
     payload = {"id": vid, "sid": v.get("sid"), "blend": v.get("blend"),
                "blend_slots": bool(v.get("blend_slots")), "envelopes": v.get("envelopes", {}),
+               "blends": v.get("blends", {}),   # the named blend library (weights) rides here
                "capabilities": v.get("capabilities", [])}   # behavior policy is part of the bundle identity
-    if v.get("blend_slots"):
-        try:
-            with open(_blend_recipe_path()) as fh:
-                payload["recipe"] = json.load(fh).get("registers")
-        except Exception:
-            payload["recipe"] = None
     raw = json.dumps(payload, sort_keys=True, separators=(",", ":"))
     return "#" + hashlib.sha256(raw.encode("utf-8")).hexdigest()[:6]
 
@@ -1152,25 +1149,13 @@ _register_lock = None  # 1/2/3 to pin that envelope (no autotone drift); None = 
 
 
 def _env_slot(env):
-    """The Kokoro blend row (0..4) an envelope plays: read from its active register's active
-    Voice -- the Voice leaf is the single source of truth for which blend sounds. Falls back
-    across registers/voices, then to any legacy envelope-level slot, then 0."""
+    """The Kokoro blend row (0..4) a register plays. The register carries its slot
+    directly (kokoro_slot); the weighted mix for that slot lives in blend.json. Falls
+    back to 0."""
     if not isinstance(env, dict):
         return 0
-    regs = env.get("registers") or {}
-    ar = env.get("active_register")
-    order = ([regs[ar]] if ar in regs else []) + [r for k, r in regs.items() if k != ar]
-    for r in order:
-        vs = (r or {}).get("voices") or []
-        av = (r or {}).get("active_voice")
-        pick = vs[av] if isinstance(av, int) and 0 <= av < len(vs) else (vs[0] if vs else None)
-        if pick and pick.get("kokoro_slot") is not None:
-            try:
-                return int(pick.get("kokoro_slot"))
-            except (TypeError, ValueError):
-                pass
     try:
-        return int(env.get("kokoro_slot", 0))   # back-compat if older data still carries it
+        return int(env.get("kokoro_slot", 0))
     except (TypeError, ValueError):
         return 0
 
@@ -6921,59 +6906,113 @@ def tune_deploy():
     return jsonify(ok=True, path=path, version=PACKAGE_SCHEMA_VERSION, fingerprint=fp)
 
 
+def _rebuild_blend_bin():
+    """Run build-refs.sh to bake the active personality's register blends into
+    register-voices.bin, then hot-reload the engine. Returns (ok, message)."""
+    palette_path = _blend_recipe_path()
+    if not palette_path:
+        return False, 'no blend palette configured'
+    import subprocess
+    script = os.path.join(os.path.dirname(palette_path), 'build-refs.sh')
+    if not os.path.exists(script):
+        return False, 'build-refs.sh not found next to blend.json'
+    try:
+        r = subprocess.run(['bash', script], capture_output=True, text=True, timeout=120)
+        ok = r.returncode == 0
+        msg = (r.stdout + r.stderr).strip()[-300:]
+        if ok and _kokoro_available:
+            kokoro_voice.reload()     # hot-swap the new register-voices.bin
+        _vlog('blend', 'rebuild %s%s' % ('ok + engine reloaded' if ok else 'FAILED',
+                                         '' if ok else ': ' + msg))
+        return ok, msg
+    except (OSError, subprocess.SubprocessError) as e:
+        return False, str(e)
+
+
 @app.route('/api/tune/blend', methods=['GET', 'POST'])
 def tune_blend():
-    """The blend recipe loop: GET returns the maestro-owned register-ladder recipe
-    (blend.json); POST uploads an edited recipe back, and (with rebuild) regenerates
-    register-voices.bin via build-refs.sh and hot-reloads the engine so the new blend
-    is live. Nothing configured -> the panel is inert (public repo)."""
+    """The per-personality named Blend LIBRARY. A blend is a first-class, named, reusable
+    object -- {id: {label, weights}} living on the personality in voices.json. Registers
+    reference a blend by id (see /api/tune/assign_blend). GET returns the active
+    personality's library plus the base-voice palette (voice_order); POST replaces the
+    library and (with rebuild) regenerates register-voices.bin, hot-reloading the engine."""
     import json
-    path = _blend_recipe_path()
-    if not path:
-        return jsonify(ok=False, error='no blend recipe configured (set MAESTRO_ROOT or CUE_VOX_BLEND_RECIPE)'), 200
+    palette_path = _blend_recipe_path()
+    if not palette_path:
+        return jsonify(ok=False, error='no blend palette configured (set MAESTRO_ROOT or CUE_VOX_BLEND_RECIPE)'), 200
+    palette = {}
+    if os.path.exists(palette_path):
+        try:
+            palette = json.load(open(palette_path, encoding='utf-8'))
+        except (ValueError, OSError):
+            palette = {}
+    vid = _ACTIVE_VOICE
+    v = ((_VOICES or {}).get('voices', {}) or {}).get(vid, {}) or {}
+
     if request.method == 'GET':
-        if not os.path.exists(path):
-            return jsonify(ok=False, error='blend recipe not found: %s' % path), 200
-        try:
-            return jsonify(ok=True, path=path, blend=json.load(open(path, encoding='utf-8')))
-        except (ValueError, OSError) as e:
-            return jsonify(ok=False, error='read failed: %s' % e), 200
-    # POST: validate, write, optionally rebuild + reload
+        return jsonify(ok=True, voice=vid, voice_order=palette.get('voice_order', []),
+                       base_model=palette.get('base_model'), blends=v.get('blends', {}) or {})
+
+    # POST: replace the personality's blend library, optionally rebuild + reload
     d = request.get_json(force=True, silent=True) or {}
-    blend = d.get('blend')
-    if isinstance(blend, str):
+    blends = d.get('blends')
+    if isinstance(blends, str):
         try:
-            blend = json.loads(blend)
+            blends = json.loads(blends)
         except ValueError as e:
-            return jsonify(ok=False, error='blend is not valid JSON: %s' % e), 200
-    if not isinstance(blend, dict) or not isinstance(blend.get('registers'), list):
-        return jsonify(ok=False, error='blend must be an object with a "registers" list'), 200
-    try:
-        os.makedirs(os.path.dirname(path), exist_ok=True)
-        with open(path, 'w', encoding='utf-8') as fh:
-            json.dump(blend, fh, indent=2)
-            fh.write('\n')
-    except OSError as e:
-        return jsonify(ok=False, error='write failed: %s' % e), 200
-    _vlog('blend', 'uploaded %d registers -> %s' % (len(blend['registers']), path))
-    rebuilt, rebuild_msg = False, ''
-    if d.get('rebuild'):
-        import subprocess
-        script = os.path.join(os.path.dirname(path), 'build-refs.sh')
-        if os.path.exists(script):
+            return jsonify(ok=False, error='blends is not valid JSON: %s' % e), 200
+    if not isinstance(blends, dict):
+        return jsonify(ok=False, error='blends must be an object {id:{label,weights}}'), 200
+    clean = {}
+    for bid, b in blends.items():
+        if not isinstance(b, dict):
+            continue
+        w = {}
+        for name, val in (b.get('weights') or {}).items():
             try:
-                r = subprocess.run(['bash', script], capture_output=True, text=True, timeout=120)
-                rebuilt = r.returncode == 0
-                rebuild_msg = (r.stdout + r.stderr).strip()[-300:]
-                if rebuilt and _kokoro_available:
-                    kokoro_voice.reload()     # hot-swap the new register-voices.bin
-                _vlog('blend', 'rebuild %s%s' % ('ok + engine reloaded' if rebuilt else 'FAILED',
-                                                 '' if rebuilt else ': ' + rebuild_msg))
-            except (OSError, subprocess.SubprocessError) as e:
-                rebuild_msg = str(e)
-        else:
-            rebuild_msg = 'build-refs.sh not found next to blend.json'
-    return jsonify(ok=True, path=path, rebuilt=rebuilt, rebuild_msg=rebuild_msg)
+                fv = float(val)
+            except (TypeError, ValueError):
+                continue
+            if fv > 0:
+                w[str(name)] = round(fv, 4)
+        clean[str(bid)[:40]] = {'label': str(b.get('label', bid))[:40], 'weights': w}
+    v['blends'] = clean
+    for reg in (v.get('envelopes') or {}).values():     # clear references to deleted blends
+        if isinstance(reg, dict) and reg.get('blend_id') and reg['blend_id'] not in clean:
+            reg['blend_id'] = ''
+    if not _save_voices():
+        return jsonify(ok=False, error='write failed'), 200
+    _vlog('blend', 'saved %d named blends to %s' % (len(clean), vid))
+    rebuilt, rebuild_msg = (False, '')
+    if d.get('rebuild'):
+        rebuilt, rebuild_msg = _rebuild_blend_bin()
+    return jsonify(ok=True, voice=vid, blends=clean, rebuilt=rebuilt, rebuild_msg=rebuild_msg,
+                   fingerprint=voice_fingerprint(vid))
+
+
+@app.route('/api/tune/assign_blend', methods=['POST'])
+def tune_assign_blend():
+    """Assign a named blend to a register (register.blend_id = blend id), then rebuild so
+    the change is audible immediately. Body: {voice?, register, blend_id, rebuild?}."""
+    d = request.get_json(force=True, silent=True) or {}
+    vid = (d.get('voice') or _ACTIVE_VOICE or '').strip()
+    rk = str(d.get('register', '')).strip()
+    bid = str(d.get('blend_id', '')).strip()
+    v = ((_VOICES or {}).get('voices', {}) or {}).get(vid, {}) or {}
+    reg = (v.get('envelopes') or {}).get(rk)
+    if not reg:
+        return jsonify(ok=False, error='unknown register: %s' % rk), 200
+    if bid and bid not in (v.get('blends') or {}):
+        return jsonify(ok=False, error='unknown blend: %s' % bid), 200
+    reg['blend_id'] = bid
+    if not _save_voices():
+        return jsonify(ok=False, error='write failed'), 200
+    _vlog('blend', 'register %s of %s -> blend %s' % (rk, vid, bid or '(none)'))
+    rebuilt, rebuild_msg = (False, '')
+    if d.get('rebuild'):
+        rebuilt, rebuild_msg = _rebuild_blend_bin()
+    return jsonify(ok=True, voice=vid, register=rk, blend_id=bid,
+                   rebuilt=rebuilt, rebuild_msg=rebuild_msg, fingerprint=voice_fingerprint(vid))
 
 
 @app.route('/api/tune/translate', methods=['POST'])
@@ -7052,6 +7091,78 @@ def tune_voice():
                    sample='', samples=v.get('situations', []), fingerprint=voice_fingerprint())
 
 
+@app.route('/api/tune/personality', methods=['POST'])
+def tune_personality():
+    """Create / duplicate / rename / delete a personality (a top-level voice in
+    voices.json). Everything a personality owns -- sid, blend, envelopes, situations --
+    travels with it, so a duplicate is a deep copy you can then retune independently.
+    Body: {action:"create"|"rename"|"delete", name?, from?, voice?}."""
+    global _ACTIVE_VOICE
+    if _VOICES is None:
+        return jsonify(ok=False, error='voices not loaded'), 200
+    d = request.get_json(force=True, silent=True) or {}
+    action = (d.get('action') or '').strip().lower()
+    voices = _VOICES.setdefault('voices', {})
+
+    def _slug(name):
+        s = ''.join(c for c in (name or '').lower() if c.isalnum())
+        return s or 'voice'
+
+    def _unique_key(base):
+        k, n = base, 2
+        while k in voices:
+            k, n = base + str(n), n + 1
+        return k
+
+    if action == 'create':
+        name = (d.get('name') or '').strip()
+        if not name:
+            return jsonify(ok=False, error='name required'), 200
+        src_id = (d.get('from') or '').strip()
+        if src_id and src_id in voices:
+            new_v = json.loads(json.dumps(voices[src_id]))   # deep copy the whole stack
+        else:
+            new_v = {'kind': 'neutral', 'sid': 0, 'blend_slots': False,
+                     'situations': [], 'envelopes': {}}
+        new_v['label'] = name
+        key = _unique_key(_slug(name))
+        voices[key] = new_v
+        if not _save_voices():
+            return jsonify(ok=False, error='write failed'), 200
+        _vlog('voice', 'personality created %s (label=%s, from=%s)'
+              % (key, name, src_id or 'blank'))
+        return jsonify(ok=True, active=_ACTIVE_VOICE, voices=voices, created=key)
+
+    if action == 'rename':
+        vid = (d.get('voice') or '').strip()
+        name = (d.get('name') or '').strip()
+        v = voices.get(vid)
+        if not v or not name:
+            return jsonify(ok=False, error='unknown voice or empty name'), 200
+        v['label'] = name
+        if not _save_voices():
+            return jsonify(ok=False, error='write failed'), 200
+        _vlog('voice', 'personality renamed %s -> %s' % (vid, name))
+        return jsonify(ok=True, active=_ACTIVE_VOICE, voices=voices)
+
+    if action == 'delete':
+        vid = (d.get('voice') or '').strip()
+        if vid not in voices:
+            return jsonify(ok=False, error='unknown voice: %s' % vid), 200
+        if len(voices) <= 1:
+            return jsonify(ok=False, error='cannot delete the last personality'), 200
+        del voices[vid]
+        if _ACTIVE_VOICE == vid:               # deleted the live voice: fall back + reswitch
+            set_active_voice(sorted(voices.keys())[0])
+            _VOICES['active'] = _ACTIVE_VOICE
+        if not _save_voices():
+            return jsonify(ok=False, error='write failed'), 200
+        _vlog('voice', 'personality deleted %s' % vid)
+        return jsonify(ok=True, active=_ACTIVE_VOICE, voices=voices)
+
+    return jsonify(ok=False, error='unknown action: %s' % action), 200
+
+
 @app.route('/api/tune/envelope', methods=['POST'])
 def tune_envelope():
     """Select the active ENVELOPE (the render state / energy band) for the active voice.
@@ -7098,17 +7209,16 @@ def tune_situations():
 
 @app.route('/api/tune/envelopes', methods=['POST'])
 def tune_envelopes():
-    """Save a personality's ENVELOPES (energy bands) back to voices.json (the source of
+    """Save a personality's REGISTERS (energy bands) back to voices.json (the source of
     truth, so it survives boot) and refresh the live view if it is the active voice.
 
-    An envelope carries the sound of the band (speed/bright/gain + prosody ranges +
-    chatterbox performer) AND its child REGISTERS. A register is a named mode holding one
-    or more VOICES (Kokoro blend leaves) + a policy. Body:
+    A register carries the sound of the band (speed/bright/gain + prosody ranges +
+    chatterbox performer), a kokoro_slot (which blend row it plays; the weighted mix for
+    that slot lives in blend.json), and an optional policy. Body:
       {voice, replace?, envelopes:{"1":{label,speed,bright,gain,exaggeration,
         prosody:{break:[min,max],emphasis:...,rate:...,lift:...},
         chatterbox_profile:{exaggeration:[min,max],cfg_weight,reference_voice},
-        active_register, registers:{"default":{label,policy,active_voice,
-          voices:[{label,kokoro_slot}]}}}, ...}}.
+        kokoro_slot, policy}, ...}}.
     A scalar prosody value is accepted and stored as [s,s]."""
     global _VOICE_REGISTERS
     d = request.get_json(force=True, silent=True) or {}
@@ -7124,34 +7234,6 @@ def tune_envelopes():
         except (TypeError, ValueError):
             return dflt
 
-    def _clean_registers(inc_regs, cur_regs):
-        """Merge the nested registers/voices for one envelope (register = named mode +
-        policy + Voice leaves)."""
-        out = dict(cur_regs) if isinstance(cur_regs, dict) else {}
-        if not isinstance(inc_regs, dict):
-            return out
-        for k in list(out.keys()):             # authoritative: prune removed registers
-            if k not in inc_regs:
-                del out[k]
-        for rk, reg in inc_regs.items():
-            if not isinstance(reg, dict):
-                continue
-            cr = out.setdefault(str(rk), {})
-            if 'label' in reg:
-                cr['label'] = str(reg['label'])[:32]
-            if 'policy' in reg:
-                cr['policy'] = str(reg['policy'])[:400]
-            if 'active_voice' in reg:
-                try:
-                    cr['active_voice'] = int(reg['active_voice'])
-                except (TypeError, ValueError):
-                    pass
-            if isinstance(reg.get('voices'), list):
-                cr['voices'] = [{'label': str(vo.get('label', ''))[:32],
-                                 'kokoro_slot': int(_cl(vo.get('kokoro_slot', 0), 0, 4, 0))}
-                                for vo in reg['voices'] if isinstance(vo, dict)]
-        return out
-
     envs = v.setdefault('envelopes', {})
     if d.get('replace'):
         # Authoritative set (the Structure tab): prune envelopes the tab no longer shows
@@ -7165,8 +7247,6 @@ def tune_envelopes():
         cur = envs.setdefault(str(key), {})
         if 'label' in r:
             cur['label'] = str(r['label'])[:32]
-        if 'active_register' in r:
-            cur['active_register'] = str(r['active_register'])[:32]
         for k, lo, hi in (('speed', 0.5, 2.0), ('bright', -1.0, 3.0), ('gain', 0.1, 3.0), ('exaggeration', 0.3, 2.0)):
             if k in r:
                 cur[k] = round(_cl(r[k], lo, hi, cur.get(k, 1.0)), 3)
@@ -7202,8 +7282,12 @@ def tune_envelopes():
                 cp['gain'] = _rng_field(cbx['gain'], 0.3, 2.0, 0.8, 1.2)
             if 'reference_voice' in cbx:
                 cp['reference_voice'] = str(cbx['reference_voice'])[:40]
-        if 'registers' in r:                    # the nested Register > Voice tree
-            cur['registers'] = _clean_registers(r.get('registers'), cur.get('registers'))
+        if 'kokoro_slot' in r:                  # which baked blend row this register plays
+            cur['kokoro_slot'] = int(_cl(r['kokoro_slot'], 0, 4, cur.get('kokoro_slot', 0)))
+        if 'blend_id' in r:                     # which named blend (from the library) it plays
+            cur['blend_id'] = str(r['blend_id'])[:40]
+        if 'policy' in r:
+            cur['policy'] = str(r['policy'])[:400]
     if not _save_voices():
         return jsonify(ok=False, error='write failed'), 200
     if vid == _ACTIVE_VOICE:                    # refresh the live envelope view

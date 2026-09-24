@@ -3,7 +3,7 @@
   "active": "isabella",
   "voices": {
     "isabella": {
-      "label": "Isabella",
+      "label": "Bell",
       "kind": "female",
       "sid": 8,
       "blend": "register-voices.bin",
@@ -90,18 +90,8 @@
               0.65
             ]
           },
-          "registers": {
-            "default": {
-              "label": "default",
-              "policy": "",
-              "voices": [
-                {
-                  "label": "chill",
-                  "kokoro_slot": 0
-                }
-              ]
-            }
-          }
+          "kokoro_slot": 0,
+          "blend_id": "chill"
         },
         "2": {
           "label": "mid",
@@ -142,18 +132,8 @@
               1.2
             ]
           },
-          "registers": {
-            "default": {
-              "label": "default",
-              "policy": "",
-              "voices": [
-                {
-                  "label": "mid",
-                  "kokoro_slot": 1
-                }
-              ]
-            }
-          }
+          "kokoro_slot": 1,
+          "blend_id": "mid"
         },
         "3": {
           "label": "peak",
@@ -194,22 +174,12 @@
               1.6
             ]
           },
-          "registers": {
-            "default": {
-              "label": "default",
-              "policy": "",
-              "voices": [
-                {
-                  "label": "BEEP",
-                  "kokoro_slot": 2
-                }
-              ]
-            }
-          },
-          "policy": "reserved: performative gear, ridden on <perform> or a deliberate lift, never the ambient ceiling"
+          "policy": "reserved: performative gear, ridden on <perform> or a deliberate lift, never the ambient ceiling",
+          "kokoro_slot": 2,
+          "blend_id": "peak"
         }
       },
-      "active_envelope": "3",
+      "active_envelope": "2",
       "capabilities": [
         {
           "name": "ship",
@@ -266,10 +236,30 @@
           ],
           "policy": {}
         }
-      ]
+      ],
+      "blends": {
+        "chill": {
+          "label": "chill",
+          "weights": {
+            "af_nicole": 1.0
+          }
+        },
+        "mid": {
+          "label": "mid",
+          "weights": {
+            "af_sky": 1.0
+          }
+        },
+        "peak": {
+          "label": "peak",
+          "weights": {
+            "af_sarah": 1.0
+          }
+        }
+      }
     },
     "atlas": {
-      "label": "Atlas",
+      "label": "Mack",
       "kind": "male",
       "sid": 6,
       "blend": "voices.bin",
@@ -349,18 +339,7 @@
             "cfg_weight": 0.6,
             "reference_voice": ""
           },
-          "registers": {
-            "default": {
-              "label": "default",
-              "policy": "",
-              "voices": [
-                {
-                  "label": "chill",
-                  "kokoro_slot": 0
-                }
-              ]
-            }
-          }
+          "kokoro_slot": 0
         },
         "2": {
           "label": "mid",
@@ -394,18 +373,7 @@
             "cfg_weight": 0.5,
             "reference_voice": ""
           },
-          "registers": {
-            "default": {
-              "label": "default",
-              "policy": "",
-              "voices": [
-                {
-                  "label": "mid",
-                  "kokoro_slot": 1
-                }
-              ]
-            }
-          }
+          "kokoro_slot": 1
         },
         "3": {
           "label": "peak",
@@ -439,24 +407,14 @@
             "cfg_weight": 0.4,
             "reference_voice": ""
           },
-          "registers": {
-            "default": {
-              "label": "default",
-              "policy": "",
-              "voices": [
-                {
-                  "label": "peak",
-                  "kokoro_slot": 2
-                }
-              ]
-            }
-          }
+          "kokoro_slot": 2
         }
       },
-      "active_envelope": "1"
+      "active_envelope": "1",
+      "blends": {}
     },
     "neutral": {
-      "label": "Neutral",
+      "label": "Rake",
       "kind": "neutral",
       "sid": 0,
       "blend": "voices.bin",
@@ -536,18 +494,7 @@
             "cfg_weight": 0.6,
             "reference_voice": ""
           },
-          "registers": {
-            "default": {
-              "label": "default",
-              "policy": "",
-              "voices": [
-                {
-                  "label": "chill",
-                  "kokoro_slot": 0
-                }
-              ]
-            }
-          }
+          "kokoro_slot": 0
         },
         "2": {
           "label": "mid",
@@ -581,18 +528,7 @@
             "cfg_weight": 0.55,
             "reference_voice": ""
           },
-          "registers": {
-            "default": {
-              "label": "default",
-              "policy": "",
-              "voices": [
-                {
-                  "label": "mid",
-                  "kokoro_slot": 1
-                }
-              ]
-            }
-          }
+          "kokoro_slot": 1
         },
         "3": {
           "label": "peak",
@@ -626,21 +562,11 @@
             "cfg_weight": 0.5,
             "reference_voice": ""
           },
-          "registers": {
-            "default": {
-              "label": "default",
-              "policy": "",
-              "voices": [
-                {
-                  "label": "peak",
-                  "kokoro_slot": 2
-                }
-              ]
-            }
-          }
+          "kokoro_slot": 2
         }
       },
-      "active_envelope": "1"
+      "active_envelope": "1",
+      "blends": {}
     }
   }
 }
