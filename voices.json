@@ -267,11 +267,11 @@
       "situations": [
         {
           "situation": "greeting",
-          "ssml": "Hey. <break time=\"400ms\"/> How's it going? <break time=\"300ms\"/> <prosody pitch=\"high\">All good?</prosody>"
+          "ssml": "Hey. <break time=\"400ms\"/> How's it going.<break time=\"300ms\"/> <prosody pitch=\"high\">All good?</prosody>"
         },
         {
           "situation": "statement",
-          "ssml": "Here's the thing. <break time=\"400ms\"/> It <emphasis level=\"strong\">works.</emphasis> <break time=\"300ms\"/> Every time."
+          "ssml": "Here's the thing. <break time=\"600ms\"/>it actually <emphasis level=\"strong\">works.</emphasis> <break time=\"300ms\"/> Every time."
         },
         {
           "situation": "question",
@@ -306,210 +306,22 @@
           "ssml": "It works now. <break time=\"300ms\"/> <chuckle/> <break time=\"400ms\"/> <prosody volume=\"soft\">after all that.</prosody>"
         }
       ],
+      "blends": {},
       "envelopes": {
         "1": {
           "label": "chill",
-          "speed": 0.95,
-          "bright": 0.1,
-          "gain": 1.0,
+          "speed": 0.97,
+          "bright": 0.25,
+          "gain": 0.4,
           "exaggeration": 0.6,
           "prosody": {
             "break": [
-              1.0,
+              0.9,
               1.4
             ],
             "emphasis": [
               1.0,
-              1.4
-            ],
-            "rate": [
-              0.95,
-              1.05
-            ],
-            "lift": [
-              0.3,
-              0.5
-            ]
-          },
-          "chatterbox_profile": {
-            "exaggeration": [
-              0.5,
-              0.8
-            ],
-            "cfg_weight": 0.6,
-            "reference_voice": ""
-          },
-          "kokoro_slot": 0
-        },
-        "2": {
-          "label": "mid",
-          "speed": 0.98,
-          "bright": 0.5,
-          "gain": 1.1,
-          "exaggeration": 1.2,
-          "prosody": {
-            "break": [
-              0.8,
               1.6
-            ],
-            "emphasis": [
-              1.2,
-              1.8
-            ],
-            "rate": [
-              0.92,
-              1.15
-            ],
-            "lift": [
-              0.4,
-              0.7
-            ]
-          },
-          "chatterbox_profile": {
-            "exaggeration": [
-              0.8,
-              1.2
-            ],
-            "cfg_weight": 0.5,
-            "reference_voice": ""
-          },
-          "kokoro_slot": 1
-        },
-        "3": {
-          "label": "peak",
-          "speed": 1.0,
-          "bright": 0.9,
-          "gain": 1.3,
-          "exaggeration": 1.7,
-          "prosody": {
-            "break": [
-              0.7,
-              2.2
-            ],
-            "emphasis": [
-              1.5,
-              2.5
-            ],
-            "rate": [
-              0.9,
-              1.25
-            ],
-            "lift": [
-              0.5,
-              0.85
-            ]
-          },
-          "chatterbox_profile": {
-            "exaggeration": [
-              1.1,
-              1.7
-            ],
-            "cfg_weight": 0.4,
-            "reference_voice": ""
-          },
-          "kokoro_slot": 2
-        }
-      },
-      "active_envelope": "1",
-      "blends": {}
-    },
-    "neutral": {
-      "label": "Rake",
-      "kind": "neutral",
-      "sid": 0,
-      "blend": "voices.bin",
-      "blend_slots": false,
-      "situations": [
-        {
-          "situation": "greeting",
-          "ssml": "Hey. <break time=\"400ms\"/> How's it going? <break time=\"300ms\"/> <prosody pitch=\"high\">All good?</prosody>"
-        },
-        {
-          "situation": "statement",
-          "ssml": "Here's the thing. <break time=\"400ms\"/> It <emphasis level=\"strong\">works.</emphasis> <break time=\"300ms\"/> Every time."
-        },
-        {
-          "situation": "question",
-          "ssml": "So. <break time=\"400ms\"/> <prosody pitch=\"high\">Are we doing this?</prosody> <break time=\"300ms\"/> <prosody pitch=\"high\">Yes or no?</prosody>"
-        },
-        {
-          "situation": "the-list",
-          "ssml": "Three things. <break time=\"300ms\"/> One, <break time=\"250ms\"/> the build. <break time=\"250ms\"/> Two, <break time=\"250ms\"/> the tests. <break time=\"250ms\"/> Three, <break time=\"250ms\"/> we ship."
-        },
-        {
-          "situation": "the-pause",
-          "ssml": "I need you to hear this. <break time=\"900ms\"/> It matters. <break time=\"700ms\"/> More than the rest."
-        },
-        {
-          "situation": "emphasis",
-          "ssml": "This is <emphasis level=\"strong\">not</emphasis> a drill. <break time=\"400ms\"/> It's <emphasis level=\"strong\">real</emphasis>, and it's <emphasis level=\"strong\">now.</emphasis>"
-        },
-        {
-          "situation": "urgent",
-          "ssml": "Wait. <break time=\"250ms\"/> <prosody rate=\"fast\">Check the build, the port, the token.</prosody> <break time=\"300ms\"/> <prosody pitch=\"high\">Now?</prosody>"
-        },
-        {
-          "situation": "reassure",
-          "ssml": "Hey. <break time=\"500ms\"/> <prosody volume=\"soft\">You did the hard part.</prosody> <break time=\"400ms\"/> The rest is easy."
-        },
-        {
-          "situation": "the-reveal",
-          "ssml": "So. <break time=\"700ms\"/> Here it is. <break time=\"500ms\"/> <emphasis level=\"strong\">We did it.</emphasis> <break time=\"400ms\"/> <laugh/>"
-        },
-        {
-          "situation": "the-aside",
-          "ssml": "It works now. <break time=\"300ms\"/> <chuckle/> <break time=\"400ms\"/> <prosody volume=\"soft\">after all that.</prosody>"
-        }
-      ],
-      "envelopes": {
-        "1": {
-          "label": "chill",
-          "speed": 1.0,
-          "bright": 0.0,
-          "gain": 1.0,
-          "exaggeration": 0.6,
-          "prosody": {
-            "break": [
-              0.95,
-              1.15
-            ],
-            "emphasis": [
-              1.0,
-              1.15
-            ],
-            "rate": [
-              0.97,
-              1.05
-            ],
-            "lift": [
-              0.3,
-              0.5
-            ]
-          },
-          "chatterbox_profile": {
-            "exaggeration": [
-              0.5,
-              0.7
-            ],
-            "cfg_weight": 0.6,
-            "reference_voice": ""
-          },
-          "kokoro_slot": 0
-        },
-        "2": {
-          "label": "mid",
-          "speed": 1.0,
-          "bright": 0.3,
-          "gain": 1.05,
-          "exaggeration": 1.2,
-          "prosody": {
-            "break": [
-              0.9,
-              1.35
-            ],
-            "emphasis": [
-              1.05,
-              1.4
             ],
             "rate": [
               0.95,
@@ -517,56 +329,408 @@
             ],
             "lift": [
               0.4,
-              0.65
+              0.7
             ]
           },
           "chatterbox_profile": {
             "exaggeration": [
-              0.7,
+              0.6,
               1.0
             ],
-            "cfg_weight": 0.55,
-            "reference_voice": ""
+            "cfg_weight": [
+              0.5,
+              0.7
+            ],
+            "reference_voice": "",
+            "gain": [
+              0.55,
+              0.65
+            ]
           },
-          "kokoro_slot": 1
+          "kokoro_slot": 0,
+          "blend_id": ""
+        },
+        "2": {
+          "label": "mid",
+          "speed": 1.0,
+          "bright": 0.95,
+          "gain": 1.0,
+          "exaggeration": 1.2,
+          "prosody": {
+            "break": [
+              0.7,
+              1.8
+            ],
+            "emphasis": [
+              1.4,
+              2.3
+            ],
+            "rate": [
+              0.9,
+              1.25
+            ],
+            "lift": [
+              0.6,
+              1.0
+            ]
+          },
+          "chatterbox_profile": {
+            "exaggeration": [
+              1.1,
+              1.5
+            ],
+            "cfg_weight": [
+              0.4,
+              0.7
+            ],
+            "reference_voice": "",
+            "gain": [
+              0.95,
+              1.2
+            ]
+          },
+          "kokoro_slot": 1,
+          "blend_id": ""
+        },
+        "3": {
+          "label": "peak",
+          "speed": 1.05,
+          "bright": 1.6,
+          "gain": 1.0,
+          "exaggeration": 1.7,
+          "prosody": {
+            "break": [
+              0.5,
+              3.5
+            ],
+            "emphasis": [
+              1.9,
+              3.0
+            ],
+            "rate": [
+              0.85,
+              1.5
+            ],
+            "lift": [
+              1.0,
+              1.5
+            ]
+          },
+          "chatterbox_profile": {
+            "exaggeration": [
+              1.7,
+              2.3
+            ],
+            "cfg_weight": [
+              0.22,
+              0.7
+            ],
+            "reference_voice": "",
+            "gain": [
+              1.2,
+              1.6
+            ]
+          },
+          "policy": "reserved: performative gear, ridden on <perform> or a deliberate lift, never the ambient ceiling",
+          "kokoro_slot": 2,
+          "blend_id": ""
+        }
+      },
+      "active_envelope": "2",
+      "capabilities": [
+        {
+          "name": "ship",
+          "envelope": "3",
+          "tasks": [
+            "ship",
+            "announce",
+            "celebrate",
+            "deploy",
+            "launch"
+          ],
+          "tools": [
+            "deploy",
+            "release",
+            "field_report_generate"
+          ],
+          "policy": {
+            "min_dwell_sec": 12
+          }
+        },
+        {
+          "name": "work",
+          "envelope": "2",
+          "tasks": [
+            "briefing",
+            "debug",
+            "review",
+            "code",
+            "build",
+            "plan"
+          ],
+          "tools": [
+            "find_code",
+            "git_status",
+            "engine_run",
+            "chip_search"
+          ],
+          "policy": {}
+        },
+        {
+          "name": "calm",
+          "envelope": "1",
+          "tasks": [
+            "reflect",
+            "read",
+            "wind-down",
+            "recall",
+            "summarize"
+          ],
+          "tools": [
+            "recall_context",
+            "vault_query",
+            "recall_topic"
+          ],
+          "policy": {}
+        }
+      ]
+    },
+    "neutral": {
+      "label": "Rake",
+      "kind": "robotic",
+      "sid": 0,
+      "blend": "voices.bin",
+      "blend_slots": false,
+      "situations": [
+        {
+          "situation": "greeting",
+          "ssml": "Hey. <break time=\"400ms\"/> How's it going.<break time=\"300ms\"/> <prosody pitch=\"high\">All good?</prosody>"
+        },
+        {
+          "situation": "statement",
+          "ssml": "Here's the thing. <break time=\"600ms\"/>it actually <emphasis level=\"strong\">works.</emphasis> <break time=\"300ms\"/> Every time."
+        },
+        {
+          "situation": "question",
+          "ssml": "So. <break time=\"400ms\"/> <prosody pitch=\"high\">Are we doing this?</prosody> <break time=\"300ms\"/> <prosody pitch=\"high\">Yes or no?</prosody>"
+        },
+        {
+          "situation": "the-list",
+          "ssml": "Three things. <break time=\"300ms\"/> One, <break time=\"250ms\"/> the build. <break time=\"250ms\"/> Two, <break time=\"250ms\"/> the tests. <break time=\"250ms\"/> Three, <break time=\"250ms\"/> we ship."
+        },
+        {
+          "situation": "the-pause",
+          "ssml": "I need you to hear this. <break time=\"900ms\"/> It matters. <break time=\"700ms\"/> More than the rest."
+        },
+        {
+          "situation": "emphasis",
+          "ssml": "This is <emphasis level=\"strong\">not</emphasis> a drill. <break time=\"400ms\"/> It's <emphasis level=\"strong\">real</emphasis>, and it's <emphasis level=\"strong\">now.</emphasis>"
+        },
+        {
+          "situation": "urgent",
+          "ssml": "Wait. <break time=\"250ms\"/> <prosody rate=\"fast\">Check the build, the port, the token.</prosody> <break time=\"300ms\"/> <prosody pitch=\"high\">Now?</prosody>"
+        },
+        {
+          "situation": "reassure",
+          "ssml": "Hey. <break time=\"500ms\"/> <prosody volume=\"soft\">You did the hard part.</prosody> <break time=\"400ms\"/> The rest is easy."
+        },
+        {
+          "situation": "the-reveal",
+          "ssml": "So. <break time=\"700ms\"/> Here it is. <break time=\"500ms\"/> <emphasis level=\"strong\">We did it.</emphasis> <break time=\"400ms\"/> <laugh/>"
+        },
+        {
+          "situation": "the-aside",
+          "ssml": "It works now. <break time=\"300ms\"/> <chuckle/> <break time=\"400ms\"/> <prosody volume=\"soft\">after all that.</prosody>"
+        }
+      ],
+      "blends": {},
+      "envelopes": {
+        "1": {
+          "label": "chill",
+          "speed": 1.0,
+          "bright": 2.4,
+          "gain": 0.4,
+          "exaggeration": 0.3,
+          "prosody": {
+            "break": [
+              1.0,
+              1.0
+            ],
+            "emphasis": [
+              1.0,
+              1.0
+            ],
+            "rate": [
+              1.0,
+              1.0
+            ],
+            "lift": [
+              0.0,
+              0.0
+            ]
+          },
+          "chatterbox_profile": {
+            "exaggeration": [
+              0.3,
+              0.3
+            ],
+            "cfg_weight": [
+              0.5,
+              0.5
+            ],
+            "reference_voice": "",
+            "gain": [
+              0.55,
+              0.65
+            ]
+          },
+          "kokoro_slot": 0,
+          "blend_id": ""
+        },
+        "2": {
+          "label": "mid",
+          "speed": 1.0,
+          "bright": 2.4,
+          "gain": 1.0,
+          "exaggeration": 0.3,
+          "prosody": {
+            "break": [
+              1.0,
+              1.0
+            ],
+            "emphasis": [
+              1.0,
+              1.0
+            ],
+            "rate": [
+              1.0,
+              1.0
+            ],
+            "lift": [
+              0.0,
+              0.0
+            ]
+          },
+          "chatterbox_profile": {
+            "exaggeration": [
+              0.3,
+              0.3
+            ],
+            "cfg_weight": [
+              0.5,
+              0.5
+            ],
+            "reference_voice": "",
+            "gain": [
+              0.95,
+              1.2
+            ]
+          },
+          "kokoro_slot": 1,
+          "blend_id": ""
         },
         "3": {
           "label": "peak",
           "speed": 1.0,
-          "bright": 0.5,
-          "gain": 1.15,
-          "exaggeration": 1.7,
+          "bright": 2.4,
+          "gain": 1.0,
+          "exaggeration": 0.3,
           "prosody": {
             "break": [
-              0.85,
-              1.7
+              1.0,
+              1.0
             ],
             "emphasis": [
-              1.2,
-              1.8
+              1.0,
+              1.0
             ],
             "rate": [
-              0.92,
-              1.15
+              1.0,
+              1.0
             ],
             "lift": [
-              0.5,
-              0.8
+              0.0,
+              0.0
             ]
           },
           "chatterbox_profile": {
             "exaggeration": [
-              0.9,
-              1.3
+              0.3,
+              0.3
             ],
-            "cfg_weight": 0.5,
-            "reference_voice": ""
+            "cfg_weight": [
+              0.5,
+              0.5
+            ],
+            "reference_voice": "",
+            "gain": [
+              1.2,
+              1.6
+            ]
           },
-          "kokoro_slot": 2
+          "policy": "reserved: performative gear, ridden on <perform> or a deliberate lift, never the ambient ceiling",
+          "kokoro_slot": 2,
+          "blend_id": ""
         }
       },
-      "active_envelope": "1",
-      "blends": {}
+      "active_envelope": "2",
+      "capabilities": [
+        {
+          "name": "ship",
+          "envelope": "3",
+          "tasks": [
+            "ship",
+            "announce",
+            "celebrate",
+            "deploy",
+            "launch"
+          ],
+          "tools": [
+            "deploy",
+            "release",
+            "field_report_generate"
+          ],
+          "policy": {
+            "min_dwell_sec": 12
+          }
+        },
+        {
+          "name": "work",
+          "envelope": "2",
+          "tasks": [
+            "briefing",
+            "debug",
+            "review",
+            "code",
+            "build",
+            "plan"
+          ],
+          "tools": [
+            "find_code",
+            "git_status",
+            "engine_run",
+            "chip_search"
+          ],
+          "policy": {}
+        },
+        {
+          "name": "calm",
+          "envelope": "1",
+          "tasks": [
+            "reflect",
+            "read",
+            "wind-down",
+            "recall",
+            "summarize"
+          ],
+          "tools": [
+            "recall_context",
+            "vault_query",
+            "recall_topic"
+          ],
+          "policy": {}
+        }
+      ]
     }
   }
 }
