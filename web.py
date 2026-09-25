@@ -1090,41 +1090,9 @@ def _stacked_behaviors():
     return behaviors_rt.stack(_behavior_cards(), _current_signals())
 
 
-# Delivery bias: a stacked card can lean on a register (a band, by label) and a cadence.
-# Dumb rule when several stack: the CALMEST register wins (behaviors pull toward restraint,
-# never up), and that card's cadence drives the pause multiplier. A ceiling caps DOWN only.
-_CADENCE_BREAK = {"spacious": 1.4, "easy": 1.15, "clipped": 0.72}
-
-
-def _behavior_delivery():
-    """From the stacked cards: {'ceiling_slot': int|None, 'break_mult': float|None, 'card': id}.
-    ceiling_slot is the calmest (lowest) register slot any stacked card asks for; break_mult
-    comes from that same card's cadence. Empty when nothing is stacked or no bias is set."""
-    stacked = _stacked_behaviors()
-    if not stacked:
-        return {}
-    regs = (_VOICE_REGISTERS or {}).get("registers", {}) or {}
-    label_to_slot = {}
-    for r in regs.values():
-        lab = (r.get("label") or "").strip().lower()
-        if lab:
-            label_to_slot[lab] = _env_slot(r)
-    best = None                      # (slot, cadence, id) with the calmest slot
-    for bid, c in stacked:
-        band = (c.get("register") or "").strip().lower()
-        if band in label_to_slot:
-            slot = label_to_slot[band]
-            if best is None or slot < best[0]:
-                best = (slot, (c.get("cadence") or "").strip().lower(), bid)
-    if best is None:
-        return {}
-    return {"ceiling_slot": best[0], "break_mult": _CADENCE_BREAK.get(best[1]), "card": best[2]}
-
-
-def _eff_break_mult():
-    """The pause multiplier for the reply path: the tone's _BREAK_MULT times any stacked
-    card's cadence bias (spacious stretches, clipped compresses). 1.0x when no card biases it."""
-    return _BREAK_MULT * (_behavior_delivery().get("break_mult") or 1.0)
+# Behaviors are INDEPENDENT of registers. A behavior injects its stance into the reply (via
+# get_mode_context); it does not cap the render register or bend the pace. A card MAY name a
+# `register` -- but only as an optional target the stance mentions, never a delivery knob.
 
 
 def get_mode_context():
@@ -1422,14 +1390,6 @@ def set_render_register(reg, reason="", apply_exag=True, gated=True):
     # Expressive gate: expressive OFF pins to the lowest register; ON unlocks the rest.
     if gated and not _expressive_mode:
         key = keys[0]
-    # Behavior delivery bias: a stacked card can CAP the register down (calmest wins), never
-    # up. Only on gated (autonomous) calls -- a deliberate tuner audition is never overridden.
-    if gated:
-        _bd = _behavior_delivery()
-        ceil = _bd.get("ceiling_slot")
-        if ceil is not None and _env_slot((_VOICE_REGISTERS or {}).get("registers", {}).get(key, {})) > ceil:
-            key = _register_for_slot(ceil) or key
-            _vlog("register", "behavior cap -> %s (card %s)" % (key, _bd.get("card")))
     _active_register = key
     _apply_register(key, apply_exag=apply_exag)
     _vlog("register", "active=%s%s" % (key, (" (" + reason + ")") if reason else ""))
@@ -1772,7 +1732,7 @@ def _render_ssml_to_wav(text):
     pr = _active_register_prosody()
     if "lift" in pr:
         kokoro_voice.set_prosody(lift=_map_range(pr.get("lift"), 0.5))   # register baseline rise
-    tone = {"pressure": _PRESSURE, "break_mult": _eff_break_mult(), "prosody": pr}
+    tone = {"pressure": _PRESSURE, "break_mult": _BREAK_MULT, "prosody": pr}
     instr = resolve_instructions(text, base, tone)
     if len(instr) == 1 and "say" in instr[0]:    # single span -> flat synth
         it = instr[0]
@@ -1894,7 +1854,7 @@ def _render_expressive_to_wav(text, exaggeration):
     def _bucket(x):
         return round(max(0.0, min(1.0, x)) / 0.2)            # 6 buckets: limit synth calls
 
-    ops = resolve_instructions(text, 0, {"pressure": _PRESSURE, "break_mult": _eff_break_mult(), "fill": fill})
+    ops = resolve_instructions(text, 0, {"pressure": _PRESSURE, "break_mult": _BREAK_MULT, "fill": fill})
     say_intens = [float(o.get("intensity", fill)) for o in ops if "say" in o]
     if not any(("beat_ms" in o or "pause_ms" in o or "cue" in o or o.get("perform")) for o in ops) \
        and len({_bucket(x) for x in say_intens}) <= 1:        # one mood, no structure -> single call
@@ -7264,10 +7224,9 @@ def behaviors_active():
     stacked = _stacked_behaviors()
     return jsonify(ok=True, signals=sorted(_current_signals()),
                    explicit=sorted(_behavior_signals),
-                   stacked=[{"id": bid, "label": c.get("label", bid),
-                             "signal": c.get("signal", ""), "stance": c.get("stance", "")}
+                   stacked=[{"id": bid, "label": c.get("label", bid), "signal": c.get("signal", ""),
+                             "stance": c.get("stance", ""), "register": c.get("register", "")}
                             for bid, c in stacked],
-                   delivery=_behavior_delivery(),   # the register cap + pause multiplier now in effect
                    brief=behaviors_rt.brief(stacked))
 
 

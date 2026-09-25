@@ -35,5 +35,7 @@ def brief(stacked):
     for bid, card in stacked:
         stance = (card.get("stance") or "").strip()
         if stance:
-            lines.append("- %s: %s" % (card.get("label") or bid, stance))
+            reg = (card.get("register") or "").strip()   # optional target, not a delivery knob
+            tag = (" (when in the %s register)" % reg) if reg else ""
+            lines.append("- %s%s: %s" % (card.get("label") or bid, tag, stance))
     return "\n".join(lines) if len(lines) > 1 else ""

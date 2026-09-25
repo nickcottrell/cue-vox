@@ -77,16 +77,17 @@
   .tabs.bottom { margin-top:22px; }
   .view[hidden] { display:none; }
   /* slot cards (registers / ladder) */
-  .slot { border:1px solid var(--border); border-radius:var(--radius-md); padding:14px; margin-bottom:14px; background:var(--surface-light,var(--surface)); transition:box-shadow .12s,border-color .12s; }
-  .slot.active { border-color:var(--primary); box-shadow:0 0 0 2px var(--primary) inset; }
-  .slot__head { display:flex; align-items:center; gap:10px; margin-bottom:10px; cursor:pointer; }
-  .slot.active .slot__head::after { content:"● shaping"; font-size:10px; letter-spacing:.06em; text-transform:uppercase; color:var(--primary); white-space:nowrap; }
+  .slot { border:1px solid var(--border); border-radius:var(--radius-md); padding:14px; margin-bottom:14px; background:var(--surface-light,var(--surface)); }
+  .slot__head { display:flex; align-items:center; gap:10px; margin-bottom:10px; }
   /* expressive ceiling chip: the per-voice Chatterbox cap, always visible in the header */
   .exprcap { display:inline-flex; align-items:baseline; gap:8px; padding:6px 12px; border-radius:999px;
              border:1px solid var(--primary); background:color-mix(in srgb, var(--primary) 12%, transparent); }
   .exprcap .cap__lab { font-size:10px; letter-spacing:.08em; text-transform:uppercase; color:var(--dim); }
   .exprcap .cap__val { font-size:16px; font-weight:var(--font-weight-bold); font-variant-numeric:tabular-nums; color:var(--primary); }
   .exprcap .cap__note { font-size:11px; color:var(--dim); }
+  /* register-card group headers: Sound / Prosody / Expressive, so a card reads in sections */
+  .reg-group { font-size:10px; letter-spacing:.09em; text-transform:uppercase; color:var(--text-secondary);
+               font-weight:var(--font-weight-bold,700); margin:14px 0 8px; padding-top:10px; border-top:1px solid var(--line); }
   .slot__n { font-size:22px; font-weight:var(--font-weight-bold); font-variant-numeric:tabular-nums; color:var(--text-heading); }
   .slot__swatch { width:16px; height:16px; border-radius:4px; border:1px solid rgba(0,0,0,.4); flex:none; }
   .slot__label { background:var(--input-bg,var(--surface)); color:var(--text); border:1px solid var(--border); border-radius:var(--radius-sm); padding:4px 8px; font-family:inherit; font-size:13px; flex:1; }
@@ -136,21 +137,30 @@
 </style>
 </head>
 <body>
-  <h1>cue-vox &middot; neural tuning wizard</h1>
-  <p class="sub">Governed neural: every knob is a visible bound, not a vibe. A <b>Personality</b> holds <b>Registers</b> (energy bands: chill / mid / peak), each with its own prosody bounds and a <b>Blend</b> it plays. A <b>Blend</b> is a weighted mix of base <b>Voices</b>. <b>One ceiling:</b> the engine holds a single ceiling (chill / mid / peak); content fills UP TO it, and peak is a reserved gear reached only by <code>&lt;perform&gt;</code>. The words fill the bounds.</p>
+  <h1>cue-vox &middot; Tuner</h1>
+  <!-- Chassis actions across the top: primary Send full-width, Export/Import secondary below -->
+  <div id="chassisTop" style="margin:0 0 20px;">
+    <button class="btn btn--primary" id="loadlocal" style="width:100%;" title="Send this tuned voice to the running local cue-vox now AND set it as the boot voice.">Send to Cue-Vox</button>
+    <div class="row" style="margin-top:8px;gap:10px;">
+      <button class="btn" id="package" style="flex:1;" title="Export the whole feel as a portable SVG package">Export</button>
+      <button class="btn" id="import" style="flex:1;" title="Import a package SVG">Import</button>
+    </div>
+    <input type="file" id="importfile" accept=".svg,image/svg+xml" style="display:none;">
+  </div>
 
-  <!-- The Personality is the parent container: its selector + management up top, then
-       its child sections (the tabs) and the shared ceiling, then the active view. -->
+  <!-- Personality management: top-level, above the personality card (which is the editor). -->
+  <div class="minirow" id="pcontrols" style="margin:0 0 16px;">
+    <button class="btn btn--sm" id="p_new" title="Create a new blank personality">+ New</button>
+    <button class="btn btn--sm" id="p_dup" title="Duplicate the selected personality (deep-copies its whole stack) under a new name, then retune it freely">Duplicate</button>
+    <button class="btn btn--sm" id="p_rename" title="Rename the selected personality">Rename</button>
+    <button class="btn btn--sm" id="p_del" title="Delete the selected personality">Delete</button>
+  </div>
+
+  <!-- The Personality card: its selector, then the tabs and the active view. -->
   <div class="personality">
     <div class="personality__head">
       <select id="voicesel" class="bigsel" title="Personality: the character speaking"></select>
       <div class="hint" id="voicekind" style="margin:2px 0 8px;"></div>
-      <div class="minirow" id="pcontrols" style="margin:0 0 12px;">
-        <button class="btn btn--sm" id="p_new" title="Create a new blank personality">+ New</button>
-        <button class="btn btn--sm" id="p_dup" title="Duplicate the selected personality (deep-copies its whole stack) under a new name, then retune it freely">Duplicate</button>
-        <button class="btn btn--sm" id="p_rename" title="Rename the selected personality">Rename</button>
-        <button class="btn btn--sm" id="p_del" title="Delete the selected personality">Delete</button>
-      </div>
       <div id="vfp" class="vfp" style="margin-bottom:0;" title="Voice fingerprint: a hash of the sound-determining config. If this matches the code the bench speaks (and the server log), it is the same voice.">
         <span class="vfp__sw"></span><span class="vfp__lab">voice</span><span class="vfp__hash">reading…</span>
       </div>
@@ -159,131 +169,90 @@
 
     <!-- child sections of the selected Personality -->
     <div class="tabs">
-      <button class="tab active" id="tab-tuner" data-view="tuner">Tuner</button>
-      <button class="tab" id="tab-registers" data-view="registers">Register</button>
-      <button class="tab" id="tab-blend" data-view="blend">Blend</button>
       <button class="tab" id="tab-behaviors" data-view="behaviors">Behaviors</button>
+      <button class="tab active" id="tab-situations" data-view="situations">Situations</button>
+      <button class="tab" id="tab-register" data-view="register">Register</button>
     </div>
-    <select id="register" class="bigsel" style="margin-bottom:10px;" title="Ceiling: the highest register expression can reach right now. Content fills UP TO it; nothing pins at max. chill / mid / peak are its stops. Peak is reserved for &lt;perform&gt; / a deliberate lift."></select>
+    <select id="register" class="bigsel" style="margin-bottom:10px;" title="Register / ceiling: the highest band expression reaches now. On Register it gates the editor; on Situations it sets which band Play uses."></select>
+    <div id="status" style="margin:0 0 10px;min-height:16px;"></div>
 
-  <!-- ===== Tuner: the situation card + package + deploy ===== -->
-  <div class="view" id="view-tuner">
+  <!-- ===== Situations: the script + audition ===== -->
+  <div class="view" id="view-situations">
     <div class="panel">
       <div class="voice-row" style="margin-bottom:8px;">
         <span style="font-size:12px;letter-spacing:.08em;text-transform:uppercase;color:var(--dim);">Situation</span>
         <select id="situation" style="flex:1;"></select>
-        <button class="btn btn--sm" id="sit_add" title="Add and name a new situation for this personality">+ new</button>
+        <button class="btn btn--sm" id="sit_add" title="Add and name a new situation">+ new</button>
       </div>
-      <textarea id="sample" rows="8" placeholder="Pick a situation above, or + new to author one. SSML lives here." style="width:100%;background:#191919;color:var(--ink);border:1px solid var(--line);border-radius:8px;padding:10px;font-family:inherit;font-size:13px;line-height:1.5;resize:vertical;"></textarea>
-      <div class="hint">The Personality / Register / Situation dropdowns fill this box. Edit freely; changes auto-save to the selected situation (persisted). W3C SSML: &lt;break&gt; &lt;emphasis&gt; &lt;prosody rate|volume|pitch&gt; &lt;p&gt;/&lt;s&gt; &lt;sub&gt; &lt;voice&gt;; extensions &lt;beat/&gt; &lt;laugh/&gt; &lt;giggle/&gt; &lt;chuckle/&gt; &lt;perform&gt;…&lt;/perform&gt; (lift a phrase into the peak register for a bit). Markup v3: a bad tag is spoken as words, never read aloud.</div>
-      <div class="row">
-        <button class="btn" id="parse" title="Inspect: how the active register reads this markup (the resolved spans + range mapping)">Inspect</button>
-        <button class="btn" id="undo">Undo</button>
-      </div>
-      <div class="row">
+      <textarea id="sample" rows="8" placeholder="Pick a situation, or + new. SSML lives here." style="width:100%;background:#191919;color:var(--ink);border:1px solid var(--line);border-radius:8px;padding:10px;font-family:inherit;font-size:13px;line-height:1.5;resize:vertical;"></textarea>
+      <div class="hint">Edits auto-save to the selected situation. SSML: &lt;break&gt; &lt;emphasis&gt; &lt;prosody&gt; &lt;perform&gt;; a bad tag is spoken, never read aloud.</div>
+      <div class="row" style="align-items:center;gap:10px;">
         <button class="btn btn--primary" id="hear">Play</button>
         <button class="btn" id="stop">Stop</button>
+        <button class="btn" id="parse" title="Inspect how the active register reads this markup">Inspect</button>
+        <button class="btn" id="undo">Undo</button>
         <span id="stackstatus" class="stackstat ok" title="Whether Play renders through the latest saved stack">● preview is live</span>
       </div>
       <div class="row" style="align-items:center;gap:10px;">
-        <label style="display:flex;align-items:center;gap:6px;font-size:12px;color:var(--dim);cursor:pointer;" title="Audition through Chatterbox (the expressive engine cue-vox uses). Off = Kokoro.">
-          <input type="checkbox" id="expr"> expressive (Chatterbox)
+        <label style="display:flex;align-items:center;gap:6px;font-size:12px;color:var(--dim);cursor:pointer;" title="Audition through Chatterbox. Off = Kokoro.">
+          <input type="checkbox" id="expr"> expressive
         </label>
         <label id="expr_int_wrap" style="display:none;align-items:center;gap:6px;font-size:11px;color:var(--dim);flex:1;">
           intensity <input type="range" id="expr_int" min="0" max="1" step="0.05" value="1.0" style="flex:1;max-width:170px;">
           <span id="expr_int_v" class="pval">1.00</span>
         </label>
       </div>
-      <div class="hint" id="expr_hint" style="display:none;">Auditions the <b>selected register</b> through Chatterbox, exactly like cue-vox. Intensity 1.0 = the boldest this register gets (its exaggeration ceiling); lower it to hear the floor.</div>
+      <div class="hint" id="expr_hint" style="display:none;">Intensity 1.0 = the boldest this register gets; lower it to hear the floor.</div>
       <div id="parseout" style="margin-top:12px;font-size:12px;color:var(--dim);"></div>
     </div>
+  </div><!-- /view-situations -->
 
-    <div class="row">
-      <button class="btn btn--primary" id="loadlocal" title="Send this tuned voice to the running local cue-vox now AND set it as the boot voice. One way.">Send to Cue-Vox</button>
-    </div>
-    <div class="minirow">
-      <button class="btn btn--sm" id="package" title="Export the whole feel (text + settings) as a portable SVG package">Export</button>
-      <button class="btn btn--sm" id="import" title="Import a package SVG back in">Import</button>
-      <input type="file" id="importfile" accept=".svg,image/svg+xml" style="display:none;">
-    </div>
-    <div id="status" style="margin-top:10px;"></div>
-  </div><!-- /view-tuner -->
-
-  <div class="view" id="view-registers" hidden>
-
-  <div class="panel">
-    <div class="section">Governed neural &middot; the stack</div>
-    <div class="hint" style="line-height:1.8;">
-      <b>1 &middot; Personality</b> &rarr; the character (a set of registers)<br>
-      <b>2 &middot; Register</b> &rarr; an energy band (chill / mid / peak): its sound, its min &rarr; max prosody bounds, and the blend it plays<br>
-      <b>3 &middot; Blend</b> &rarr; the weighted mix of base voices a register plays (its timbre)<br>
-      <b>4 &middot; Voice</b> &rarr; one base Kokoro voice, an ingredient in a blend<br>
-      <b>5 &middot; Situation + SSML</b> &rarr; the script and words, filling the bounds
-    </div>
-    <div class="hint" style="margin-top:6px;">A human sets a legible limit at every layer; the model performs inside it. Nothing is a black box.</div>
-  </div>
-
-  <!-- No globals: every knob is per-register (below). These stay as neutral hidden
-       inputs only so the autotone stand-in + package/deploy keep working at identity;
-       there is no global tuning surface. -->
+  <!-- hidden autotone/package inputs (no global tuning surface) -->
   <input id="brk" type="hidden" value="1.0"><input id="pressure" type="hidden" value="1.0">
   <input id="lift" type="hidden" value="0.8"><input id="steer" type="hidden" value="">
   <input id="gamma" type="hidden" value="2.2"><input id="cap" type="hidden" value="9">
   <input id="decay" type="hidden" value="0.6"><input id="loud" type="hidden" value="0.07">
 
-  <div class="panel" style="margin-top:14px;">
-    <div class="section">Registers &middot; energy bands + their bounds</div>
-    <div class="hint">The <b>Register</b> dropdown up top <b>gates this editor</b>: only the register you pick there is shown, so you shape one band at a time. Switch the dropdown to shape another. Edits to a hidden register are kept and still save.</div>
-    <div class="hint">Each register is a <b>timbre</b> (how the band sounds) plus a <b>prosody envelope</b> (how it reads the same markup). Scalars are single values; ranges read as <b>min &rarr; max</b> (min = gentlest, max = boldest; a wider range = a more expressive band). Every knob names its own scale, so a value reads as a place (<i>natural</i>, <i>punched</i>) not just a number. The <b>blend</b> it plays lives on the <b>Blend</b> tab.</div>
-    <div class="hint" style="margin-top:6px;">Saving writes voices.json, so it survives boot.</div>
-    <div id="reglist" style="margin-top:14px;"></div>
-    <div class="row">
-      <button class="btn" id="reg_add">+ Add register</button>
-      <button class="btn" id="reg_reload">Reload</button>
-      <button class="btn btn--primary" id="reg_save">Save registers</button>
+  <!-- ===== Register: the selected band + the one blend it plays ===== -->
+  <div class="view" id="view-register" hidden>
+    <div class="panel">
+      <div class="section">Register</div>
+      <div class="hint">The dropdown gates this editor: shape one band at a time. Edits to hidden bands are kept and still save.</div>
+      <div id="reglist" style="margin-top:14px;"></div>
+    </div>
+
+    <!-- one action row + one save for the whole tab (a band and its voice mix save together) -->
+    <div class="row" style="margin-top:16px;align-items:center;gap:10px;">
+      <button class="btn btn--sm" id="reg_add">+ Add Register</button>
+      <button class="btn btn--sm" id="reg_reload">Reload</button>
+      <button class="btn btn--primary" id="tab_save" style="margin-left:auto;">Save &amp; Rebuild</button>
     </div>
     <div id="reg_status" style="color:var(--dim);font-size:12px;margin-top:12px;min-height:16px;"></div>
-  </div>
-  </div><!-- /view-registers -->
+    <span id="slots" style="display:none;"></span><span id="bl_status" style="display:none;"></span>
+  </div><!-- /view-register -->
 
-  <div class="view" id="view-blend" hidden>
-  <div class="panel">
-    <div class="section">Blend library &middot; named, reusable mixes of voices</div>
-    <div class="hint">A <b>Blend</b> is a named, weighted mix of base <b>Voices</b>. Build blends here, name each one, then assign one to each register with its <b>Blend</b> picker on the <b>Register</b> tab. A blend can be reused by more than one register. This library belongs to the selected personality.</div>
-    <div class="hint" style="margin-top:6px;"><b>The pipeline:</b> create / edit a blend &rarr; <b>Save &amp; rebuild</b> (bakes it and hot-swaps the live engine) &rarr; assign it to a register &rarr; go to the <b>Tuner</b>, pick that register, and <b>Play</b> to hear it.</div>
-    <div class="section" style="margin-top:14px;">Blends</div>
-    <div id="slots"></div>
-    <div class="row">
-      <button class="btn" id="bl_new">+ New blend</button>
-      <button class="btn" id="bl_load">Reload</button>
-      <button class="btn btn--primary" id="bl_rebuild">Save &amp; rebuild</button>
-      <button class="btn" id="bl_save">Save only</button>
-    </div>
-    <div id="bl_status" style="color:var(--dim);font-size:12px;margin-top:12px;min-height:16px;"></div>
-    <div class="hint">Save writes the library onto the personality in voices.json; rebuild regenerates register-voices.bin and hot-swaps the running engine, so the next Play uses the new blends. A weight sum near 1.0 is ideal (it normalizes on rebuild).</div>
-  </div>
-  </div><!-- /view-blend -->
-
+  <!-- ===== Behaviors: situational stance cards ===== -->
   <div class="view" id="view-behaviors" hidden>
-  <div class="panel">
-    <div class="section">Behaviors &middot; situational stance cards</div>
-    <div class="hint">A <b>behavior</b> is a <b>trigger</b> (a condition in the room) plus a <b>stance</b> (a pre-designed move). Dumb by design: the agent <b>loads the card that fits the moment and stacks it</b> &mdash; it does not compute the behavior. A stance is <i>posture</i>, independent of how the voice sounds (Sound is the other tabs). <b>Behaviors are per personality</b> &mdash; these are the <b id="beh_voice_lab">active</b> voice's cards; switch the Personality up top to shape another's. Each card materializes to a flat SVG the agent can cache.</div>
-    <datalist id="beh-signals">
-      <option value="always">always stacked</option>
-      <option value="live">hands-free / live mode (auto)</option>
-      <option value="barge_in">a hold / interrupt is active (auto)</option>
-      <option value="quiet">quiet room (explicit)</option>
-      <option value="low_key">low-key / wind-down (explicit)</option>
-    </datalist>
-    <div id="behlist" style="margin-top:14px;"></div>
-    <div class="row">
-      <button class="btn" id="beh_new">+ New behavior</button>
-      <button class="btn" id="beh_reload">Reload</button>
-      <button class="btn btn--primary" id="beh_save">Save behaviors</button>
+    <div class="panel">
+      <div class="section">Behaviors</div>
+      <div class="hint">A <b>trigger</b> plus a <b>stance</b> the voice loads when it fits, never computed. Per personality &mdash; these are <b id="beh_voice_lab">active</b>'s cards. Each materializes to a cacheable SVG.</div>
+      <datalist id="beh-signals">
+        <option value="always">always stacked</option>
+        <option value="live">hands-free / live mode (auto)</option>
+        <option value="barge_in">a hold / interrupt is active (auto)</option>
+        <option value="quiet">quiet room (explicit)</option>
+        <option value="low_key">low-key / wind-down (explicit)</option>
+      </datalist>
+      <div id="behlist" style="margin-top:14px;"></div>
+      <div class="row">
+        <button class="btn" id="beh_new">+ New Behavior</button>
+        <button class="btn" id="beh_reload">Reload</button>
+        <button class="btn btn--primary" id="beh_save">Save Behaviors</button>
+      </div>
+      <div id="beh_status" style="color:var(--dim);font-size:12px;margin-top:12px;min-height:16px;"></div>
     </div>
-    <div id="beh_status" style="color:var(--dim);font-size:12px;margin-top:12px;min-height:16px;"></div>
-  </div>
   </div><!-- /view-behaviors -->
+
   </div><!-- /personality -->
 
 <script>
@@ -541,21 +510,22 @@
     } catch(e){ $("status").textContent = "load error"; }
   });
 
-  // ===== SPA tabs: Tuner <-> Register Ladder (one page, no reloads) =====
-  let _blendLoaded = false;
+  // ===== SPA tabs: Behaviors / Situations / Register (one page, no reloads). The whole
+  // page IS the tuner; Situations is the default landing (pick a situation, hear it). =====
   function showView(name){
-    ["tuner","registers","blend","behaviors"].forEach(v => {
+    ["behaviors","situations","register"].forEach(v => {
       $("view-" + v).hidden = (v !== name);
       $("tab-" + v).classList.toggle("active", v === name);
     });
-    if (name === "blend") {
-      if (!_blendLoaded) { _blendLoaded = true; blendLoad(); }
-      else blendLoad();       // reload the active personality's library (it may have switched)
+    if (name === "register") {           // blends are folded into the Register tab now
+      blendLoad();                       // reload the active personality's blend library
+      if (typeof highlightActiveRegister === "function") highlightActiveRegister();
     }
     if (name === "behaviors") behaviorsLoad();
-    if (name === "registers" && typeof highlightActiveRegister === "function") highlightActiveRegister();
-    const hash = name === "tuner" ? "#" : "#" + name;
-    if (location.hash.slice(1) !== (name === "tuner" ? "" : name)) history.replaceState(null, "", hash);
+    // The register/ceiling dropdown is a Situations + Register concern; hide it on Behaviors.
+    var rsel = $("register"); if (rsel) rsel.style.display = (name === "behaviors") ? "none" : "";
+    const hash = name === "situations" ? "#" : "#" + name;
+    if (location.hash.slice(1) !== (name === "situations" ? "" : name)) history.replaceState(null, "", hash);
   }
   document.querySelectorAll(".tab").forEach(t => t.addEventListener("click", () => showView(t.dataset.view)));
 
@@ -569,6 +539,21 @@
     w.value = (weight != null ? weight : 0.5); w.addEventListener("input", updateSums);
     const del = document.createElement("button"); del.className = "btn btn--sm"; del.textContent = "remove";
     del.addEventListener("click", () => { row.remove(); updateSums(); markStackDirty("voices"); });
+    row.appendChild(sel); row.appendChild(w); row.appendChild(del);
+    return row;
+  }
+  // A voice row that lives INSIDE a register card (the blend is edited inline on the band, not
+  // as a separate card). Updates the card's own weight-sum readout via sumFn.
+  function regVoiceRow(voice, weight, sumFn){
+    const row = document.createElement("div"); row.className = "voice-row";
+    const sel = document.createElement("select");
+    VOICES.forEach(v => { const o = document.createElement("option"); o.value = v; o.textContent = v; if (v === voice) o.selected = true; sel.appendChild(o); });
+    sel.addEventListener("change", () => markStackDirty("voices"));
+    const w = document.createElement("input"); w.type = "number"; w.step = "0.05"; w.min = "0"; w.max = "2";
+    w.value = (weight != null ? weight : 0.5);
+    w.addEventListener("input", () => { sumFn(); markStackDirty("voices"); });
+    const del = document.createElement("button"); del.className = "btn btn--sm"; del.textContent = "remove";
+    del.addEventListener("click", () => { row.remove(); sumFn(); markStackDirty("voices"); });
     row.appendChild(sel); row.appendChild(w); row.appendChild(del);
     return row;
   }
@@ -603,8 +588,18 @@
     }
     const ids = Object.keys(BLEND_LIB || {});
     if (ids.length) ids.forEach(bid => host.appendChild(blendCard(bid, BLEND_LIB[bid])));
-    else host.innerHTML = '<div class="hint">No blends yet. Click <b>+ New blend</b> to create one, name it, then assign it to a register on the Register tab.</div>';
+    else host.innerHTML = '<div class="hint">No blends yet. Click <b>+ New Blend</b>, name it, add voices, then Save.</div>';
     updateSums();
+    gateBlendToRegister();      // show ONLY the blend the selected register plays (1 register -> 1 blend)
+  }
+  // The Blend panel mirrors the Register gate: it shows the single blend the active band plays,
+  // never the whole library on the same level as one register.
+  function gateBlendToRegister(){
+    const cards = [...document.querySelectorAll("#slots .slot")];
+    if (!cards.length) return;
+    const bid = ((typeof _regs === "function" ? _regs()[ACTIVE_REG] : null) || {}).blend_id;
+    const key = cards.some(c => c.dataset.bid === bid) ? bid : cards[0].dataset.bid;
+    cards.forEach(c => { c.style.display = (c.dataset.bid === key) ? "" : "none"; });
   }
   function updateSums(){
     document.querySelectorAll("#slots .slot").forEach(card => {
@@ -637,7 +632,7 @@
     try {
       const j = await (await fetch("/api/tune/blend")).json();
       if (!j.ok){ $("bl_status").textContent = "load failed: " + (j.error || "?"); return; }
-      BLEND_LIB = j.blends || {}; VOICES = j.voice_order || []; renderLibrary();
+      BLEND_LIB = j.blends || {}; VOICES = j.voice_order || []; renderRegisters();  // voices live in the register cards
       $("bl_status").textContent = "loaded " + Object.keys(BLEND_LIB).length + " blend(s)";
     } catch(e){ $("bl_status").textContent = "load error"; }
   }
@@ -667,10 +662,8 @@
     markStackDirty("voices");
     $("bl_status").textContent = "new blend added; name it, add voices, then Save & rebuild";
   }
-  $("bl_load").addEventListener("click", blendLoad);
-  $("bl_new").addEventListener("click", blendNew);
-  $("bl_save").addEventListener("click", () => blendSave(false));
-  $("bl_rebuild").addEventListener("click", () => blendSave(true));
+  // Blends are edited inline on each register card now (no separate blend cards). The Register
+  // tab has ONE Save & Rebuild that persists the bands AND their voice mixes together.
 
   // ===== Behaviors: situational stance cards (trigger + stance, dumb-by-design) =====
   // A shared, sideways-growing library. Each card is a TRIGGER (a condition in the room)
@@ -678,21 +671,6 @@
   // The agent loads the card that fits and stacks it; it never computes the behavior.
   let BEHAVIORS = {};
   const BEH_BANDS = ["", "chill", "mid", "peak"];
-  function behEsc(s){ return (s||"").replace(/&/g,"&amp;").replace(/</g,"&lt;").replace(/>/g,"&gt;"); }
-  function behaviorCardSvg(id, c){                 // client preview; mirrors the server carrier
-    const hue = ({chill:205, mid:265, peak:320})[c.register] || 230;
-    const clip = s => behEsc((s||"").slice(0,46));
-    return '<svg xmlns="http://www.w3.org/2000/svg" width="220" height="132" font-family="Zilla Slab, Georgia, serif">'
-      + '<rect width="220" height="132" rx="8" fill="#161616"/>'
-      + '<rect x="0" y="0" width="6" height="132" fill="hsl('+hue+' 45% 60%)"/>'
-      + '<text x="18" y="28" fill="#e6e6e6" font-size="15" font-weight="700">'+behEsc(c.label||id)+'</text>'
-      + '<text x="18" y="50" fill="#8a8a8a" font-size="10" letter-spacing="0.08em">TRIGGER</text>'
-      + '<text x="18" y="66" fill="#b9b9b9" font-size="11">'+clip(c.trigger)+'</text>'
-      + '<text x="18" y="90" fill="#8a8a8a" font-size="10" letter-spacing="0.08em">STANCE</text>'
-      + '<text x="18" y="106" fill="#b9b9b9" font-size="11">'+clip(c.stance)+'</text>'
-      + '<text x="18" y="124" fill="#6f6f6f" font-size="10">'+behEsc((("register "+(c.register||"")+" | "+(c.cadence||"")).replace(/^register\s+\|\s*/,"").replace(/\|\s*$/,"")).trim())+'</text>'
-      + '</svg>';
-  }
   function behCard(id, c){
     const card = document.createElement("div"); card.className = "slot"; card.dataset.bid = id;
     const head = document.createElement("div"); head.className = "slot__head";
@@ -711,7 +689,7 @@
       const ta = document.createElement("textarea"); ta.rows = rows; ta.dataset.key = key; ta.value = c[key] || "";
       ta.placeholder = ph;
       ta.style.cssText = "width:100%;background:#191919;color:var(--ink);border:1px solid var(--line);border-radius:6px;padding:7px;font-family:inherit;font-size:12px;line-height:1.45;resize:vertical;";
-      ta.addEventListener("input", () => { const cur = BEHAVIORS[id]||{}; cur[key] = ta.value; BEHAVIORS[id]=cur; refreshBehPreview(card, id); });
+      ta.addEventListener("input", () => { const cur = BEHAVIORS[id]||{}; cur[key] = ta.value; BEHAVIORS[id]=cur; });
       wrap.appendChild(lab); wrap.appendChild(ta); return wrap;
     };
     card.appendChild(mkField("trigger", "The condition in the room that fires this card (human description).", 2));
@@ -725,31 +703,29 @@
     sig.addEventListener("input", () => { const cur=BEHAVIORS[id]||{}; cur.signal=sig.value.trim(); BEHAVIORS[id]=cur; });
     srow.appendChild(sl); srow.appendChild(sig); card.appendChild(srow);
     card.appendChild(mkField("stance", "The pre-designed move: how the voice behaves here.", 3));
-    // delivery bias: which band the stance leans on + a cadence word
+    // Optional target register -- behaviors are independent of registers; this just lets a
+    // stance target a specific band ("(any)" = applies regardless). Not a delivery knob.
     const drow = document.createElement("div"); drow.className = "voice-row"; drow.style.margin = "8px 0";
-    const dl = document.createElement("span"); dl.textContent = "Register";
+    const dl = document.createElement("span"); dl.textContent = "Target";
     dl.style.cssText = "font-size:12px;color:var(--dim);min-width:60px;";
+    dl.title = "Optional: scope this behavior to one register. (any) = applies regardless.";
     const rsel = document.createElement("select"); rsel.dataset.key = "register";
-    BEH_BANDS.forEach(b => { const o=document.createElement("option"); o.value=b; o.textContent=b||"(any)";
+    BEH_BANDS.forEach(b => { const o=document.createElement("option"); o.value=b; o.textContent=b||"(any register)";
       if (b===(c.register||"")) o.selected=true; rsel.appendChild(o); });
-    rsel.addEventListener("change", () => { const cur=BEHAVIORS[id]||{}; cur.register=rsel.value; BEHAVIORS[id]=cur; refreshBehPreview(card, id); });
-    const cad = document.createElement("input"); cad.dataset.key = "cadence"; cad.value = c.cadence || "";
-    cad.placeholder = "cadence (e.g. spacious, clipped, easy)";
-    cad.style.cssText = "flex:1;background:#191919;color:var(--ink);border:1px solid var(--line);border-radius:6px;padding:6px 8px;font-family:inherit;font-size:12px;";
-    cad.addEventListener("input", () => { const cur=BEHAVIORS[id]||{}; cur.cadence=cad.value; BEHAVIORS[id]=cur; });
-    drow.appendChild(dl); drow.appendChild(rsel); drow.appendChild(cad); card.appendChild(drow);
+    rsel.addEventListener("change", () => { const cur=BEHAVIORS[id]||{}; cur.register=rsel.value; BEHAVIORS[id]=cur; });
+    drow.appendChild(dl); drow.appendChild(rsel); card.appendChild(drow);
     // the cacheable card, previewed
-    const prev = document.createElement("div"); prev.className = "beh-prev"; prev.style.cssText = "margin-top:8px;";
-    prev.innerHTML = behaviorCardSvg(id, c); card.appendChild(prev);
-    label.addEventListener("input", () => { const cur=BEHAVIORS[id]||{}; cur.label=label.value; BEHAVIORS[id]=cur; refreshBehPreview(card, id); });
+    label.addEventListener("input", () => { const cur=BEHAVIORS[id]||{}; cur.label=label.value; BEHAVIORS[id]=cur; });
     return card;
   }
-  function refreshBehPreview(card, id){ const p = card.querySelector(".beh-prev"); if (p) p.innerHTML = behaviorCardSvg(id, BEHAVIORS[id]||{}); }
   function renderBehaviors(){
     const host = $("behlist"); host.innerHTML = "";
     const ids = Object.keys(BEHAVIORS);
-    if (!ids.length) { host.innerHTML = '<div class="hint">No behaviors yet. Click <b>+ New behavior</b> to author one.</div>'; return; }
-    ids.forEach(id => host.appendChild(behCard(id, BEHAVIORS[id] || {})));
+    if (!ids.length) {
+      host.innerHTML = '<div class="hint">No behaviors yet. Click <b>+ New Behavior</b> to author one.</div>';
+      return;
+    }
+    ids.forEach(id => host.appendChild(behCard(id, BEHAVIORS[id] || {})));   // all cards, independent
   }
   async function behaviorsLoad(){
     $("beh_status").textContent = "loading...";
@@ -781,9 +757,9 @@
     const name = (prompt("Behavior id (kebab-case, e.g. quiet-room):") || "").trim().toLowerCase().replace(/[^a-z0-9-]+/g, "-").replace(/^-+|-+$/g, "");
     if (!name) return;
     if (BEHAVIORS[name]) { $("beh_status").textContent = 'already exists: ' + name; return; }
-    BEHAVIORS[name] = { label: name.replace(/-/g," "), trigger: "", stance: "", register: "", cadence: "" };
+    BEHAVIORS[name] = { label: name.replace(/-/g," "), trigger: "", signal: "", stance: "", register: "" };
     renderBehaviors();
-    $("beh_status").textContent = 'added "' + name + '" (fill it in, then Save behaviors)';
+    $("beh_status").textContent = 'added "' + name + '" (fill it in, then Save Behaviors)';
   });
   $("beh_reload").addEventListener("click", behaviorsLoad);
   $("beh_save").addEventListener("click", behaviorsSave);
@@ -944,13 +920,7 @@
       const card = document.createElement("div"); card.className = "slot"; card.dataset.reg = rk;
       card.dataset.slot = _envSlot(r);              // the baked blend row this register plays
       if (r.policy) card.dataset.policy = r.policy;  // carried through save (no visible field)
-      if (rk === ACTIVE_REG) card.classList.add("active");
       const head = document.createElement("div"); head.className = "slot__head";
-      head.title = "Click to shape this register (syncs the Register dropdown)";
-      head.addEventListener("click", (e) => {          // click a card to make it the register you're shaping
-        if (e.target.closest("input,button")) return;
-        selectRegisterFromCard(rk);
-      });
       const sw = document.createElement("span"); sw.className = "slot__swatch";
       sw.style.background = "hsl(" + slotHueR(_envSlot(r)) + " 45% 62%)";
       const n = document.createElement("span"); n.className = "slot__n"; n.textContent = rk;
@@ -969,42 +939,39 @@
         $("reg_status").textContent = "removed register " + rk + " (Save registers to persist)";
       });
       head.appendChild(sw); head.appendChild(n); head.appendChild(label); head.appendChild(rm); card.appendChild(head);
-      // Blend picker: assign one of this personality's named blends to this register.
-      const blendRow = document.createElement("div"); blendRow.className = "voice-row"; blendRow.style.margin = "8px 0 10px";
-      const blab = document.createElement("span");
-      blab.textContent = "Blend"; blab.style.cssText = "font-size:12px;color:var(--dim);min-width:46px;";
-      const bsel = document.createElement("select"); bsel.dataset.role = "blend";
-      const lib = (VOICES_DATA[ACTIVE_VOICE] || {}).blends || {};
-      const none = document.createElement("option"); none.value = ""; none.textContent = "(none)"; bsel.appendChild(none);
-      Object.keys(lib).forEach(bid => {
-        const o = document.createElement("option"); o.value = bid; o.textContent = lib[bid].label || bid;
-        if (bid === r.blend_id) o.selected = true; bsel.appendChild(o);
-      });
-      if (!r.blend_id) none.selected = true;
-      bsel.addEventListener("change", async () => {
-        const rr = _regs()[rk]; if (rr) rr.blend_id = bsel.value;
-        $("reg_status").textContent = "assigning blend...";
-        try {
-          const j = await (await fetch("/api/tune/assign_blend", { method:"POST", headers:{"Content-Type":"application/json"},
-            body: JSON.stringify({ voice: ACTIVE_VOICE, register: rk, blend_id: bsel.value, rebuild: true }) })).json();
-          if (!j.ok){ $("reg_status").textContent = "assign failed: " + (j.error || "?"); return; }
-          setFingerprint(j.fingerprint);
-          $("reg_status").textContent = "register " + rk + " -> blend " + (bsel.value || "(none)") + (j.rebuilt ? " (rebuilt + live)" : "");
-        } catch(e){ $("reg_status").textContent = "assign error"; }
-      });
-      blendRow.appendChild(blab); blendRow.appendChild(bsel); card.appendChild(blendRow);
+      // Grouped so a register reads top-to-bottom: what it PLAYS + how it SOUNDS, then how it
+      // READS markup, then how it PERFORMS expressive. --- Sound ---
+      const soundH = document.createElement("div"); soundH.className = "reg-group"; soundH.textContent = "Sound";
+      card.appendChild(soundH);
       const grid = document.createElement("div");
       grid.style.cssText = "display:flex;flex-wrap:wrap;gap:10px;margin-bottom:8px;";
       TIMBRE_FIELDS.forEach(f => grid.appendChild(timbreField(f, r[f.key])));
       card.appendChild(grid);
-      const envh = document.createElement("div"); envh.className = "hint"; envh.style.marginTop = "8px";
-      envh.textContent = "Prosody · per-tag (min → max)";
+      // Voices: the Kokoro voices this band blends. One = a single stock speaker; add more to
+      // mix. This IS the blend -- no separate blend cards. dataset.blendId keys where the weights
+      // save (defaults to the register key, so each band owns its own mix).
+      card.dataset.blendId = r.blend_id || rk;
+      const vlab = document.createElement("div"); vlab.className = "hint";
+      vlab.style.cssText = "margin:6px 0 4px;"; vlab.textContent = "Voices — the Kokoro mix (add one or more)";
+      card.appendChild(vlab);
+      const vrows = document.createElement("div"); vrows.className = "reg-voices"; card.appendChild(vrows);
+      const vsum = document.createElement("div"); vsum.className = "sum"; vsum.style.cssText = "font-size:11px;color:var(--dim);margin:4px 0 0;";
+      const vSum = () => { let s = 0; vrows.querySelectorAll("input[type=number]").forEach(w => s += parseFloat(w.value) || 0);
+        vsum.textContent = "weight sum " + s.toFixed(2) + (Math.abs(s - 1) < 0.01 ? "" : "  (normalizes on rebuild)"); };
+      const _w = ((BLEND_LIB[card.dataset.blendId] || {}).weights) || {};
+      Object.entries(_w).forEach(([v, w]) => vrows.appendChild(regVoiceRow(v, w, vSum)));
+      if (!Object.keys(_w).length) vrows.appendChild(regVoiceRow(VOICES[0] || "", 1.0, vSum));
+      const addv = document.createElement("button"); addv.className = "btn btn--sm"; addv.textContent = "+ Add Voice";
+      addv.addEventListener("click", () => { vrows.appendChild(regVoiceRow(VOICES[0] || "", 0.5, vSum)); vSum(); markStackDirty("voices"); });
+      card.appendChild(addv); card.appendChild(vsum); vSum();
+      const envh = document.createElement("div"); envh.className = "reg-group";
+      envh.textContent = "Prosody · how it reads markup (min → max)";
       card.appendChild(envh);
       PROSODY_DIMS.forEach(f => card.appendChild(rangeRow(f, pr[f.key])));
       // Chatterbox performer: exaggeration range + cfg, as sliders.
       const cbx = r.chatterbox_profile || {};
-      const cbxh = document.createElement("div"); cbxh.className = "hint"; cbxh.style.marginTop = "8px";
-      cbxh.textContent = "Chatterbox performer (expressive path)";
+      const cbxh = document.createElement("div"); cbxh.className = "reg-group";
+      cbxh.textContent = "Expressive · Chatterbox";
       card.appendChild(cbxh);
       card.appendChild(rangeRow(CBX_EXAG, cbx.exaggeration));
       card.appendChild(rangeRow(CBX_CFG, cbx.cfg_weight));
@@ -1039,7 +1006,7 @@
       if (Object.keys(cp).length) r.chatterbox_profile = cp;
       if (card.dataset.slot != null) r.kokoro_slot = parseInt(card.dataset.slot, 10) || 0;
       if (card.dataset.policy) r.policy = card.dataset.policy;
-      const bsel = card.querySelector('select[data-role=blend]'); if (bsel) r.blend_id = bsel.value;
+      if (card.dataset.blendId) r.blend_id = card.dataset.blendId;   // each band owns its inline mix
       out[rk] = r;
     });
     return out;
@@ -1081,6 +1048,7 @@
       $("reg_status").textContent = "personality is now " + ACTIVE_VOICE + ", register " + (j.envelope || "?");
       STACK = { envelopes: false, voices: false }; renderStackStatus();   // server switched the live voice
       if (!$("view-behaviors").hidden) behaviorsLoad();   // behaviors are per-voice -> reload for the new one
+      if (!$("view-register").hidden) blendLoad();         // blends are per-voice too
     } catch(e){ $("reg_status").textContent = "switch error"; }
   });
   // ===== Personality CRUD: new / duplicate / rename / delete =====
@@ -1130,35 +1098,55 @@
     if (j) _switchTo(j.active);
   });
 
-  $("reg_reload").addEventListener("click", loadVoices);
+  $("reg_reload").addEventListener("click", () => { loadVoices(); blendLoad(); });   // bands + blends
   function _nextRegKey(regs){ let n = 1; while (regs[String(n)]) n++; return String(n); }
   $("reg_add").addEventListener("click", () => {
     const regs = _regs(); const k = _nextRegKey(regs);
     // Auto-assign the next blend row (slot) for the new register; never a user knob. A
     // distinct row keeps the new register's blend from colliding with an existing one.
     let nextRow = 0; Object.values(regs).forEach(r => { nextRow = Math.max(nextRow, _envSlot(r) + 1); });
-    const firstBlend = Object.keys((VOICES_DATA[ACTIVE_VOICE] || {}).blends || {})[0] || "";
     regs[k] = { label: "new", speed: 1.0, bright: 0.0, gain: 1.0, exaggeration: 1.0,
                 prosody: { break: [0.9, 1.3], emphasis: [1.0, 1.4], rate: [0.9, 1.1], lift: [0.6, 0.9] },
                 chatterbox_profile: { exaggeration: [0.6, 1.0], cfg_weight: 0.4, reference_voice: "" },
-                kokoro_slot: nextRow, blend_id: firstBlend, policy: "" };
+                kokoro_slot: nextRow, blend_id: k, policy: "" };   // its own inline mix, keyed by the band
     renderRegisters(); populateRegisterDropdown();
     markStackDirty("envelopes");
     $("reg_status").textContent = "added register " + k + " (Save to persist)";
   });
-  $("reg_save").addEventListener("click", async () => {
-    $("reg_status").textContent = "saving registers...";
+  // ONE save for the Register tab: persist the bands AND their blends, then rebuild the engine.
+  $("tab_save").addEventListener("click", async () => {
+    $("reg_status").textContent = "saving...";
     try {
-      // replace=true: authoritative set (adds new cards, prunes removed ones); the
-      // backend keeps unsent fields (the nested registers/voices) on survivors.
+      // 1) bands. replace=true: authoritative set (adds new, prunes removed); backend keeps
+      //    unsent nested fields on survivors.
       const j = await (await fetch("/api/tune/envelopes", { method:"POST", headers:{"Content-Type":"application/json"},
         body: JSON.stringify({ voice: ACTIVE_VOICE, envelopes: collectRegisters(), replace: true }) })).json();
       if (!j.ok) { $("reg_status").textContent = "save failed: " + (j.error || "?"); return; }
       if (VOICES_DATA[ACTIVE_VOICE]) VOICES_DATA[ACTIVE_VOICE].envelopes = j.envelopes;
-      renderRegisters(); populateRegisterDropdown();     // reflect adds/removes
-      setFingerprint(j.fingerprint);                     // config changed -> new stamp
-      markStackClean("envelopes");                       // saved -> live engine has these on next Play
-      $("reg_status").textContent = "saved " + ACTIVE_VOICE + " (" + Object.keys(j.envelopes || {}).length + " registers) -> voices.json";
+      markStackClean("envelopes");
+      // 2) each band's inline voice mix -> a blend keyed by its blendId; save the set + rebuild.
+      const blends = {};
+      document.querySelectorAll("#reglist .slot").forEach(card => {
+        const bid = card.dataset.blendId; if (!bid) return;
+        const weights = {};
+        card.querySelectorAll(".reg-voices .voice-row").forEach(row => {
+          const v = row.querySelector("select").value;
+          const w = parseFloat(row.querySelector("input[type=number]").value) || 0;
+          if (v && w > 0) weights[v] = (weights[v] || 0) + w;
+        });
+        blends[bid] = { label: bid, weights };
+      });
+      const jb = await (await fetch("/api/tune/blend", { method:"POST", headers:{"Content-Type":"application/json"},
+        body: JSON.stringify({ blends, rebuild: true }) })).json();
+      if (jb.ok) {
+        BLEND_LIB = jb.blends || blends;
+        if (VOICES_DATA[ACTIVE_VOICE]) VOICES_DATA[ACTIVE_VOICE].blends = BLEND_LIB;
+        setFingerprint(jb.fingerprint); markStackClean("voices");
+      }
+      populateRegisterDropdown();
+      $("reg_status").textContent = jb.ok
+        ? ("saved " + ACTIVE_VOICE + " -> voices.json (engine rebuilt)")
+        : ("bands saved; blend save failed: " + (jb.error || "?"));
     } catch(e){ $("reg_status").textContent = "save error"; }
   });
   // ===== Register dropdown (Voice > Register), first-class selector =====
@@ -1206,7 +1194,7 @@
       const o = document.createElement("option");
       o.value = _envSlot(regs[k]);   // the envelope's Voice blend row -> Hear/Parse use $("register").value
       o.dataset.regkey = k;
-      o.textContent = k + " · " + (regs[k].label || "");
+      o.textContent = regs[k].label || k;   // just the band name (the mix is edited inline on the card)
       if (k === chosen) o.selected = true;
       sel.appendChild(o);
     });
@@ -1240,7 +1228,7 @@
   $("register").addEventListener("change", async () => {
     const opt = $("register").selectedOptions[0]; if (!opt) return;
     ACTIVE_REG = opt.dataset.regkey;
-    highlightActiveRegister();                         // Envelope follows the dropdown
+    highlightActiveRegister();                         // the card (with its inline voices) follows the dropdown
     const heldSit = $("situation").value;    // HOLD the situation across envelope switches (A/B compare)
     $("status").textContent = "register: loading...";
     try {
@@ -1284,7 +1272,7 @@
   renderStackStatus();
   loadVoices();
 
-  if (["blend","registers"].includes(location.hash.slice(1))) showView(location.hash.slice(1));   // deep-link support
+  if (["behaviors","register"].includes(location.hash.slice(1))) showView(location.hash.slice(1));   // deep-link support
 </script>
 </body>
 </html>

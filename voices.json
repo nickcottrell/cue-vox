@@ -179,7 +179,7 @@
           "blend_id": "peak"
         }
       },
-      "active_envelope": "2",
+      "active_envelope": "1",
       "capabilities": [
         {
           "name": "ship",
