@@ -1042,6 +1042,7 @@ _forced_fill = None        # bench-only: pin the content fill (0..1) for a deter
 # runnable benchmark (test/benchmark_capability.py) exercises the SAME code, not a mirror.
 # web.py owns the mode globals (_live_mode / _expressive_mode) and passes them in.
 import capability
+import behaviors as behaviors_rt   # situational stance-card stacking (dumb, pure)
 
 _CAPABILITY_MATRIX = capability.load_matrix()
 if _CAPABILITY_MATRIX is None:
@@ -1063,8 +1064,73 @@ def _blocked_tags():
     return capability.blocked_tags(_CAPABILITY_MATRIX, _active_mode())
 
 
+# ===== Behavior signals: which situational triggers are live right now =====
+# Explicit, not inferred. `live` mirrors hands-free mode; `barge_in` is set while a hold is
+# active; the rest (quiet, low_key, ...) are set deliberately via POST /api/behaviors/signals
+# or by an upstream signal. A card is stacked when its `signal` is in this set (or is 'always').
+_behavior_signals = set()
+
+
+def _current_signals():
+    """The live signal set: the explicit ones, plus the auto-signals the runtime owns."""
+    sig = set(_behavior_signals)
+    if _live_mode:
+        sig.add("live")
+    if not _play_gate.is_set():          # gate cleared = a hold is active -> barge/interrupt
+        sig.add("barge_in")
+    return sig
+
+
+def _behavior_cards():
+    """The ACTIVE voice's behavior cards (per-voice: Mack and Bell declare their own)."""
+    return ((_active_voice().get("behaviors") or {}).get("cards")) or {}
+
+
+def _stacked_behaviors():
+    return behaviors_rt.stack(_behavior_cards(), _current_signals())
+
+
+# Delivery bias: a stacked card can lean on a register (a band, by label) and a cadence.
+# Dumb rule when several stack: the CALMEST register wins (behaviors pull toward restraint,
+# never up), and that card's cadence drives the pause multiplier. A ceiling caps DOWN only.
+_CADENCE_BREAK = {"spacious": 1.4, "easy": 1.15, "clipped": 0.72}
+
+
+def _behavior_delivery():
+    """From the stacked cards: {'ceiling_slot': int|None, 'break_mult': float|None, 'card': id}.
+    ceiling_slot is the calmest (lowest) register slot any stacked card asks for; break_mult
+    comes from that same card's cadence. Empty when nothing is stacked or no bias is set."""
+    stacked = _stacked_behaviors()
+    if not stacked:
+        return {}
+    regs = (_VOICE_REGISTERS or {}).get("registers", {}) or {}
+    label_to_slot = {}
+    for r in regs.values():
+        lab = (r.get("label") or "").strip().lower()
+        if lab:
+            label_to_slot[lab] = _env_slot(r)
+    best = None                      # (slot, cadence, id) with the calmest slot
+    for bid, c in stacked:
+        band = (c.get("register") or "").strip().lower()
+        if band in label_to_slot:
+            slot = label_to_slot[band]
+            if best is None or slot < best[0]:
+                best = (slot, (c.get("cadence") or "").strip().lower(), bid)
+    if best is None:
+        return {}
+    return {"ceiling_slot": best[0], "break_mult": _CADENCE_BREAK.get(best[1]), "card": best[2]}
+
+
+def _eff_break_mult():
+    """The pause multiplier for the reply path: the tone's _BREAK_MULT times any stacked
+    card's cadence bias (spacious stretches, clipped compresses). 1.0x when no card biases it."""
+    return _BREAK_MULT * (_behavior_delivery().get("break_mult") or 1.0)
+
+
 def get_mode_context():
-    return capability.mode_context(_CAPABILITY_MATRIX, _expressive_mode, _live_mode)
+    mode = capability.mode_context(_CAPABILITY_MATRIX, _expressive_mode, _live_mode)
+    brief = behaviors_rt.brief(_stacked_behaviors())   # load the cards that fit; stack them
+    return (mode + "\n\n" + brief) if brief else mode
 
 
 def get_brevity_stance(brevity):
@@ -1085,12 +1151,13 @@ def _load_voices():
             return json.load(f)
     except Exception:
         pass
-    # Backward compat: the old flat voice_registers.json is one voice (Isabella).
+    # Backward compat: the old flat voice_registers.json is a single unnamed voice. Import it
+    # under a neutral key -- no personality id is assumed.
     try:
         with open(os.path.join(d, "voice_registers.json")) as f:
             flat = json.load(f)
-        return {"active": "isabella", "voices": {"isabella": {
-            "label": "Isabella", "kind": "female", "sid": 8,
+        return {"active": "default", "voices": {"default": {
+            "label": "Default", "kind": "female", "sid": 8,
             "blend": "register-voices.bin", "blend_slots": True,
             "envelopes": flat.get("registers", {})}}}   # legacy tiers -> envelopes (slot falls back via _env_slot)
     except Exception as exc:
@@ -1099,7 +1166,9 @@ def _load_voices():
 
 _VOICES_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "voices.json")
 _VOICES = _load_voices()
-_ACTIVE_VOICE = (_VOICES or {}).get("active") or "isabella"
+# Active voice = whatever voices.json declares; fall back to the first voice in the roster,
+# never a hardcoded personality id.
+_ACTIVE_VOICE = (_VOICES or {}).get("active") or next(iter((_VOICES or {}).get("voices", {})), None)
 
 
 def _save_voices():
@@ -1353,6 +1422,14 @@ def set_render_register(reg, reason="", apply_exag=True, gated=True):
     # Expressive gate: expressive OFF pins to the lowest register; ON unlocks the rest.
     if gated and not _expressive_mode:
         key = keys[0]
+    # Behavior delivery bias: a stacked card can CAP the register down (calmest wins), never
+    # up. Only on gated (autonomous) calls -- a deliberate tuner audition is never overridden.
+    if gated:
+        _bd = _behavior_delivery()
+        ceil = _bd.get("ceiling_slot")
+        if ceil is not None and _env_slot((_VOICE_REGISTERS or {}).get("registers", {}).get(key, {})) > ceil:
+            key = _register_for_slot(ceil) or key
+            _vlog("register", "behavior cap -> %s (card %s)" % (key, _bd.get("card")))
     _active_register = key
     _apply_register(key, apply_exag=apply_exag)
     _vlog("register", "active=%s%s" % (key, (" (" + reason + ")") if reason else ""))
@@ -1695,7 +1772,7 @@ def _render_ssml_to_wav(text):
     pr = _active_register_prosody()
     if "lift" in pr:
         kokoro_voice.set_prosody(lift=_map_range(pr.get("lift"), 0.5))   # register baseline rise
-    tone = {"pressure": _PRESSURE, "break_mult": _BREAK_MULT, "prosody": pr}
+    tone = {"pressure": _PRESSURE, "break_mult": _eff_break_mult(), "prosody": pr}
     instr = resolve_instructions(text, base, tone)
     if len(instr) == 1 and "say" in instr[0]:    # single span -> flat synth
         it = instr[0]
@@ -1817,13 +1894,14 @@ def _render_expressive_to_wav(text, exaggeration):
     def _bucket(x):
         return round(max(0.0, min(1.0, x)) / 0.2)            # 6 buckets: limit synth calls
 
-    ops = resolve_instructions(text, 0, {"pressure": _PRESSURE, "break_mult": _BREAK_MULT, "fill": fill})
+    ops = resolve_instructions(text, 0, {"pressure": _PRESSURE, "break_mult": _eff_break_mult(), "fill": fill})
     say_intens = [float(o.get("intensity", fill)) for o in ops if "say" in o]
     if not any(("beat_ms" in o or "pause_ms" in o or "cue" in o or o.get("perform")) for o in ops) \
        and len({_bucket(x) for x in say_intens}) <= 1:        # one mood, no structure -> single call
         inten = max(say_intens or [fill])
         p = chatterbox_voice.synth_to_file(strip_markdown_for_tts(text),
-                                           exaggeration=_exag_for(inten), cfg_weight=_cfg_for(inten))
+                                           exaggeration=_exag_for(inten), cfg_weight=_cfg_for(inten),
+                                           voice=_ACTIVE_VOICE)   # clone the active voice's refs (male for Mack)
         if p:
             _scale_wav_amp(p, _amp_for(inten))
         return p
@@ -1838,7 +1916,8 @@ def _render_expressive_to_wav(text, exaggeration):
                 e, c, amp = perf_exag, perf_cfg, perf_amp
             else:
                 e, c, amp = _exag_for(run["inten"]), _cfg_for(run["inten"]), _amp_for(run["inten"])
-            p = chatterbox_voice.synth_to_file(span, exaggeration=e, cfg_weight=c)
+            p = chatterbox_voice.synth_to_file(span, exaggeration=e, cfg_weight=c,
+                                               voice=_ACTIVE_VOICE)   # clone the active voice's refs
             if p:
                 _scale_wav_amp(p, amp)
                 parts.append(p)
@@ -5404,13 +5483,30 @@ This dominates any length heuristic.
 """ % coord
 
 
+def _persona_identity():
+    """The active PERSONALITY's name, so the voice knows who it is when asked. The label
+    (Bell / Mack / Rake) is the spoken name; the fingerprint hash stays an internal id and is
+    never spoken as the name. Empty when no voice is loaded."""
+    v = _active_voice()
+    label = (v.get("label") or _ACTIVE_VOICE or "").strip()
+    if not label:
+        return ""
+    kind = (v.get("kind") or "").strip()
+    return ("[VOICE PERSONA -- who you are by name]\n"
+            "You speak as **%s**%s. That is your name in this conversation. If the user asks "
+            "who you are, say it plainly -- \"I'm %s\" or \"This is %s\" -- never the voice "
+            "fingerprint hash (that is an internal id, not a name).\n\n---\n\n"
+            % (label, (" (a %s voice)" % kind) if kind else "", label, label))
+
+
 def get_instance_identity():
     """
     Return instance identity header for cue-vox Claude.
 
-    This ensures cue-vox Claude always knows its role in the maestro ecosystem.
+    This ensures cue-vox Claude always knows its role in the maestro ecosystem AND which
+    personality (voice) it currently speaks as.
     """
-    return """[INSTANCE IDENTITY -- AUTHORITATIVE]
+    return _persona_identity() + """[INSTANCE IDENTITY -- AUTHORITATIVE]
 **You ARE cue-vox Claude (Voice Interface). This is not negotiable.**
 
 You are NOT ninja Claude. You are NOT the terminal instance. You are the VOICE
@@ -6122,7 +6218,7 @@ def deterministic_markup(text):
 #   <prosody rate= volume= pitch=>                                            speed/gain/pitch
 #   <p> / <s>                                                                 paragraph / sentence pause
 #   <say-as interpret-as=> / <sub alias="..">                                 spoken form
-#   <voice name="isabella|atlas|neutral">                                     voice select (standard use)
+#   <voice name="...">   (any personality id in voices.json)                  voice select (standard use)
 #   <beat/> <beat time="600ms"/> <laugh/> <chuckle/> <giggle/>                SANCTIONED cvx extensions
 # Everything else is NOT markup. The custom dialect was GUT: no <force=N>, no
 # <break=N/>, no <soft>/<loud>, no ALL-CAPS/.../-- auto-conversion, no <strong>/<b>/
@@ -6185,8 +6281,8 @@ def _ssml_pitch_off(v):
 
 
 def _ssml_voice(name):
-    """SSML <voice name=> is standard voice SELECTION (isabella/atlas/neutral), not a
-    register knob -- the register-overload was gut with the custom dialect. Per-span
+    """SSML <voice name=> is standard voice SELECTION (any personality id in voices.json),
+    not a register knob -- the register-overload was gut with the custom dialect. Per-span
     voice switching would force an engine reload, so for now <voice> is a transparent
     container (its content is still spoken) and voice selection lives in the tuner
     picker / POST /api/tune/voice. Returns no delivery contribution."""
@@ -7070,6 +7166,170 @@ def tune_voices():
     registers and per-register prosody rules) plus which one is active."""
     return jsonify(ok=True, active=_ACTIVE_VOICE, voices=(_VOICES or {}).get('voices', {}),
                    fingerprint=voice_fingerprint())
+
+
+# ===== Behaviors: situational stance cards (dumb-by-design, not runtime inference) =====
+# A behavior is a TRIGGER (a condition in the room) + a STANCE (a pre-designed move). The
+# agent loads the card that fits and stacks it; it does not compute the behavior. Cards are
+# PER VOICE (each personality declares its own stance -- Mack and Bell differ), stored at
+# voice.behaviors.cards; each also materializes to a flat SVG the agent can cache. See the
+# 'voice-carries-a-stance' doctrine.
+def _behaviors_dir(vid=None):
+    """config/voice/behaviors/<voice>/ under MAESTRO_ROOT (per-voice cacheable SVG cards)."""
+    root = (os.environ.get('MAESTRO_ROOT') or '').strip()
+    return os.path.join(root, 'config', 'voice', 'behaviors', vid or _ACTIVE_VOICE or 'default') if root else ''
+
+
+def _behavior_card_svg(bid, card):
+    """A behavior card as a flat, cacheable SVG: the metadata IS the executable card (trigger
+    + stance + delivery bias); the visual is a caption. Same carrier as the voice package."""
+    reg = (card.get('register') or '').strip()
+    hue = {'chill': 205, 'mid': 265, 'peak': 320}.get(reg, 230)
+    payload = {'behavior': bid, 'version': 1, 'label': card.get('label', bid),
+               'trigger': card.get('trigger', ''), 'signal': card.get('signal', ''),
+               'stance': card.get('stance', ''),
+               'register': reg, 'cadence': card.get('cadence', ''),
+               'note': 'situational stance card; agent loads-not-computes; stack what fits'}
+    esc = lambda s: (s or '').replace('&', '&amp;').replace('<', '&lt;').replace('>', '&gt;')
+    return (
+        '<svg xmlns="http://www.w3.org/2000/svg" width="220" height="132" '
+        'font-family="Zilla Slab, Georgia, serif">\n'
+        '<title>behavior card: %s</title>\n'
+        '<desc>%s</desc>\n'
+        '<rect width="220" height="132" rx="8" fill="#161616"/>\n'
+        '<rect x="0" y="0" width="6" height="132" fill="hsl(%d 45%% 60%%)"/>\n'
+        '<text x="18" y="28" fill="#e6e6e6" font-size="15" font-weight="700">%s</text>\n'
+        '<text x="18" y="50" fill="#8a8a8a" font-size="10" letter-spacing="0.08em">TRIGGER</text>\n'
+        '<text x="18" y="66" fill="#b9b9b9" font-size="11">%s</text>\n'
+        '<text x="18" y="90" fill="#8a8a8a" font-size="10" letter-spacing="0.08em">STANCE</text>\n'
+        '<text x="18" y="106" fill="#b9b9b9" font-size="11">%s</text>\n'
+        '<text x="18" y="124" fill="#6f6f6f" font-size="10">%s</text>\n'
+        '<metadata id="vrgb-behavior-card">%s</metadata>\n'
+        '</svg>\n'
+        % (esc(bid), esc(card.get('stance', '')), hue, esc(card.get('label', bid)),
+           esc((card.get('trigger', '')[:46])), esc((card.get('stance', '')[:46])),
+           esc(('register ' + reg + ' | ' + (card.get('cadence', '') or '')).strip(' |')),
+           json.dumps(payload)))
+
+
+def _materialize_behavior_cards(cards, vid=None):
+    """Write each card to config/voice/behaviors/<voice>/<id>.svg (the cacheable carrier).
+    Returns the count written. No-op (returns 0) when no MAESTRO_ROOT is configured."""
+    d = _behaviors_dir(vid)
+    if not d:
+        return 0
+    os.makedirs(d, exist_ok=True)
+    n = 0
+    for bid, card in (cards or {}).items():
+        try:
+            with open(os.path.join(d, '%s.svg' % bid), 'w', encoding='utf-8') as fh:
+                fh.write(_behavior_card_svg(bid, card))
+            n += 1
+        except OSError as exc:
+            print('[BEHAVIOR] write failed for %s (%s)' % (bid, exc), flush=True)
+    return n
+
+
+@app.route('/api/tune/behaviors', methods=['GET', 'POST'])
+def tune_behaviors():
+    """PER-VOICE behavior-card library (trigger + stance + delivery bias per card). GET returns
+    the cards for ?voice=<id> (default: active). POST {cards:{...}, voice?} replaces that voice's
+    library, persists to voices.json, and re-materializes its cacheable SVG cards. Each voice
+    declares its own stances -- Mack and Bell can differ."""
+    if _VOICES is None:
+        return jsonify(ok=False, error='voices not loaded'), 200
+    voices = _VOICES.setdefault('voices', {})
+    if request.method == 'GET':
+        vid = (request.args.get('voice') or _ACTIVE_VOICE)
+        v = voices.get(vid, {})
+        cards = ((v.get('behaviors') or {}).get('cards')) or {}
+        return jsonify(ok=True, voice=vid, cards=cards)
+    d = request.get_json(force=True, silent=True) or {}
+    vid = (d.get('voice') or _ACTIVE_VOICE)
+    if vid not in voices:
+        return jsonify(ok=False, error='unknown voice: %s' % vid), 200
+    cards = d.get('cards')
+    if not isinstance(cards, dict):
+        return jsonify(ok=False, error='cards must be an object'), 200
+    voices[vid].setdefault('behaviors', {})['cards'] = cards
+    _save_voices()
+    wrote = _materialize_behavior_cards(cards, vid)
+    return jsonify(ok=True, voice=vid, cards=cards, materialized=wrote)
+
+
+@app.route('/api/behaviors/active', methods=['GET'])
+def behaviors_active():
+    """What the runtime is stacking right now: the live signal set and the cards it selects.
+    This is what rides the reply prompt as stance -- the observable 'load the card' step."""
+    stacked = _stacked_behaviors()
+    return jsonify(ok=True, signals=sorted(_current_signals()),
+                   explicit=sorted(_behavior_signals),
+                   stacked=[{"id": bid, "label": c.get("label", bid),
+                             "signal": c.get("signal", ""), "stance": c.get("stance", "")}
+                            for bid, c in stacked],
+                   delivery=_behavior_delivery(),   # the register cap + pause multiplier now in effect
+                   brief=behaviors_rt.brief(stacked))
+
+
+@app.route('/api/behaviors/signals', methods=['POST'])
+def behaviors_signals():
+    """Set the EXPLICIT behavior signals (the ones the runtime does not own automatically,
+    e.g. quiet / low_key). live and barge_in are auto -- setting them here is ignored/merged.
+    Body: {signals:[...]} replaces the explicit set; {add:[...]} / {remove:[...]} adjust it.
+    Dumb-by-design: this flips a named trigger; it never infers one."""
+    global _behavior_signals
+    d = request.get_json(force=True, silent=True) or {}
+    if isinstance(d.get('signals'), list):
+        _behavior_signals = {str(s).strip() for s in d['signals'] if str(s).strip()}
+    for s in (d.get('add') or []):
+        _behavior_signals.add(str(s).strip())
+    for s in (d.get('remove') or []):
+        _behavior_signals.discard(str(s).strip())
+    return jsonify(ok=True, explicit=sorted(_behavior_signals), signals=sorted(_current_signals()))
+
+
+# ===== Chatterbox sidecar trust: is it up, paired, and the AUTHORIZED build? =====
+def _chatterbox_status():
+    """Up (health) + verified (the signed attestation checks out) + matches (the running build
+    equals what was signed). 'expressive_trustworthy' = all three, so cue-vox can degrade
+    honestly instead of silently falling back to Kokoro while claiming to be expressive."""
+    st = {"up": False, "signed": False, "verified": False, "matches": False,
+          "fingerprint": None, "pubkey_fp": None, "detail": ""}
+    if not chatterbox_voice.available():
+        st["detail"] = "sidecar down"
+        return st
+    st["up"] = True
+    att = chatterbox_voice.attestation()
+    if not att:
+        st["detail"] = "up but no attestation (unmanaged/dev launch)"
+        return st
+    fp = att.get("fingerprint") or ""
+    st["fingerprint"] = fp[:16]
+    st["pubkey_fp"] = att.get("pubkey_fp")
+    st["signed"] = bool(att.get("signature"))
+    try:
+        import sys as _sys
+        root = str(MAESTRO_ROOT)
+        _sys.path.insert(0, os.path.join(root, "cue-mem", "lib"))
+        os.environ.setdefault("CUE_MEM_KEYS_DIR", os.path.join(root, ".claude", "keys"))
+        import signing
+        st["verified"] = bool(fp and att.get("signature") and signing.verify_bytes(fp, att["signature"]))
+        import cbx_attest
+        st["matches"] = (cbx_attest.build_fingerprint()[0] == fp)   # running build == signed build
+    except Exception as exc:
+        st["detail"] = "verify error: %s" % exc
+        return st
+    st["expressive_trustworthy"] = bool(st["verified"] and st["matches"])
+    st["detail"] = ("verified + matches" if st.get("expressive_trustworthy")
+                    else ("signed but %s" % ("drifted from signed build" if st["verified"] else "signature invalid")))
+    return st
+
+
+@app.route('/api/cbx/status', methods=['GET'])
+def cbx_status():
+    """Trust status of the expressive sidecar: up / signed / verified / matches. This is what
+    a surface reads to say 'expressive is live and valid' vs 'expressive down (Kokoro)'."""
+    return jsonify(ok=True, **_chatterbox_status())
 
 
 @app.route('/api/tune/voice', methods=['POST'])

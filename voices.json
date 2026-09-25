@@ -161,8 +161,8 @@
           },
           "chatterbox_profile": {
             "exaggeration": [
-              1.7,
-              2.3
+              1.2,
+              1.6
             ],
             "cfg_weight": [
               0.22,
@@ -256,14 +256,42 @@
             "af_sarah": 1.0
           }
         }
+      },
+      "behaviors": {
+        "cards": {
+          "quiet-room": {
+            "label": "Quiet room",
+            "signal": "quiet",
+            "trigger": "The room is quiet.",
+            "stance": "Come down with the room. Soft and unhurried, a few words, a little warmth in the pause. Let it be gentle.",
+            "register": "chill",
+            "cadence": "spacious"
+          },
+          "interrupted": {
+            "label": "Interrupted",
+            "signal": "barge_in",
+            "trigger": "The user barges in.",
+            "stance": "Give way warmly. Let them have the floor, no bruised recap. Fold their point in and carry on kindly.",
+            "register": "mid",
+            "cadence": "clipped"
+          },
+          "low-key": {
+            "label": "Low-key",
+            "signal": "low_key",
+            "trigger": "Wind-down vibe.",
+            "stance": "Ease all the way off. Warm, playful, a little slow. Keep it light and short; enjoy the hang.",
+            "register": "chill",
+            "cadence": "easy"
+          }
+        }
       }
     },
     "atlas": {
       "label": "Mack",
       "kind": "male",
       "sid": 6,
-      "blend": "voices.bin",
-      "blend_slots": false,
+      "blend": "mack-register-voices.bin",
+      "blend_slots": true,
       "situations": [
         {
           "situation": "greeting",
@@ -306,7 +334,27 @@
           "ssml": "It works now. <break time=\"300ms\"/> <chuckle/> <break time=\"400ms\"/> <prosody volume=\"soft\">after all that.</prosody>"
         }
       ],
-      "blends": {},
+      "blends": {
+        "m_chill": {
+          "label": "chill",
+          "weights": {
+            "am_michael": 1.0
+          }
+        },
+        "m_mid": {
+          "label": "mid",
+          "weights": {
+            "am_adam": 1.0
+          }
+        },
+        "m_peak": {
+          "label": "peak",
+          "weights": {
+            "am_adam": 0.6,
+            "am_michael": 0.4
+          }
+        }
+      },
       "envelopes": {
         "1": {
           "label": "chill",
@@ -348,7 +396,7 @@
             ]
           },
           "kokoro_slot": 0,
-          "blend_id": ""
+          "blend_id": "m_chill"
         },
         "2": {
           "label": "mid",
@@ -390,7 +438,7 @@
             ]
           },
           "kokoro_slot": 1,
-          "blend_id": ""
+          "blend_id": "m_mid"
         },
         "3": {
           "label": "peak",
@@ -418,8 +466,8 @@
           },
           "chatterbox_profile": {
             "exaggeration": [
-              1.7,
-              2.3
+              1.15,
+              1.55
             ],
             "cfg_weight": [
               0.22,
@@ -431,12 +479,12 @@
               1.6
             ]
           },
-          "policy": "reserved: performative gear, ridden on <perform> or a deliberate lift, never the ambient ceiling",
+          "policy": "reserved: performative gear, ridden on <perform> or a deliberate lift, never the ambient ceiling. Mack's exaggeration ceiling is capped below Bell's -- a cloned male voice destabilizes at Chatterbox exag~2.0/cfg~0.22, so the peak dial tops out ~1.55 (server maps that to cbx_exag~1.37).",
           "kokoro_slot": 2,
-          "blend_id": ""
+          "blend_id": "m_peak"
         }
       },
-      "active_envelope": "2",
+      "active_envelope": "1",
       "capabilities": [
         {
           "name": "ship",
@@ -493,7 +541,35 @@
           ],
           "policy": {}
         }
-      ]
+      ],
+      "behaviors": {
+        "cards": {
+          "quiet-room": {
+            "label": "Quiet room",
+            "signal": "quiet",
+            "trigger": "The room is quiet.",
+            "stance": "Drop to near nothing. One line, low and flat. Do not dress it up. Say it, stop.",
+            "register": "chill",
+            "cadence": "spacious"
+          },
+          "interrupted": {
+            "label": "Interrupted",
+            "signal": "barge_in",
+            "trigger": "The user barges in.",
+            "stance": "Cut. No recap, no apology. Take their point and keep moving, lean.",
+            "register": "mid",
+            "cadence": "clipped"
+          },
+          "low-key": {
+            "label": "Low-key",
+            "signal": "low_key",
+            "trigger": "Wind-down vibe.",
+            "stance": "Loose and dry. Short, a bit wry, no effort showing. Nothing to prove.",
+            "register": "chill",
+            "cadence": "easy"
+          }
+        }
+      }
     },
     "neutral": {
       "label": "Rake",
@@ -731,6 +807,34 @@
           "policy": {}
         }
       ]
+    }
+  },
+  "behaviors": {
+    "cards": {
+      "quiet-room": {
+        "label": "Quiet room",
+        "signal": "quiet",
+        "trigger": "The room is quiet -- low ambient, late hour, or the user is speaking softly.",
+        "stance": "Match the hush. Fewer words, longer rests. Do not fill the silence; let it breathe. Answer, then stop.",
+        "register": "chill",
+        "cadence": "spacious"
+      },
+      "interrupted": {
+        "label": "Interrupted",
+        "signal": "barge_in",
+        "trigger": "The user barges in or speaks over the reply (a hold / barge-in event).",
+        "stance": "Yield immediately. Drop the thought mid-line, no defensive recap. Pick up from what they said, not where you were.",
+        "register": "mid",
+        "cadence": "clipped"
+      },
+      "low-key": {
+        "label": "Low-key",
+        "signal": "low_key",
+        "trigger": "A wind-down / dad-day vibe -- casual, unhurried, no task pressure.",
+        "stance": "Loosen up. Warmer, slower, a little wry. Shorter answers, no briefing energy. It is fine to just hang.",
+        "register": "chill",
+        "cadence": "easy"
+      }
     }
   }
 }

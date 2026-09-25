@@ -30,6 +30,29 @@ console.log("%c cue-vox %c version " + (window.__CVX_VERSION || "?") + " %c  (ap
   "background:#c9c9c9;color:#161616;font-weight:700;padding:2px 6px;border-radius:0 4px 4px 0;",
   "color:#9a9a9a;");
 
+// Expressive sidecar trust, logged to the JS console. Honest degradation: the E toggle can
+// silently fall back to Kokoro when the sidecar is down, so surface whether what you'd hear
+// is the SIGNED, verified Chatterbox build. Reads /api/cbx/status (up/verified/matches).
+async function reportCbxTrust(reason) {
+  try {
+    const s = await (await fetch('/api/cbx/status')).json();
+    const state = !s.up ? 'down' : (s.expressive_trustworthy ? 'verified' : 'unverified');
+    const bg = { verified: '#8fb98f', unverified: '#d0b57f', down: '#d08a5a' }[state];
+    const msg = {
+      verified: 'expressive VERIFIED -- signed build, safe to trust what you hear',
+      unverified: 'expressive UNVERIFIED -- Chatterbox up but not the signed build (' + (s.detail || '?') + ')',
+      down: 'expressive DOWN -- E toggle falls back to Kokoro, not Chatterbox',
+    }[state];
+    const id = s.fingerprint ? ('  [build ' + s.fingerprint + ' · key ' + (s.pubkey_fp || '?') + ']') : '';
+    console.log('%ccvx:cbx%c ' + msg + id + (reason ? ('  (' + reason + ')') : ''),
+      'background:' + bg + ';color:#161616;font-weight:700;border-radius:3px;padding:1px 6px;',
+      'color:#9a9a9a;');
+    return s;
+  } catch (e) { /* endpoint absent (old server) -> stay quiet */ }
+}
+reportCbxTrust('load');
+setInterval(function () { reportCbxTrust(); }, 15000);   // catch a mid-session sidecar death
+
 // DOM Elements
 const socket = io();
 const drawerToggle = document.getElementById('drawerToggle');
@@ -811,6 +834,7 @@ function refreshModeBadges() {
   var expr = document.getElementById('modeBadgeExpressive');
   if (live) live.addEventListener('click', toggleLiveMode);
   if (expr) expr.addEventListener('click', toggleExpressive);
+  if (expr) expr.addEventListener('click', function () { setTimeout(function () { reportCbxTrust('expressive toggled'); }, 150); });
   refreshModeBadges();
 })();
 

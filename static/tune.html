@@ -81,6 +81,12 @@
   .slot.active { border-color:var(--primary); box-shadow:0 0 0 2px var(--primary) inset; }
   .slot__head { display:flex; align-items:center; gap:10px; margin-bottom:10px; cursor:pointer; }
   .slot.active .slot__head::after { content:"● shaping"; font-size:10px; letter-spacing:.06em; text-transform:uppercase; color:var(--primary); white-space:nowrap; }
+  /* expressive ceiling chip: the per-voice Chatterbox cap, always visible in the header */
+  .exprcap { display:inline-flex; align-items:baseline; gap:8px; padding:6px 12px; border-radius:999px;
+             border:1px solid var(--primary); background:color-mix(in srgb, var(--primary) 12%, transparent); }
+  .exprcap .cap__lab { font-size:10px; letter-spacing:.08em; text-transform:uppercase; color:var(--dim); }
+  .exprcap .cap__val { font-size:16px; font-weight:var(--font-weight-bold); font-variant-numeric:tabular-nums; color:var(--primary); }
+  .exprcap .cap__note { font-size:11px; color:var(--dim); }
   .slot__n { font-size:22px; font-weight:var(--font-weight-bold); font-variant-numeric:tabular-nums; color:var(--text-heading); }
   .slot__swatch { width:16px; height:16px; border-radius:4px; border:1px solid rgba(0,0,0,.4); flex:none; }
   .slot__label { background:var(--input-bg,var(--surface)); color:var(--text); border:1px solid var(--border); border-radius:var(--radius-sm); padding:4px 8px; font-family:inherit; font-size:13px; flex:1; }
@@ -148,6 +154,7 @@
       <div id="vfp" class="vfp" style="margin-bottom:0;" title="Voice fingerprint: a hash of the sound-determining config. If this matches the code the bench speaks (and the server log), it is the same voice.">
         <span class="vfp__sw"></span><span class="vfp__lab">voice</span><span class="vfp__hash">reading…</span>
       </div>
+      <div id="exprcap" class="exprcap" style="display:none;margin-top:8px;"></div>
     </div>
 
     <!-- child sections of the selected Personality -->
@@ -155,6 +162,7 @@
       <button class="tab active" id="tab-tuner" data-view="tuner">Tuner</button>
       <button class="tab" id="tab-registers" data-view="registers">Register</button>
       <button class="tab" id="tab-blend" data-view="blend">Blend</button>
+      <button class="tab" id="tab-behaviors" data-view="behaviors">Behaviors</button>
     </div>
     <select id="register" class="bigsel" style="margin-bottom:10px;" title="Ceiling: the highest register expression can reach right now. Content fills UP TO it; nothing pins at max. chill / mid / peak are its stops. Peak is reserved for &lt;perform&gt; / a deliberate lift."></select>
 
@@ -225,7 +233,7 @@
 
   <div class="panel" style="margin-top:14px;">
     <div class="section">Registers &middot; energy bands + their bounds</div>
-    <div class="hint">The card marked <b style="color:var(--primary);">● shaping</b> is the register picked in the <b>Register</b> dropdown up top. Pick one there, or <b>click any card here</b>, to choose which register you shape. They are one selection.</div>
+    <div class="hint">The <b>Register</b> dropdown up top <b>gates this editor</b>: only the register you pick there is shown, so you shape one band at a time. Switch the dropdown to shape another. Edits to a hidden register are kept and still save.</div>
     <div class="hint">Each register is a <b>timbre</b> (how the band sounds) plus a <b>prosody envelope</b> (how it reads the same markup). Scalars are single values; ranges read as <b>min &rarr; max</b> (min = gentlest, max = boldest; a wider range = a more expressive band). Every knob names its own scale, so a value reads as a place (<i>natural</i>, <i>punched</i>) not just a number. The <b>blend</b> it plays lives on the <b>Blend</b> tab.</div>
     <div class="hint" style="margin-top:6px;">Saving writes voices.json, so it survives boot.</div>
     <div id="reglist" style="margin-top:14px;"></div>
@@ -255,6 +263,27 @@
     <div class="hint">Save writes the library onto the personality in voices.json; rebuild regenerates register-voices.bin and hot-swaps the running engine, so the next Play uses the new blends. A weight sum near 1.0 is ideal (it normalizes on rebuild).</div>
   </div>
   </div><!-- /view-blend -->
+
+  <div class="view" id="view-behaviors" hidden>
+  <div class="panel">
+    <div class="section">Behaviors &middot; situational stance cards</div>
+    <div class="hint">A <b>behavior</b> is a <b>trigger</b> (a condition in the room) plus a <b>stance</b> (a pre-designed move). Dumb by design: the agent <b>loads the card that fits the moment and stacks it</b> &mdash; it does not compute the behavior. A stance is <i>posture</i>, independent of how the voice sounds (Sound is the other tabs). <b>Behaviors are per personality</b> &mdash; these are the <b id="beh_voice_lab">active</b> voice's cards; switch the Personality up top to shape another's. Each card materializes to a flat SVG the agent can cache.</div>
+    <datalist id="beh-signals">
+      <option value="always">always stacked</option>
+      <option value="live">hands-free / live mode (auto)</option>
+      <option value="barge_in">a hold / interrupt is active (auto)</option>
+      <option value="quiet">quiet room (explicit)</option>
+      <option value="low_key">low-key / wind-down (explicit)</option>
+    </datalist>
+    <div id="behlist" style="margin-top:14px;"></div>
+    <div class="row">
+      <button class="btn" id="beh_new">+ New behavior</button>
+      <button class="btn" id="beh_reload">Reload</button>
+      <button class="btn btn--primary" id="beh_save">Save behaviors</button>
+    </div>
+    <div id="beh_status" style="color:var(--dim);font-size:12px;margin-top:12px;min-height:16px;"></div>
+  </div>
+  </div><!-- /view-behaviors -->
   </div><!-- /personality -->
 
 <script>
@@ -515,7 +544,7 @@
   // ===== SPA tabs: Tuner <-> Register Ladder (one page, no reloads) =====
   let _blendLoaded = false;
   function showView(name){
-    ["tuner","registers","blend"].forEach(v => {
+    ["tuner","registers","blend","behaviors"].forEach(v => {
       $("view-" + v).hidden = (v !== name);
       $("tab-" + v).classList.toggle("active", v === name);
     });
@@ -523,6 +552,7 @@
       if (!_blendLoaded) { _blendLoaded = true; blendLoad(); }
       else blendLoad();       // reload the active personality's library (it may have switched)
     }
+    if (name === "behaviors") behaviorsLoad();
     if (name === "registers" && typeof highlightActiveRegister === "function") highlightActiveRegister();
     const hash = name === "tuner" ? "#" : "#" + name;
     if (location.hash.slice(1) !== (name === "tuner" ? "" : name)) history.replaceState(null, "", hash);
@@ -641,6 +671,122 @@
   $("bl_new").addEventListener("click", blendNew);
   $("bl_save").addEventListener("click", () => blendSave(false));
   $("bl_rebuild").addEventListener("click", () => blendSave(true));
+
+  // ===== Behaviors: situational stance cards (trigger + stance, dumb-by-design) =====
+  // A shared, sideways-growing library. Each card is a TRIGGER (a condition in the room)
+  // plus a STANCE (a pre-designed move) + an optional delivery bias (which band it leans on).
+  // The agent loads the card that fits and stacks it; it never computes the behavior.
+  let BEHAVIORS = {};
+  const BEH_BANDS = ["", "chill", "mid", "peak"];
+  function behEsc(s){ return (s||"").replace(/&/g,"&amp;").replace(/</g,"&lt;").replace(/>/g,"&gt;"); }
+  function behaviorCardSvg(id, c){                 // client preview; mirrors the server carrier
+    const hue = ({chill:205, mid:265, peak:320})[c.register] || 230;
+    const clip = s => behEsc((s||"").slice(0,46));
+    return '<svg xmlns="http://www.w3.org/2000/svg" width="220" height="132" font-family="Zilla Slab, Georgia, serif">'
+      + '<rect width="220" height="132" rx="8" fill="#161616"/>'
+      + '<rect x="0" y="0" width="6" height="132" fill="hsl('+hue+' 45% 60%)"/>'
+      + '<text x="18" y="28" fill="#e6e6e6" font-size="15" font-weight="700">'+behEsc(c.label||id)+'</text>'
+      + '<text x="18" y="50" fill="#8a8a8a" font-size="10" letter-spacing="0.08em">TRIGGER</text>'
+      + '<text x="18" y="66" fill="#b9b9b9" font-size="11">'+clip(c.trigger)+'</text>'
+      + '<text x="18" y="90" fill="#8a8a8a" font-size="10" letter-spacing="0.08em">STANCE</text>'
+      + '<text x="18" y="106" fill="#b9b9b9" font-size="11">'+clip(c.stance)+'</text>'
+      + '<text x="18" y="124" fill="#6f6f6f" font-size="10">'+behEsc((("register "+(c.register||"")+" | "+(c.cadence||"")).replace(/^register\s+\|\s*/,"").replace(/\|\s*$/,"")).trim())+'</text>'
+      + '</svg>';
+  }
+  function behCard(id, c){
+    const card = document.createElement("div"); card.className = "slot"; card.dataset.bid = id;
+    const head = document.createElement("div"); head.className = "slot__head";
+    const n = document.createElement("span"); n.className = "slot__n"; n.textContent = id;
+    const label = document.createElement("input"); label.className = "slot__label";
+    label.value = c.label || ""; label.placeholder = "label"; label.dataset.key = "label";
+    const rm = document.createElement("button"); rm.className = "btn btn--sm"; rm.textContent = "remove";
+    rm.addEventListener("click", () => { delete BEHAVIORS[id]; renderBehaviors();
+      $("beh_status").textContent = 'removed "' + id + '" (Save behaviors to persist)'; });
+    head.appendChild(n); head.appendChild(label); head.appendChild(rm); card.appendChild(head);
+    const mkField = (key, ph, rows) => {
+      const wrap = document.createElement("div"); wrap.style.margin = "8px 0";
+      const lab = document.createElement("div"); lab.className = "hint";
+      lab.style.cssText = "text-transform:uppercase;letter-spacing:.08em;font-size:10px;margin-bottom:3px;";
+      lab.textContent = key;
+      const ta = document.createElement("textarea"); ta.rows = rows; ta.dataset.key = key; ta.value = c[key] || "";
+      ta.placeholder = ph;
+      ta.style.cssText = "width:100%;background:#191919;color:var(--ink);border:1px solid var(--line);border-radius:6px;padding:7px;font-family:inherit;font-size:12px;line-height:1.45;resize:vertical;";
+      ta.addEventListener("input", () => { const cur = BEHAVIORS[id]||{}; cur[key] = ta.value; BEHAVIORS[id]=cur; refreshBehPreview(card, id); });
+      wrap.appendChild(lab); wrap.appendChild(ta); return wrap;
+    };
+    card.appendChild(mkField("trigger", "The condition in the room that fires this card (human description).", 2));
+    // signal: the machine trigger. The runtime stacks this card when this signal is live.
+    const srow = document.createElement("div"); srow.className = "voice-row"; srow.style.margin = "8px 0";
+    const sl = document.createElement("span"); sl.textContent = "Signal";
+    sl.style.cssText = "font-size:12px;color:var(--dim);min-width:60px;"; sl.title = "The machine trigger the runtime matches (dumb -- no inference from the prose). Auto signals: live, barge_in. Explicit: quiet, low_key, always, or your own.";
+    const sig = document.createElement("input"); sig.dataset.key = "signal"; sig.value = c.signal || "";
+    sig.setAttribute("list", "beh-signals"); sig.placeholder = "always · live · barge_in · quiet · low_key";
+    sig.style.cssText = "flex:1;background:#191919;color:var(--ink);border:1px solid var(--line);border-radius:6px;padding:6px 8px;font-family:inherit;font-size:12px;";
+    sig.addEventListener("input", () => { const cur=BEHAVIORS[id]||{}; cur.signal=sig.value.trim(); BEHAVIORS[id]=cur; });
+    srow.appendChild(sl); srow.appendChild(sig); card.appendChild(srow);
+    card.appendChild(mkField("stance", "The pre-designed move: how the voice behaves here.", 3));
+    // delivery bias: which band the stance leans on + a cadence word
+    const drow = document.createElement("div"); drow.className = "voice-row"; drow.style.margin = "8px 0";
+    const dl = document.createElement("span"); dl.textContent = "Register";
+    dl.style.cssText = "font-size:12px;color:var(--dim);min-width:60px;";
+    const rsel = document.createElement("select"); rsel.dataset.key = "register";
+    BEH_BANDS.forEach(b => { const o=document.createElement("option"); o.value=b; o.textContent=b||"(any)";
+      if (b===(c.register||"")) o.selected=true; rsel.appendChild(o); });
+    rsel.addEventListener("change", () => { const cur=BEHAVIORS[id]||{}; cur.register=rsel.value; BEHAVIORS[id]=cur; refreshBehPreview(card, id); });
+    const cad = document.createElement("input"); cad.dataset.key = "cadence"; cad.value = c.cadence || "";
+    cad.placeholder = "cadence (e.g. spacious, clipped, easy)";
+    cad.style.cssText = "flex:1;background:#191919;color:var(--ink);border:1px solid var(--line);border-radius:6px;padding:6px 8px;font-family:inherit;font-size:12px;";
+    cad.addEventListener("input", () => { const cur=BEHAVIORS[id]||{}; cur.cadence=cad.value; BEHAVIORS[id]=cur; });
+    drow.appendChild(dl); drow.appendChild(rsel); drow.appendChild(cad); card.appendChild(drow);
+    // the cacheable card, previewed
+    const prev = document.createElement("div"); prev.className = "beh-prev"; prev.style.cssText = "margin-top:8px;";
+    prev.innerHTML = behaviorCardSvg(id, c); card.appendChild(prev);
+    label.addEventListener("input", () => { const cur=BEHAVIORS[id]||{}; cur.label=label.value; BEHAVIORS[id]=cur; refreshBehPreview(card, id); });
+    return card;
+  }
+  function refreshBehPreview(card, id){ const p = card.querySelector(".beh-prev"); if (p) p.innerHTML = behaviorCardSvg(id, BEHAVIORS[id]||{}); }
+  function renderBehaviors(){
+    const host = $("behlist"); host.innerHTML = "";
+    const ids = Object.keys(BEHAVIORS);
+    if (!ids.length) { host.innerHTML = '<div class="hint">No behaviors yet. Click <b>+ New behavior</b> to author one.</div>'; return; }
+    ids.forEach(id => host.appendChild(behCard(id, BEHAVIORS[id] || {})));
+  }
+  async function behaviorsLoad(){
+    $("beh_status").textContent = "loading...";
+    try {
+      const j = await (await fetch("/api/tune/behaviors")).json();
+      BEHAVIORS = (j && j.cards) ? j.cards : {};
+      const lab = $("beh_voice_lab"); if (lab) lab.textContent = (j && j.voice) ? j.voice : (ACTIVE_VOICE || "active");
+      renderBehaviors();
+      $("beh_status").textContent = (j.voice ? (j.voice + ": ") : "") + Object.keys(BEHAVIORS).length + " behavior card(s)";
+    } catch(e){ $("beh_status").textContent = "load error"; }
+  }
+  async function behaviorsSave(){
+    // pull labels straight from the DOM (they mutate BEHAVIORS live, but be safe)
+    document.querySelectorAll("#behlist .slot").forEach(card => {
+      const id = card.dataset.bid, cur = BEHAVIORS[id] || {};
+      card.querySelectorAll("[data-key]").forEach(el => { cur[el.dataset.key] = el.value; });
+      BEHAVIORS[id] = cur;
+    });
+    $("beh_status").textContent = "saving...";
+    try {
+      const j = await (await fetch("/api/tune/behaviors", { method:"POST", headers:{"Content-Type":"application/json"},
+        body: JSON.stringify({ cards: BEHAVIORS, voice: ACTIVE_VOICE }) })).json();
+      if (!j.ok) { $("beh_status").textContent = "save failed: " + (j.error || "?"); return; }
+      $("beh_status").textContent = "saved " + Object.keys(BEHAVIORS).length + " card(s)"
+        + (j.materialized ? " · " + j.materialized + " SVG(s) cached" : "");
+    } catch(e){ $("beh_status").textContent = "save error"; }
+  }
+  $("beh_new").addEventListener("click", () => {
+    const name = (prompt("Behavior id (kebab-case, e.g. quiet-room):") || "").trim().toLowerCase().replace(/[^a-z0-9-]+/g, "-").replace(/^-+|-+$/g, "");
+    if (!name) return;
+    if (BEHAVIORS[name]) { $("beh_status").textContent = 'already exists: ' + name; return; }
+    BEHAVIORS[name] = { label: name.replace(/-/g," "), trigger: "", stance: "", register: "", cadence: "" };
+    renderBehaviors();
+    $("beh_status").textContent = 'added "' + name + '" (fill it in, then Save behaviors)';
+  });
+  $("beh_reload").addEventListener("click", behaviorsLoad);
+  $("beh_save").addEventListener("click", behaviorsSave);
 
   // ===== Voices (the roster) + per-register prosody editor =====
   let VOICES_DATA = {}, ACTIVE_VOICE = null;
@@ -762,6 +908,32 @@
   function _envSlot(env){
     return (env && env.kokoro_slot != null) ? env.kokoro_slot : 0;
   }
+  // The expressive CEILING = the peak register's Chatterbox exaggeration MAX. It is the
+  // boldest this voice pushes before the neural clone breaks up, set per voice by ear
+  // (find-ceiling.sh). We surface it as a persistent header chip so it stays visible even
+  // when the peak register is gated out of the editor.
+  function activeVoicePeakCap(){
+    const v = VOICES_DATA[ACTIVE_VOICE]; if (!v) return null;
+    const regs = v.envelopes || {}, keys = Object.keys(regs);
+    if (!keys.length) return null;
+    const pk = keys.reduce((a, b) => (+(regs[b].kokoro_slot||0) > +(regs[a].kokoro_slot||0)) ? b : a, keys[0]);
+    const ex = (regs[pk].chatterbox_profile || {}).exaggeration;
+    const cap = Array.isArray(ex) ? ex[1] : ex;
+    return (cap == null) ? null : { reg: pk, label: regs[pk].label || pk, cap: +cap };
+  }
+  function updateExprCap(){
+    const el = $("exprcap"); if (!el) return;
+    const c = activeVoicePeakCap();
+    if (!c) { el.style.display = "none"; return; }
+    el.style.display = "";
+    el.innerHTML = '<span class="cap__lab">Expressive ceiling</span>'
+      + '<span class="cap__val">' + c.cap.toFixed(2) + '</span>'
+      + '<span class="cap__note">capped by ear · peak (' + c.label + ')</span>';
+    el.title = "This voice's Chatterbox expressiveness is capped at dial " + c.cap.toFixed(2)
+      + " on the peak register (" + c.label + ") — the boldest it pushes before the neural clone "
+      + "breaks up. Set per voice by ear with find-ceiling.sh; edit it on the peak card's "
+      + "“Chatterbox performer” exaggeration max.";
+  }
   function renderRegisters(){          // renders the ENVELOPE cards (energy band editor)
     const host = $("reglist"); host.innerHTML = "";
     const v = VOICES_DATA[ACTIVE_VOICE];
@@ -839,6 +1011,8 @@
       card.appendChild(rangeRow(CBX_GAIN, cbx.gain));
       host.appendChild(card);
     });
+    highlightActiveRegister();          // gate to the selected register (hides the rest)
+    updateExprCap();                    // refresh the header ceiling chip
   }
   function collectRegisters(){
     const out = {};
@@ -906,6 +1080,7 @@
       $("status").textContent = "personality: " + ACTIVE_VOICE + " (live + boot default)";
       $("reg_status").textContent = "personality is now " + ACTIVE_VOICE + ", register " + (j.envelope || "?");
       STACK = { envelopes: false, voices: false }; renderStackStatus();   // server switched the live voice
+      if (!$("view-behaviors").hidden) behaviorsLoad();   // behaviors are per-voice -> reload for the new one
     } catch(e){ $("reg_status").textContent = "switch error"; }
   });
   // ===== Personality CRUD: new / duplicate / rename / delete =====
@@ -1036,14 +1211,25 @@
       sel.appendChild(o);
     });
     ACTIVE_REG = chosen;
+    highlightActiveRegister();          // reflect the gate whenever the dropdown is rebuilt
   }
-  // Register <-> Envelope are ONE selection: highlight the active register's card, and
-  // let clicking a card drive the dropdown (and vice versa).
+  // The Register dropdown GATES the editor: only the selected register's card is shown.
+  // A clear boundary, not a soft highlight -- you shape one register at a time, and the
+  // dropdown is the single control that picks which. All cards stay in the DOM (hidden),
+  // so collectRegisters() still saves every register's edits, seen or not.
   function highlightActiveRegister(){
-    document.querySelectorAll("#reglist .slot").forEach(c => {
-      const on = c.dataset.reg === ACTIVE_REG;
+    const cards = [...document.querySelectorAll("#reglist .slot")];
+    if (!cards.length) return;
+    let key = ACTIVE_REG;                                  // authoritative; fall back so ONE always shows
+    if (!cards.some(c => c.dataset.reg === key)) {
+      const v = VOICES_DATA[ACTIVE_VOICE] || {};
+      key = (v.active_envelope && cards.some(c => c.dataset.reg === v.active_envelope))
+        ? v.active_envelope : cards[0].dataset.reg;
+    }
+    cards.forEach(c => {
+      const on = c.dataset.reg === key;
       c.classList.toggle("active", on);
-      if (on && !$("view-registers").hidden) c.scrollIntoView({ block:"nearest", behavior:"smooth" });
+      c.style.display = on ? "" : "none";                 // the gate: non-selected registers are hidden
     });
   }
   function selectRegisterFromCard(key){
@@ -1092,7 +1278,7 @@
   }
   $("sample").addEventListener("input", _autoPersistText);
   // Any edit on the Envelope / Voices tabs makes the live preview stale until Saved.
-  $("reglist").addEventListener("input", () => markStackDirty("envelopes"));
+  $("reglist").addEventListener("input", () => { markStackDirty("envelopes"); updateExprCap(); });
   $("slots").addEventListener("input", () => markStackDirty("voices"));
   $("slots").addEventListener("change", () => markStackDirty("voices"));
   renderStackStatus();
