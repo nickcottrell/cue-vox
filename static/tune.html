@@ -41,7 +41,8 @@
           --dim:var(--text-secondary); --line:var(--border); --accent:var(--primary); }
   * { box-sizing:border-box; }
   body { margin:0; background:var(--background); color:var(--text); padding:28px; }
-  h1 { font-size:var(--font-size-xl); font-weight:var(--font-weight-bold); color:var(--text-heading); margin:0 0 4px; }
+  h1 { font-size:2rem; font-weight:var(--font-weight-bold); color:var(--text-heading); margin:0 0 2px; line-height:1.1; }
+  .powered { color:var(--text-secondary); font-size:var(--font-size-sm); letter-spacing:.14em; text-transform:uppercase; margin:0 0 20px; }
   .sub { color:var(--text-secondary); font-size:var(--font-size-sm); margin:0 0 22px; max-width:560px; }
   .panel, .card { background:var(--surface); border:1px solid var(--border); border-radius:var(--radius-lg); padding:20px; max-width:560px; }
   /* The Personality is the parent frame: everything below the selector is its child. */
@@ -137,13 +138,14 @@
 </style>
 </head>
 <body>
-  <h1>cue-vox &middot; Tuner</h1>
-  <!-- Chassis actions across the top: primary Send full-width, Export/Import secondary below -->
+  <h1>Cue-Vox Tuner</h1>
+  <p class="powered">Powered by VRGB</p>
+  <!-- Chassis actions across the top: primary Send full-width, Export/Import small below -->
   <div id="chassisTop" style="margin:0 0 20px;">
     <button class="btn btn--primary" id="loadlocal" style="width:100%;" title="Send this tuned voice to the running local cue-vox now AND set it as the boot voice.">Send to Cue-Vox</button>
-    <div class="row" style="margin-top:8px;gap:10px;">
-      <button class="btn" id="package" style="flex:1;" title="Export the whole feel as a portable SVG package">Export</button>
-      <button class="btn" id="import" style="flex:1;" title="Import a package SVG">Import</button>
+    <div class="row" style="margin-top:8px;gap:8px;">
+      <button class="btn btn--sm" id="package" title="Export the whole feel as a portable SVG package">Export</button>
+      <button class="btn btn--sm" id="import" title="Import a package SVG">Import</button>
     </div>
     <input type="file" id="importfile" accept=".svg,image/svg+xml" style="display:none;">
   </div>
