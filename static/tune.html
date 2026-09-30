@@ -399,6 +399,16 @@
   // path the same way cue-vox renders it.
   $("expr").addEventListener("change", () => {
     const on = $("expr").checked;
+    const v = VOICES_DATA[ACTIVE_VOICE] || {};
+    if (v.expressive === false) {
+      // Gear voice (Rake): the pill switches register, not engine. ON = top (not-chill),
+      // OFF = base (chill). No Chatterbox, no intensity dial.
+      $("expr_int_wrap").style.display = "none";
+      $("expr_hint").style.display = "none";
+      const keys = Object.keys(_regs()).sort();
+      if (keys.length) selectRegisterFromCard(on ? keys[keys.length - 1] : keys[0]);
+      return;
+    }
     $("expr_int_wrap").style.display = on ? "flex" : "none";
     $("expr_hint").style.display = on ? "block" : "none";
   });
@@ -1035,6 +1045,27 @@
   function updateVoiceKind(){
     const v = VOICES_DATA[ACTIVE_VOICE] || {};
     $("voicekind").textContent = [v.kind, v.blend_slots ? "neural blend" : "sid " + v.sid].filter(Boolean).join(" · ");
+    // A Kokoro-only voice (expressive:false, e.g. Rake) repurposes the expressive pill as a
+    // GEAR switch: OFF = Chill (low gear), ON = Not Chill (high gear). It never routes to
+    // Chatterbox; it picks the register. Heavy-path voices keep the pill as Chatterbox.
+    const gearMode = v.expressive === false;
+    const ex = $("expr");
+    if (ex) {
+      ex.disabled = false;
+      const wrap = ex.closest("label");
+      if (wrap) {
+        wrap.style.opacity = "";
+        wrap.title = gearMode
+          ? "Gear switch: OFF = Chill (low gear), ON = Not Chill (high gear). Kokoro-only, no Chatterbox."
+          : "Audition through Chatterbox. Off = Kokoro.";
+        // relabel the visible pill text so it reads as the gear it is
+        wrap.childNodes.forEach(n => { if (n.nodeType === 3 && n.textContent.trim())
+          n.textContent = gearMode ? " not chill" : " expressive"; });
+      }
+      // reflect the current register in the pill for a gear voice
+      if (gearMode) { const keys = Object.keys(_regs()).sort();
+        ex.checked = keys.length ? (ACTIVE_REG === keys[keys.length - 1]) : false; }
+    }
   }
   $("voicesel").addEventListener("change", async () => {
     const vid = $("voicesel").value;

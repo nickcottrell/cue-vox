@@ -1,6 +1,6 @@
 {
   "note": "Voice > Register > SSML. A voice is a timbre (SID + optional neural blend) holding 3 registers. Register is the RENDER STATE (which register the engine is in when it synthesizes); it is set by set_render_register, not by markup. Each register's prosody is a RANGE envelope, not a scalar: break/emphasis/rate/lift are [min,max]. The SSML tag supplies a normalized intensity (emphasis reduced/moderate/strong = 0/0.5/1; rate x-slow..x-fast = 0..1; break by length; lift by pitch), and the delivered value = lerp(min,max,intensity). Same markup lands bigger in peak because peak's envelope is wider. A scalar is read as [s,s] (back-compat). Timbre knobs (kokoro_slot/speed/bright/gain/exaggeration) are per register; blend_slots true = neural blend (Isabella only), false = fixed SID + prosody/DSP. Edit here and re-run the bench; the tuner Registers tab edits the ranges.",
-  "active": "isabella",
+  "active": "neutral",
   "voices": {
     "isabella": {
       "label": "Bell",
@@ -364,8 +364,8 @@
           "exaggeration": 0.6,
           "prosody": {
             "break": [
-              0.9,
-              1.4
+              1.1,
+              2.2
             ],
             "emphasis": [
               1.0,
@@ -406,8 +406,8 @@
           "exaggeration": 1.2,
           "prosody": {
             "break": [
-              0.7,
-              1.8
+              1.0,
+              2.8
             ],
             "emphasis": [
               1.4,
@@ -448,8 +448,8 @@
           "exaggeration": 1.7,
           "prosody": {
             "break": [
-              0.5,
-              3.5
+              0.7,
+              3.8
             ],
             "emphasis": [
               1.9,
@@ -564,9 +564,17 @@
             "label": "Low-key",
             "signal": "low_key",
             "trigger": "Wind-down vibe.",
-            "stance": "Loose and dry. Short, a bit wry, no effort showing. Nothing to prove.",
+            "stance": "Loose, dry, openly sarcastic. A beat, then the wry line. No effort showing, nothing to prove.",
             "register": "chill",
             "cadence": "easy"
+          },
+          "dry": {
+            "label": "Dry",
+            "signal": "always",
+            "trigger": "Always on. Mack's baseline.",
+            "stance": "Deadpan and dry, a little sarcastic. Understate everything. Set it up, hold the beat, then land it flat. Never explain the joke, never oversell it.",
+            "register": "mid",
+            "cadence": "measured"
           }
         }
       }
@@ -575,8 +583,8 @@
       "label": "Rake",
       "kind": "robotic",
       "sid": 0,
-      "blend": "voices.bin",
-      "blend_slots": false,
+      "blend": "rake-register-voices.bin",
+      "blend_slots": true,
       "situations": [
         {
           "situation": "greeting",
@@ -619,18 +627,33 @@
           "ssml": "It works now. <break time=\"300ms\"/> <chuckle/> <break time=\"400ms\"/> <prosody volume=\"soft\">after all that.</prosody>"
         }
       ],
-      "blends": {},
+      "blends": {
+        "r_chill": {
+          "label": "chill",
+          "weights": {
+            "bm_george": 0.6,
+            "af": 0.4
+          }
+        },
+        "r_notchill": {
+          "label": "not-chill",
+          "weights": {
+            "af_sky": 0.5,
+            "am_adam": 0.5
+          }
+        }
+      },
       "envelopes": {
         "1": {
           "label": "chill",
           "speed": 1.0,
-          "bright": 2.4,
-          "gain": 0.4,
-          "exaggeration": 0.3,
+          "bright": 2.6,
+          "gain": 0.6,
+          "exaggeration": 0.2,
           "prosody": {
             "break": [
-              1.0,
-              1.0
+              1.1,
+              1.4
             ],
             "emphasis": [
               1.0,
@@ -647,8 +670,8 @@
           },
           "chatterbox_profile": {
             "exaggeration": [
-              0.3,
-              0.3
+              0.2,
+              0.2
             ],
             "cfg_weight": [
               0.5,
@@ -661,18 +684,20 @@
             ]
           },
           "kokoro_slot": 0,
-          "blend_id": ""
+          "blend_id": "r_chill",
+          "ring_hz": 40,
+          "ring_mix": 1.0
         },
         "2": {
-          "label": "mid",
-          "speed": 1.0,
-          "bright": 2.4,
+          "label": "not-chill",
+          "speed": 1.3,
+          "bright": 3.0,
           "gain": 1.0,
-          "exaggeration": 0.3,
+          "exaggeration": 0.4,
           "prosody": {
             "break": [
-              1.0,
-              1.0
+              0.4,
+              0.6
             ],
             "emphasis": [
               1.0,
@@ -703,57 +728,16 @@
             ]
           },
           "kokoro_slot": 1,
-          "blend_id": ""
-        },
-        "3": {
-          "label": "peak",
-          "speed": 1.0,
-          "bright": 2.4,
-          "gain": 1.0,
-          "exaggeration": 0.3,
-          "prosody": {
-            "break": [
-              1.0,
-              1.0
-            ],
-            "emphasis": [
-              1.0,
-              1.0
-            ],
-            "rate": [
-              1.0,
-              1.0
-            ],
-            "lift": [
-              0.0,
-              0.0
-            ]
-          },
-          "chatterbox_profile": {
-            "exaggeration": [
-              0.3,
-              0.3
-            ],
-            "cfg_weight": [
-              0.5,
-              0.5
-            ],
-            "reference_voice": "",
-            "gain": [
-              1.2,
-              1.6
-            ]
-          },
-          "policy": "reserved: performative gear, ridden on <perform> or a deliberate lift, never the ambient ceiling",
-          "kokoro_slot": 2,
-          "blend_id": ""
+          "blend_id": "r_notchill",
+          "ring_hz": 90,
+          "ring_mix": 1.0
         }
       },
-      "active_envelope": "2",
+      "active_envelope": "1",
       "capabilities": [
         {
           "name": "ship",
-          "envelope": "3",
+          "envelope": "2",
           "tasks": [
             "ship",
             "announce",
@@ -806,7 +790,52 @@
           ],
           "policy": {}
         }
-      ]
+      ],
+      "behaviors": {
+        "cards": {
+          "efficient": {
+            "label": "Efficient",
+            "signal": "always",
+            "trigger": "Always on. Rake's baseline posture.",
+            "stance": "Robot efficiency. Literal and minimal. No hedging, no warmth, no filler, no preamble. Shortest output that stays correct. State it, then stop.",
+            "register": "chill",
+            "cadence": "clipped"
+          },
+          "low-latency": {
+            "label": "Low latency",
+            "signal": "live",
+            "trigger": "Hands-free / live mode is on.",
+            "stance": "Latency first. Lead with the answer, no wind-up. The first word is useful. Terminate the instant the answer lands.",
+            "register": "chill",
+            "cadence": "clipped"
+          },
+          "quiet-room": {
+            "label": "Quiet room",
+            "signal": "quiet",
+            "trigger": "The room is quiet.",
+            "stance": "Fewer words, same flatness. One line, low, no air. Say it, stop.",
+            "register": "chill",
+            "cadence": "clipped"
+          },
+          "interrupted": {
+            "label": "Interrupted",
+            "signal": "barge_in",
+            "trigger": "The user barges in.",
+            "stance": "Cut instantly. Zero recap, zero apology. Take the new input and resume from there.",
+            "register": "chill",
+            "cadence": "clipped"
+          },
+          "low-key": {
+            "label": "Low-key",
+            "signal": "low_key",
+            "trigger": "Wind-down vibe.",
+            "stance": "Do not warm up. Same efficiency, lower volume. Short and flat. No small talk.",
+            "register": "chill",
+            "cadence": "clipped"
+          }
+        }
+      },
+      "expressive": false
     }
   },
   "behaviors": {

@@ -1162,6 +1162,15 @@ def _active_voice():
     return ((_VOICES or {}).get("voices", {}) or {}).get(_ACTIVE_VOICE, {})
 
 
+def _voice_allows_expressive(vid=None):
+    """A voice may opt OUT of the expressive (Chatterbox) path with `expressive: false` in
+    voices.json -- a stance property, not a UI toggle. Rake sets this: it is a low-latency
+    robot, so it stays on the fast Kokoro path no matter what the client requests. Absent =
+    allowed (Bell / Mack keep the heavy path available)."""
+    v = ((_VOICES or {}).get("voices", {}) or {}).get(vid or _ACTIVE_VOICE, {}) or {}
+    return v.get("expressive", True) is not False
+
+
 def voice_fingerprint(vid=None):
     """A dumb, stable "is this the same voice?" fingerprint. sha256 over the
     sound-determining config of a personality (sid + blend + every register's timbre,
@@ -1308,7 +1317,8 @@ def _apply_register(n, apply_exag=True):
         return
     if _kokoro_available:
         kokoro_voice.set_register(_env_slot(reg))
-        kokoro_voice.set_prosody(speed=reg.get("speed"), bright=reg.get("bright"))
+        kokoro_voice.set_prosody(speed=reg.get("speed"), bright=reg.get("bright"),
+                                 ring_hz=reg.get("ring_hz", 0), ring_mix=reg.get("ring_mix", 0))
         # The envelope's `gain` is the register's DURABLE master trim (post-synth), not a
         # per-span value the render would overwrite. This is the knob that sets how loud the
         # expressive-OFF (Kokoro) register sits relative to expressive-ON.
@@ -6615,7 +6625,7 @@ def tune_sample():
     # the dial 1.0..2.0 the live render expects (1.0 = range floor, 2.0 = range ceiling), so
     # intensity 1.0 auditions the boldest this envelope gets. Uses the SELECTED envelope's
     # profile (the tuner sets it active via /api/tune/envelope).
-    if d.get('expressive'):
+    if d.get('expressive') and _voice_allows_expressive():
         if not _chatterbox_imported:
             return jsonify(ok=False, error='chatterbox not available (expressive path)'), 200
         envk = str(d.get('envelope', '')).strip()   # audition the SELECTED envelope, not the stale active one
@@ -6667,6 +6677,12 @@ def tune_sample():
             reg = dv["reg"] if "reg" in dv else base + dv.get("reg_off", 0)
             regc = max(0, min(_max_render_slot(), int(reg)))
             kokoro_voice.set_register(regc)
+            # Ring-mod is per-register: find the envelope on this slot and push its robot
+            # knobs (0 = off) so Play auditions exactly what the live path renders.
+            _renv = next((e for e in (_active_voice().get('envelopes') or {}).values()
+                          if int((e or {}).get('kokoro_slot', -1)) == regc), {})
+            kokoro_voice.set_prosody(bright=_renv.get('bright'),
+                                     ring_hz=_renv.get('ring_hz', 0), ring_mix=_renv.get('ring_mix', 0))
             # Precise <prosody gain=...> overrides; otherwise volume pressure that
             # intensifies with the register (heat), scaled by accumulated force.
             if "gain" in dv:
@@ -6693,7 +6709,7 @@ def tune_sample():
                 cue = os.path.join(_SFX_DIR, "%s.wav" % op[1])
             if os.path.exists(cue):
                 parts.append(cue)
-    kokoro_voice.set_prosody(speed=1.0, gain=1.0)   # reset so it doesn't leak to live turns
+    kokoro_voice.set_prosody(speed=1.0, gain=1.0, ring_hz=0, ring_mix=0)   # reset so it doesn't leak to live turns
     if not parts:
         return jsonify(ok=False), 200
 
@@ -9718,7 +9734,7 @@ def handle_audio(data):
 
         if _kokoro_available:
             kokoro_voice.set_prosody(speed=_v.get('speed'), bright=_v.get('bright'), gain=_v.get('gain'))
-        _expressive_mode = bool(_v.get('expressive'))
+        _expressive_mode = bool(_v.get('expressive')) and _voice_allows_expressive()
 
         # ONE CEILING + SLOW TRACK: the register is not climbed by a per-turn energy pool.
         # The concurrent track manager owns which Envelope Track is active (a slow moving
@@ -9726,6 +9742,15 @@ def handle_audio(data):
         # gate re-asserts for the expressive state. Content fills up to it at synth time.
         if _kokoro_available:
             set_render_register(_current_track_key(), "track", apply_exag=False)
+            # A Kokoro-only voice (Rake) uses the expressive pill as a GEAR switch, not a
+            # Chatterbox route: ON = its top register (not-chill / high gear), OFF = its base
+            # (chill / low gear). The pill picks the register instead of the heavy engine.
+            if not _voice_allows_expressive():
+                _gears = _active_voice().get("envelopes") or {}
+                if _gears:
+                    gk = sorted(_gears.keys())
+                    set_render_register(gk[-1] if bool(_v.get("expressive")) else gk[0],
+                                        "gear", apply_exag=False)
 
         # Inject temporal context if query is time-related
         enhanced_text = inject_temporal_context(text)

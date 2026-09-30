@@ -46,6 +46,11 @@ _gain = float(os.environ.get("CUE_VOX_VOICE_GAIN", "1.0"))
 # its spans still swell. Lets the expressive-OFF (Kokoro) path sit under expressive-ON.
 _master = float(os.environ.get("CUE_VOX_VOICE_MASTER", "1.0"))
 _lift = float(os.environ.get("CUE_VOX_LIFT", "0.8"))   # question rise strength (0 = off).
+# Ring modulation: the classic robot timbre. The signal is multiplied by a low-frequency
+# sine carrier (_ring_hz), blended in at _ring_mix (0 = dry/off, 1 = full wet). This is a
+# per-register effect (declared on the envelope in voices.json); bright cannot produce it.
+_ring_hz = float(os.environ.get("CUE_VOX_RING_HZ", "0.0"))
+_ring_mix = float(os.environ.get("CUE_VOX_RING_MIX", "0.0"))
 # The rise is baked INTO the voice by editing its pitch track with the WORLD vocoder
 # (see _question_intonation): F0 is scaled up on the tail, timbre + tempo untouched.
 # This replaces the old resample bend, which coupled pitch+tempo and read as an artifact.
@@ -99,9 +104,11 @@ def _clamp(v, lo, hi):
     return max(lo, min(hi, v))
 
 
-def set_prosody(speed=None, bright=None, gain=None, lift=None):
-    """Update the live prosody knobs. None leaves a knob unchanged. Clamped to sane ranges."""
-    global _speed, _bright, _gain, _lift
+def set_prosody(speed=None, bright=None, gain=None, lift=None, ring_hz=None, ring_mix=None):
+    """Update the live prosody knobs. None leaves a knob unchanged. Clamped to sane ranges.
+    ring_hz / ring_mix drive the ring-mod robot effect (0 mix = off); callers pass them per
+    register every render so the effect never leaks to a register that did not declare it."""
+    global _speed, _bright, _gain, _lift, _ring_hz, _ring_mix
     if speed is not None:
         try:
             _speed = _clamp(float(speed), 0.5, 2.0)
@@ -122,6 +129,26 @@ def set_prosody(speed=None, bright=None, gain=None, lift=None):
             _lift = _clamp(float(lift), 0.0, 1.5)
         except (TypeError, ValueError):
             pass
+    if ring_hz is not None:
+        try:
+            _ring_hz = _clamp(float(ring_hz), 0.0, 800.0)
+        except (TypeError, ValueError):
+            pass
+    if ring_mix is not None:
+        try:
+            _ring_mix = _clamp(float(ring_mix), 0.0, 1.0)
+        except (TypeError, ValueError):
+            pass
+
+
+def _ringmod(x, sr, hz, mix):
+    """Ring modulation: multiply by a sine carrier at hz, blended in at mix (0 = dry).
+    Off (a no-op) when hz or mix is zero, so non-robot registers pay nothing."""
+    if hz <= 0.0 or mix <= 0.0:
+        return x
+    t = np.arange(len(x), dtype=np.float32) / float(sr)
+    carrier = np.sin(2.0 * np.pi * hz * t).astype(np.float32)
+    return (1.0 - mix) * x + mix * (x * carrier)
 
 
 def set_master(gain):
@@ -308,6 +335,7 @@ def synth_to_file(text, question=None):
             # Edit the pitch track BEFORE brighten/gain so DSP rides the final voice.
             x = _question_intonation(x, audio.sample_rate, amount=_lift)
         x = _brighten(x, _bright)
+        x = _ringmod(x, audio.sample_rate, _ring_hz, _ring_mix)   # robot timbre (per-register)
         g = _gain * _master
         if g != 1.0:
             x = x * g
