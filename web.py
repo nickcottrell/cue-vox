@@ -71,6 +71,11 @@ CLAUDE_CMD = [
     "mcp__vault-cold__*",
     "mcp__jeff__*",
     "mcp__legacy__*",
+    # C2D2 is not wildcarded (it holds sensitive write tools); authorize only the
+    # read-only document reader + its status so voice "read this doc" never stalls on
+    # an unanswerable permission prompt in a piped (-p) session.
+    "mcp__c2d2__read_document",
+    "mcp__c2d2__render_status",
 ]
 
 # C2D2 (local Ollama) -- available as fallback when Claude subprocess fails
@@ -736,6 +741,30 @@ def _jeff_triage(user_text):
     return None
 
 
+def _run_claude(prompt_text):
+    """One Claude subprocess turn. Returns stripped stdout (may be empty).
+
+    Sets _active_claude_process so an interrupt can void the turn, and surfaces
+    stderr. Factored out so the spill guard can retry the same call cleanly.
+    """
+    global _active_claude_process
+    process = subprocess.Popen(
+        CLAUDE_CMD,
+        stdin=subprocess.PIPE,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+        cwd=MAESTRO_ROOT,
+        env=CLEAN_CLAUDE_ENV,
+    )
+    _active_claude_process = process
+    stdout, stderr = process.communicate(input=prompt_text)
+    _active_claude_process = None
+    if stderr and stderr.strip():
+        print("[CLAUDE STDERR] %s" % stderr.strip()[:500])
+    return stdout.strip()
+
+
 def _call_claude_or_fallback(prompt_text, raw_user_text=""):
     """Route prompt based on _c2d2_mode.
 
@@ -771,32 +800,30 @@ def _call_claude_or_fallback(prompt_text, raw_user_text=""):
 
     # -- Normal Claude path --
     try:
-        process = subprocess.Popen(
-            CLAUDE_CMD,
-            stdin=subprocess.PIPE,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
-            text=True,
-            cwd=MAESTRO_ROOT,
-            env=CLEAN_CLAUDE_ENV,
-        )
-        _active_claude_process = process
-        stdout, stderr = process.communicate(input=prompt_text)
-        _active_claude_process = None
+        response = _run_claude(prompt_text)
 
         if _claude_voided:
             return (None, False)
 
-        response = stdout.strip()
-
-        if stderr and stderr.strip():
-            print("[CLAUDE STDERR] %s" % stderr.strip()[:500])
+        # Context-spill guard: a reply that is mostly the injected context block
+        # (flux dump / recent-conversation / handoff) is scaffolding that leaked
+        # into the presence channel, not an answer. Speaking AND logging it
+        # poisons recent_conversation + flux, which re-inject it and amplify the
+        # spill. Quarantine: retry the Claude call once; if the retry also spills,
+        # return a short recovery line so the loop never starts.
+        if response and is_context_spill(response):
+            print("[SPILL] Claude echoed the injected context; retrying once")
+            response = _run_claude(prompt_text)
+            if _claude_voided:
+                return (None, False)
+            if response and is_context_spill(response):
+                print("[SPILL] Retry also spilled; returning recovery line")
+                return (_SPILL_RECOVERY_LINE, False)
 
         if response:
             return (response, False)
 
-        print("[CLAUDE] Empty response. Exit code: %d. Prompt length: %d chars"
-              % (process.returncode, len(prompt_text)))
+        print("[CLAUDE] Empty response. Prompt length: %d chars" % len(prompt_text))
     except Exception as exc:
         _active_claude_process = None
         print("[CLAUDE] Subprocess failed: %s" % exc)
@@ -2309,6 +2336,56 @@ def strip_system_reminders(text):
     text = _SYSTEM_REMINDER_OPEN_ORPHAN.sub("", text)
     text = _SYSTEM_REMINDER_CLOSE_ORPHAN.sub("", text)
     return text.strip()
+
+
+# Context-spill guard. The voice prompt carries large injected context blocks
+# (flux dump of recent_context.md, verbatim recent-conversation, upstream
+# handoffs). On a vague turn the model sometimes reproduces one of those blocks
+# AS its reply instead of answering. That is scaffolding bleeding into the
+# presence channel -- same class of bug strip_system_reminders exists for. It is
+# worse here because the spilled turn gets logged, then re-injected verbatim via
+# get_recent_conversation_context AND folded into recent_context.md by
+# flux-capacitor, so it amplifies across the next several turns. We detect it and
+# quarantine before it ever reaches the log or TTS (see _call_claude_or_fallback).
+_SPILL_START_MARKERS = (
+    "# recent context",
+    "[flux capacitor context",
+    "[recent conversation",
+    "[upstream handoffs",
+)
+_SPILL_SIGNATURES = (
+    "# recent context",
+    "[flux capacitor context",
+    "## track landscape",
+    "## recent exchanges",
+    "## conversation summaries",
+    "## token echo trail",
+    "[card] pipeline surface",
+    "📡 zapier freshness",
+    "[recent conversation -- last",
+)
+# Honest recovery line when a reply is quarantined (and a retry also spills).
+# Reads as a real turn, not a system aside -- per managed-intelligence-presence.
+_SPILL_RECOVERY_LINE = '<voice name="breathy">Lost the thread for a second there, Nick. Say that again?</voice>'
+
+
+def is_context_spill(text):
+    """True when a reply is mostly an injected context block, not an answer.
+
+    Two triggers, either fires:
+      1. The text BEGINS with a structural header a conversational reply never
+         opens with (# Recent Context, [FLUX CAPACITOR CONTEXT, ...).
+      2. Three or more distinct structural signatures appear anywhere -- a real
+         voice reply does not echo that many section headers at once.
+    """
+    if not text:
+        return False
+    head = text.lstrip().lower()
+    if any(head.startswith(m) for m in _SPILL_START_MARKERS):
+        return True
+    low = text.lower()
+    hits = sum(1 for sig in _SPILL_SIGNATURES if sig in low)
+    return hits >= 3
 
 
 def strip_markdown_only(text):
@@ -11517,6 +11594,31 @@ def api_speak():
     tts_interrupted = False
     _speech_queue.put(("text", text, 0, False, _speech_gen))
     _speech_queue.join()
+    return {"ok": True}
+
+
+@app.route('/api/doc-ready', methods=['POST'])
+def api_doc_ready():
+    """A rendered tape just finished in the Wander deck. Chime, announce it aloud, and emit a
+    doc_ready event so the client shows a YES/NO gate to open it. The completion half of the
+    read-a-doc flow; called best-effort by the Wander ingest worker when a job is done."""
+    data = request.get_json(silent=True) or {}
+    title = (data.get("title") or "the document").strip()
+    slug = (data.get("slug") or "").strip()
+    player_url = (data.get("player_url") or "").strip()
+    line = "The %s read is ready in the tape deck." % title
+
+    socketio.emit("sfx", {"name": "ping"})                       # the small ding
+    socketio.emit("doc_ready", {"title": title, "slug": slug,    # client renders the open gate
+                                "player_url": player_url, "line": line})
+    global tts_interrupted
+    tts_interrupted = False
+
+    def _announce():
+        # Speak the announcement (no response card -- the doc_ready card carries the text + gate).
+        _speech_queue.put(("text", line, 0, False, _speech_gen))
+
+    socketio.start_background_task(_announce)
     return {"ok": True}
 
 
